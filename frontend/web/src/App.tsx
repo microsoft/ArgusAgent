@@ -1,0 +1,865 @@
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { artifactRefreshEventKey, snapshotRefreshEventKey, useProjects, useProjectCosts, useSnapshot, useEventStream, useProjectActions, useArtifacts, useTranscript, useJournal, useGitDiff } from './hooks';
+import { api, type EventMsg } from './api';
+import { TopBar } from './components/TopBar';
+import { EventStream } from './components/EventStream';
+import { ChatBox } from './components/ChatBox';
+import {
+  appendPhaseStep,
+  closePhaseTrail,
+  type PhaseStep,
+} from '../../core/src/phaseTrail';
+import { CommandPalette, commandPaletteRows, type PaletteItem } from './components/CommandPalette';
+import { KeybindingHelp } from './components/KeybindingHelp';
+import { DoctorModal, ConfigModal, IdentityModal, TranscriptModal } from './components/InfoModals';
+import { PendingBanner } from './components/PendingBanner';
+import { PendingReplyDialog } from './components/PendingReplyDialog';
+import { GuardianBanner } from './components/GuardianBanner';
+import { rankProjects } from '../../core/src/projects';
+import { ArtifactModal } from './components/ArtifactModal';
+import { ResearchCanvas } from './components/ResearchCanvas';
+import { ActionNotice, type NoticeTone, type UiNotice } from './components/ActionNotice';
+import { NewDaemonModal } from './components/NewDaemonModal';
+import { DaemonManageModal } from './components/DaemonManageModal';
+import { Sidebar } from './components/Sidebar';
+import { ProjectInspectorModal } from './components/ProjectInspectorModal';
+import { TaskDetailModal } from './components/TaskDetailModal';
+import { SplitHandle } from './components/SplitHandle';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faAnglesLeft } from '@fortawesome/free-solid-svg-icons';
+import { MissionControl } from './components/MissionControl';
+import { OperationsModal } from './components/OperationsModal';
+import { Landing } from './components/Landing';
+import { activeGuardianAlert } from './lib/guardian';
+import { projectMissionView } from '../../core/src/missionView';
+import { useQueryClient } from '@tanstack/react-query';
+import { dispatchWebCommand, type WebCommandHandlers } from './lib/webCommands';
+import { buildWebCommandHandlers } from './lib/commandHandlers';
+import { finishManagerMessage } from './lib/messageResult';
+import { COMMANDS } from '../../core/src/commands';
+import { type EventViewFilter } from '../../core/src/events';
+import { eventViewReducer, initialEventViewState } from './lib/eventView';
+import {
+  mergeConversationEvents,
+  mergeOptimisticManagerDelta,
+  optimisticOperatorEvent,
+} from './lib/conversationEvents';
+import { mergeProjectCosts } from './lib/projectCosts';
+import { errorText } from './lib/format';
+import { useCreateDaemonSession } from './useCreateDaemonSession';
+import { useProjectDaemonActions } from './useProjectDaemonActions';
+import { useGlobalKeyboardShortcuts } from './useGlobalKeyboardShortcuts';
+import { usePendingReplySession } from './usePendingReplySession';
+import { useProjectSelection } from './useProjectSelection';
+import { useWorkbenchLayout } from './useWorkbenchLayout';
+
+type Overlay = 'none' | 'palette' | 'help' | 'doctor' | 'config' | 'identity' | 'transcript' | 'inspector' | 'operations';
+interface ActiveMessageRequest {
+  id: number;
+  sid: string;
+  controller: AbortController;
+}
+let noticeSequence = 0;
+
+export default function App() {
+  const queryClient = useQueryClient();
+  const projectsQ = useProjects();
+  const projectCostsQ = useProjectCosts();
+  const projects = useMemo(
+    () => rankProjects(mergeProjectCosts(
+      projectsQ.data?.projects ?? [],
+      projectCostsQ.data?.projects ?? [],
+    )),
+    [projectCostsQ.data?.projects, projectsQ.data?.projects],
+  );
+  const localCwd = projectsQ.data?.local_cwd ?? '';
+
+  const [overlay, setOverlay] = useState<Overlay>('none');
+  const {
+    cycleTheme,
+    kiosk,
+    leftPanelOpen,
+    leftWidth,
+    mobileView,
+    resizeSidebar,
+    rightPanelOpen,
+    rightWidth,
+    setKiosk,
+    setLeftPanelOpen,
+    setLeftWidth,
+    setMobileView,
+    setRightPanelOpen,
+    setRightWidth,
+    setShowReasoning,
+    setSidebarOpen,
+    setWorkspaceView,
+    shellRef,
+    showReasoning,
+    sidebarOpen,
+    themeMode,
+    workspaceView,
+  } = useWorkbenchLayout();
+  const [composerFocus, setComposerFocus] = useState(0);
+  const [composerDraft, setComposerDraft] = useState('');
+  const [rewriting, setRewriting] = useState(false);
+  const [slashSelection, setSlashSelection] = useState(0);
+  const [chatPending, setChatPending] = useState(false);
+  const [localConversationEvents, setLocalConversationEvents] = useState<EventMsg[]>([]);
+  const [managerPhase, setManagerPhase] = useState('');
+  const [managerPhaseHeartbeat, setManagerPhaseHeartbeat] = useState(false);
+  const [managerPhaseQuietS, setManagerPhaseQuietS] = useState(0);
+  const [managerSteps, setManagerSteps] = useState<PhaseStep[]>([]);
+  const [managerStartedAt, setManagerStartedAt] = useState(0);
+  const [artifactPath, setArtifactPath] = useState<string | null>(null);
+  const [taskItemId, setTaskItemId] = useState<string | null>(null);
+  const [newDaemonOpen, setNewDaemonOpen] = useState(false);
+  const [daemonManageOpen, setDaemonManageOpen] = useState(false);
+  const messageRequestRef = useRef<ActiveMessageRequest | null>(null);
+  const messageEpochRef = useRef(0);
+  const [notice, setNotice] = useState<UiNotice | null>(null);
+  const [eventView, dispatchEventView] = useReducer(eventViewReducer, initialEventViewState);
+  const [eventFilter, setEventFilter] = useState<EventViewFilter>('all');
+  const [eventQuery, setEventQuery] = useState('');
+  const dismissNotice = useCallback(() => setNotice(null), []);
+  const notify = useCallback((tone: NoticeTone, message: string) => {
+    setNotice({ id: ++noticeSequence, tone, message });
+  }, []);
+
+  const cancelActiveMessage = useCallback(() => {
+    const cancelled = Boolean(messageRequestRef.current);
+    messageEpochRef.current += 1;
+    messageRequestRef.current?.controller.abort();
+    messageRequestRef.current = null;
+    setChatPending(false);
+    setManagerPhase('');
+    setManagerPhaseHeartbeat(false);
+    setManagerPhaseQuietS(0);
+    setManagerSteps([]);
+    setManagerStartedAt(0);
+    return cancelled;
+  }, []);
+
+  const stopWaiting = useCallback(() => {
+    if (!cancelActiveMessage()) return;
+    notify('info', 'Stopped waiting for this reply. Server-side work may still finish in the project timeline.');
+  }, [cancelActiveMessage, notify]);
+  const {
+    activeSid,
+    clearProjectSelection,
+    prefetchProject,
+    selectProject,
+    sidRef,
+  } = useProjectSelection({
+    cancelActiveMessage,
+    notify,
+    projects,
+    projectsError: projectsQ.isError,
+    projectsReady: projectsQ.isSuccess,
+    queryClient,
+    setArtifactPath,
+    setSidebarOpen,
+    setTaskItemId,
+  });
+
+  useEffect(() => () => {
+    messageEpochRef.current += 1;
+    messageRequestRef.current?.controller.abort();
+    messageRequestRef.current = null;
+  }, []);
+
+  /**
+   * Let the Manager restate a short draft before it is sent.
+   *
+   * The rewrite replaces the composer draft — the operator always reads and
+   * edits it before anything is dispatched. The Manager may propose metrics or
+   * constraints the operator never mentioned, but only as questions surfaced
+   * here — never silently inside the rewritten text. A failed rewrite leaves
+   * the original untouched.
+   */
+  const rewriteDraft = useCallback((draft: string) => {
+    const body = (draft || '').trim();
+    const sid = sidRef.current;
+    if (!body || !sid || rewriting) return;
+    setRewriting(true);
+    void api.rewritePrompt(sid, body).then(
+      (result) => {
+        setRewriting(false);
+        if (result.error || !result.rewritten.trim()) {
+          notify('error', `Rewrite failed: ${result.error || 'empty rewrite'} — your prompt is unchanged`);
+          return;
+        }
+        setComposerDraft(result.rewritten);
+        setComposerFocus((x) => x + 1);
+        const open = result.questions.length
+          ? ` Manager asks: ${result.questions.join(' · ')}`
+          : '';
+        notify('success', `Prompt rewritten — review it, then send.${open}`);
+      },
+      (error) => {
+        setRewriting(false);
+        notify('error', `Rewrite failed: ${errorText(error)} — your prompt is unchanged`);
+      },
+    );
+  }, [notify, rewriting, sidRef]);
+
+
+  const { createDaemon, creatingDaemon } = useCreateDaemonSession({
+    localCwd,
+    notify,
+    onFocusComposer: () => setComposerFocus((value) => value + 1),
+    queryClient,
+    refetchProjects: projectsQ.refetch,
+    selectProject,
+  });
+
+
+  const snapQ = useSnapshot(activeSid);
+  const snap = snapQ.data;
+  const loadedSid = snap?.session.id === activeSid ? activeSid : null;
+  const continuous = snap?.continuous;
+  const artifactsQ = useArtifacts(loadedSid, true);
+  const gitDiffQ = useGitDiff(loadedSid, workspaceView === 'mission');
+  const { events, connected } = useEventStream(loadedSid, eventView.reconnectKey);
+  const artifactRefreshKey = useMemo(() => artifactRefreshEventKey(events), [events]);
+  const snapshotRefreshKey = useMemo(() => snapshotRefreshEventKey(events), [events]);
+  useEffect(() => {
+    if (!loadedSid || !artifactRefreshKey) return;
+    void queryClient.invalidateQueries({
+      queryKey: ['artifacts', loadedSid],
+      exact: true,
+    });
+  }, [artifactRefreshKey, loadedSid, queryClient]);
+  useEffect(() => {
+    if (!loadedSid || !snapshotRefreshKey) return;
+    void queryClient.invalidateQueries({
+      queryKey: ['snapshot', loadedSid],
+      exact: true,
+    });
+  }, [loadedSid, queryClient, snapshotRefreshKey]);
+  const guardianAlert = useMemo(() => activeGuardianAlert(events), [events]);
+  const transcriptQ = useTranscript(loadedSid, workspaceView === 'activity', 120);
+  const journalQ = useJournal(activeSid, 20, overlay === 'inspector');
+  const {
+    answerPendingReply,
+    pendingReply,
+    pendingReplyBusy,
+    pendingReplyOpen,
+    setPendingReplyOpen,
+  } = usePendingReplySession({
+    activeSid,
+    backlog: snap?.backlog,
+    notify,
+    pendingQuestions: snap?.pending_questions,
+    refetchSnapshot: snapQ.refetch,
+  });
+  const activityEvents = useMemo(() => {
+    return mergeConversationEvents(
+      events,
+      transcriptQ.data ?? [],
+      localConversationEvents,
+    );
+  }, [events, localConversationEvents, transcriptQ.data]);
+  const missionView = useMemo(
+    () => snap ? projectMissionView(snap, activityEvents, artifactsQ.data ?? []) : null,
+    [activityEvents, artifactsQ.data, snap],
+  );
+  // Keep a ref so the /clear handler can read the current length without being
+  // listed as a reactive dependency of commandHandlers.
+  const activityEventsRef = useRef(activityEvents);
+  activityEventsRef.current = activityEvents;
+  // Reset event view state (filter, query, clear mark) when the active project changes.
+  useEffect(() => {
+    setEventFilter('all');
+    setEventQuery('');
+    setLocalConversationEvents([]);
+    dispatchEventView({ kind: 'reset' });
+  }, [loadedSid]);
+  const actions = useProjectActions(activeSid, snap?.daemon_commands?.revision);
+  const {
+    daemonBusy,
+    manageDeleteProject,
+    managePauseDaemon,
+    manageRenameProject,
+    manageStartDaemon,
+    requestDispose,
+    requestManageSession,
+    requestStartDaemon,
+    requestStopDaemon,
+    requestStopIteration,
+    toggleContinuous,
+  } = useProjectDaemonActions({
+    actions,
+    activeSid,
+    clearProjectSelection,
+    continuous,
+    currentSnapshotSid: snap?.session.id,
+    notify,
+    refetchProjects: projectsQ.refetch,
+    selectProject,
+    setDaemonManageOpen,
+  });
+  const renameCurrentProject = useCallback(async (name: string) => {
+    if (!activeSid) return;
+    const result = await actions.updateProject.mutateAsync({ sid: activeSid, name });
+    notify('success', `Renamed to "${result.name}".`);
+  }, [actions.updateProject, activeSid, notify]);
+  const commandHandlers = useMemo<WebCommandHandlers>(() => buildWebCommandHandlers({
+    activeSid,
+    activityEventsRef,
+    notify,
+    onClearEvents: (offset) => dispatchEventView({ kind: 'clear', offset }),
+    onDispose: requestDispose,
+    onOpenConfig: () => setOverlay('config'),
+    onOpenDoctor: () => setOverlay('doctor'),
+    onOpenHelp: () => setOverlay('help'),
+    onOpenIdentity: () => setOverlay('identity'),
+    onOpenInspector: () => setOverlay('inspector'),
+    onOpenNewDaemon: () => setNewDaemonOpen(true),
+    onOpenOperations: () => setOverlay('operations'),
+    onOpenSidebar: () => setSidebarOpen(true),
+    onReconnectEvents: () => dispatchEventView({ kind: 'reconnect' }),
+    onRenameProject: renameCurrentProject,
+    onRewriteDraft: rewriteDraft,
+    onSelectProject: selectProject,
+    onSetArtifactPath: setArtifactPath,
+    onSetEventFilter: setEventFilter,
+    onSetEventQuery: setEventQuery,
+    onSetTaskItemId: setTaskItemId,
+    onSetWorkspaceView: setWorkspaceView,
+    onShowArtifacts: () => setRightPanelOpen(true),
+    onStopIteration: requestStopIteration,
+    onStopWaiting: stopWaiting,
+    refetchSnapshot: snapQ.refetch,
+  }), [
+    activeSid,
+    notify,
+    renameCurrentProject,
+    requestDispose,
+    requestStopIteration,
+    selectProject,
+    snapQ.refetch,
+    stopWaiting,
+    setWorkspaceView,
+  ]);
+  useGlobalKeyboardShortcuts({
+    focusComposer: () => setComposerFocus((value) => value + 1),
+    openHelp: () => setOverlay('help'),
+    toggleKiosk: () => setKiosk((value) => !value),
+    togglePalette: () => setOverlay((current) => current === 'palette' ? 'none' : 'palette'),
+    toggleReasoning: () => setShowReasoning((value) => !value),
+    toggleSidebarCollapse: () => setLeftPanelOpen((value) => !value),
+  });
+
+  const sendMessage = async (text: string): Promise<boolean> => {
+    const requestSid = activeSid;
+    if (!requestSid || messageRequestRef.current) return false;
+
+    const command = await dispatchWebCommand(text, commandHandlers);
+    if (command.kind === 'handled') return true;
+    if (command.kind === 'error') {
+      notify('error', command.message);
+      return false;
+    }
+
+    const requestId = ++messageEpochRef.current;
+    const controller = new AbortController();
+    messageRequestRef.current = { id: requestId, sid: requestSid, controller };
+    const isCurrent = () => {
+      const request = messageRequestRef.current;
+      return Boolean(
+        request
+        && request.id === requestId
+        && request.sid === requestSid
+        && sidRef.current === requestSid
+        && !controller.signal.aborted
+      );
+    };
+
+    setChatPending(true);
+    setManagerPhase('');
+    setManagerPhaseHeartbeat(false);
+    setManagerPhaseQuietS(0);
+    setManagerSteps([]);
+    setManagerStartedAt(Date.now());
+    setLocalConversationEvents((current) => [
+      ...current,
+      optimisticOperatorEvent(requestSid, requestId, text),
+    ]);
+
+    const showManagerText = (
+      reply: unknown,
+      messageId = '',
+      fragmentMode: 'append' | 'snapshot' | 'auto' = 'auto',
+    ) => {
+      if (!isCurrent() || typeof reply !== 'string' || !reply.trim()) return;
+      setLocalConversationEvents((current) => mergeOptimisticManagerDelta(
+        current,
+        requestSid,
+        requestId,
+        reply,
+        messageId,
+        Date.now(),
+        fragmentMode,
+      ));
+    };
+
+    const dispatchTask = (result: Record<string, unknown>) => {
+      if (!isCurrent()) return;
+      const daemon = result.daemon && typeof result.daemon === 'object'
+        ? result.daemon as Record<string, unknown>
+        : null;
+      // Use result.reply (persisted by backend) as a non-durable accessibility
+      // notice — the conversation event is already in the transcript refetch.
+      const reply = typeof result.reply === 'string' ? result.reply : null;
+      if (daemon?.admission_required) {
+        notify(
+          'error',
+          reply || `Task queued, but all daemon slots are busy: ${String(daemon.error || 'operator action required')}`,
+        );
+      } else if (daemon && Number(daemon.rc ?? 0) !== 0) {
+        notify('error', reply || `Task queued, but executor did not start: ${String(daemon.error || 'unknown error')}`);
+      } else if (reply) {
+        notify('success', reply);
+      }
+      snapQ.refetch?.();
+    };
+
+    const finishMessage = (result: Record<string, unknown>) => {
+      if (!isCurrent()) return;
+      finishManagerMessage(result, {
+        dispatchTask,
+        notifyError: (error) => notify('error', error),
+        refetchTranscript: () => {
+          void transcriptQ.refetch();
+        },
+      });
+    };
+
+    // Dispatch the streaming work fire-and-forget so the draft clears immediately.
+    // Errors that surface during the stream are surfaced via notify().
+    void (async () => {
+      let gotDelta = false;
+      let streamErr: Error | null = null;
+      // Append-only record of the real steps in this turn (see phaseTrail.ts).
+      // Kept in a local rather than state because React batches setManagerSteps
+      // and a reply block can land in the same tick as the phase before it.
+      let trail: PhaseStep[] = [];
+      try {
+        try {
+          await api.messageStream(requestSid, text, {
+            onPhase: (label, role, meta) => {
+              if (!isCurrent()) return;
+              setManagerPhase(label);
+              setManagerPhaseHeartbeat(meta.heartbeat);
+              setManagerPhaseQuietS(meta.quietS);
+              trail = appendPhaseStep(trail, {
+                label,
+                role,
+                kind: meta.kind,
+                detail: meta.detail,
+                heartbeat: meta.heartbeat,
+                quietS: meta.quietS,
+              });
+              setManagerSteps(trail);
+            },
+            onDelta: (block, messageId, fragmentMode) => {
+              if (!isCurrent()) return;
+              gotDelta = true;
+              trail = closePhaseTrail(trail);
+              setManagerSteps(trail);
+              setManagerPhase('');
+              setManagerPhaseHeartbeat(false);
+              setManagerPhaseQuietS(0);
+              showManagerText(
+                block,
+                messageId,
+                fragmentMode === 'append' || fragmentMode === 'snapshot'
+                  ? fragmentMode
+                  : 'auto',
+              );
+            },
+            onDone: (result) => {
+              if (!isCurrent()) return;
+              showManagerText(result.reply, '', 'snapshot');
+              finishMessage(result);
+            },
+            onError: (err) => {
+              if (isCurrent()) streamErr = err;
+            },
+          }, controller.signal);
+        } catch (error) {
+          if (isCurrent()) streamErr = error as Error;
+        }
+
+        if (!isCurrent()) return;
+
+        // Fallback to the blocking endpoint only if streaming produced nothing.
+        if (streamErr && !gotDelta) {
+          try {
+            const result = await api.message(requestSid, text, controller.signal);
+            if (!isCurrent()) return;
+            showManagerText(result.reply);
+            finishMessage(result);
+          } catch (error) {
+            if (!isCurrent()) return;
+            notify('error', `Message failed: ${errorText(error)}`);
+          }
+        }
+      } finally {
+        if (messageRequestRef.current?.id === requestId) {
+          messageRequestRef.current = null;
+          setChatPending(false);
+          setManagerPhase('');
+          setManagerPhaseHeartbeat(false);
+          setManagerPhaseQuietS(0);
+          setManagerStartedAt(0);
+          setManagerSteps([]);
+        }
+      }
+    })();
+
+    return true; // draft clears immediately on dispatch, not when stream finishes
+  };
+
+  // Stable ref so commandPaletteRows closures always call the latest sendMessage
+  // without re-creating all 34 command items on every render.
+  const sendMessageRef = useRef(sendMessage);
+  sendMessageRef.current = sendMessage;
+
+  const paletteItems: PaletteItem[] = useMemo(() => {
+    const commandRows = commandPaletteRows(
+      COMMANDS,
+      (name) => { void sendMessageRef.current(name); },
+      (text) => { setComposerDraft(text); setComposerFocus((x) => x + 1); },
+    );
+    const nav: PaletteItem[] = [
+      ...(kiosk ? [] : [{ id: 'new', label: 'New daemon', hint: '+', group: 'View', run: () => setNewDaemonOpen(true) }]),
+      { id: 'transcript', label: 'Open Transcript', hint: '/transcript', group: 'View', run: () => setOverlay('transcript') },
+      { id: 'inspector', label: 'Open Project', hint: 'work · memory · agents', group: 'View', run: () => setOverlay('inspector') },
+      { id: 'operations', label: 'Open Operations', hint: 'backend controls', group: 'View', run: () => setOverlay('operations') },
+      { id: 'help', label: 'Keyboard shortcuts', hint: '?', group: 'View', run: () => setOverlay('help') },
+      {
+        id: 'reasoning',
+        label: showReasoning ? 'Hide reasoning' : 'Show reasoning',
+        hint: '⌘T',
+        group: 'View',
+        run: () => setShowReasoning((v) => !v),
+      },
+      {
+        id: 'kiosk',
+        label: kiosk ? 'Exit kiosk mode' : 'Enter kiosk mode',
+        hint: '⌘.',
+        group: 'View',
+        run: () => setKiosk((v) => !v),
+      },
+    ];
+    const acts: PaletteItem[] = kiosk
+      ? []
+      : [
+          { id: 'message', label: 'Message Argus…', hint: '/', group: 'Action', run: () => setComposerFocus((x) => x + 1) },
+          ...(chatPending
+            ? [{ id: 'cancel-message', label: 'Stop waiting for Manager reply', hint: 'Esc', group: 'Action', run: stopWaiting }]
+            : []),
+          ...(continuous
+            ? [
+                {
+                  id: 'continuous',
+                  label: continuous.enabled ? 'Stop continuous campaign' : 'Start continuous campaign',
+                  group: 'Action',
+                  run: toggleContinuous,
+                },
+              ]
+            : []),
+          ...(snap?.daemon.control_available === false
+            ? []
+            : [
+                snap?.daemon.alive
+                  ? { id: 'stop', label: 'Stop daemon', group: 'Action', run: requestStopDaemon }
+                  : { id: 'start', label: 'Start daemon', group: 'Action', run: requestStartDaemon },
+              ]),
+        ];
+    const proj: PaletteItem[] = projects.map((p) => ({
+      id: `p-${p.id}`,
+      label: p.label || p.id,
+      hint: p.daemon_alive ? '● live' : '○',
+      keywords: `${p.id} ${p.display_name ?? ''} ${p.objective} ${p.daemon_alive ? 'live running' : 'stopped idle'}`,
+      group: 'Project',
+      run: () => selectProject(p.id),
+    }));
+    return [...nav, ...acts, ...commandRows, ...proj];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects, snap?.daemon.alive, kiosk, showReasoning, continuous?.enabled, chatPending, stopWaiting]);
+
+  return (
+    <div ref={shellRef} className="workbench-shell ambient-canvas flex h-screen h-[100dvh] w-screen max-w-full overflow-hidden text-ink">
+      {!kiosk && sidebarOpen ? (
+        <button
+          type="button"
+          aria-label="Close sessions"
+          onClick={() => setSidebarOpen(false)}
+          className="fixed inset-0 z-30 bg-black/40 lg:hidden"
+        />
+      ) : null}
+      {!kiosk ? (
+        <Sidebar
+          projects={projects}
+          activeId={activeSid}
+          localCwd={localCwd}
+          onSelect={(id) => {
+            selectProject(id);
+            setSidebarOpen(false);
+          }}
+          onPrefetch={prefetchProject}
+          onManage={requestManageSession}
+          onOpenPanel={(panel) => setOverlay(panel)}
+          onNew={() => setNewDaemonOpen(true)}
+          loading={projectsQ.isLoading}
+          creating={creatingDaemon}
+          error={projectsQ.isError ? errorText(projectsQ.error) : undefined}
+          onRetry={() => void projectsQ.refetch()}
+          mobileOpen={sidebarOpen}
+          collapsed={!leftPanelOpen}
+          onToggleCollapse={() => setLeftPanelOpen((value) => !value)}
+          themeMode={themeMode}
+          onCycleTheme={cycleTheme}
+          expandedWidth={leftWidth}
+        />
+      ) : null}
+      {!kiosk && leftPanelOpen ? (
+        <SplitHandle
+          label="Resize sessions"
+          value={leftWidth}
+          min={220}
+          max={400}
+          onPointerDown={(event) => resizeSidebar('left', event)}
+          onReset={() => setLeftWidth(256)}
+          onNudge={(delta) => setLeftWidth((value) => Math.max(220, Math.min(400, value + delta)))}
+        />
+      ) : null}
+
+      <main className="flex min-w-0 flex-1 overflow-x-hidden">
+        {snap ? (
+          <>
+            <section className={`${mobileView === 'activity' ? 'flex' : 'hidden'} glass-panel glass-panel--main h-full min-w-0 flex-1 flex-col lg:flex`}>
+              <TopBar
+                snap={snap}
+                streamOk={connected}
+                onStart={requestStartDaemon}
+                onStop={requestStopDaemon}
+                onManage={() => setDaemonManageOpen(true)}
+                onOpenSessions={() => setSidebarOpen(true)}
+                mobileView={mobileView}
+                onToggleMobileView={() => setMobileView('preview')}
+                busy={daemonBusy}
+                snapshotStale={snapQ.isError}
+                readOnly={kiosk}
+                missionView={missionView}
+              />
+              <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line/60 px-3">
+                <div className="workspace-tabs" data-active={workspaceView}>
+                  <span className="workspace-tab-indicator" aria-hidden="true" />
+                  <button type="button" onClick={() => setWorkspaceView('mission')} className="workspace-tab" data-selected={workspaceView === 'mission'}>Mission</button>
+                  <button type="button" onClick={() => setWorkspaceView('activity')} className="workspace-tab" data-selected={workspaceView === 'activity'}>Activity</button>
+                </div>
+                {workspaceView === 'mission' ? <span className="ml-auto hidden max-w-72 truncate text-[10px] text-ink-faint sm:block">{missionView?.active_role ? `${missionView.active_role} active` : 'mission overview'}</span> : <span className="ml-auto" />}
+                {!kiosk ? <button type="button" onClick={() => setOverlay('operations')} className="rounded border border-line/60 px-2 py-1 text-[10px] text-ink-faint hover:border-blue/50 hover:text-blue">Operations</button> : null}
+              </div>
+              <GuardianBanner alert={guardianAlert} />
+              {workspaceView === 'mission' && missionView ? (
+                <MissionControl view={missionView} gitDiff={gitDiffQ.data} onOpenArtifact={setArtifactPath} />
+              ) : (
+                <EventStream
+                  events={activityEvents}
+                  connected={connected}
+                  showReasoning={showReasoning}
+                  onToggleReasoning={() => setShowReasoning((value) => !value)}
+                  embedded
+                  filter={eventFilter}
+                  query={eventQuery}
+                  skipFirst={eventView.skipFirst}
+                />
+              )}
+              {!kiosk ? (
+                <div className="shrink-0 px-4 pb-6 pt-3">
+                  <div className="mx-auto w-full max-w-full lg:max-w-[61.8vw]">
+                  <PendingBanner
+                    questions={snap.pending_questions ?? []}
+                    backlog={snap.backlog}
+                    onAnswer={() => setPendingReplyOpen(true)}
+                  />
+                  <ChatBox
+                    value={composerDraft}
+                    onChange={setComposerDraft}
+                    onSend={sendMessage}
+                    onCancel={stopWaiting}
+                    disabled={!activeSid}
+                    pending={chatPending}
+                    focusSignal={composerFocus}
+                    embedded
+                    phase={managerPhase}
+                    heartbeat={managerPhaseHeartbeat}
+                    quietS={managerPhaseQuietS}
+                    steps={managerSteps}
+                    startedAt={managerStartedAt}
+                    onRewrite={rewriteDraft}
+                    rewriting={rewriting}
+                    slashSelection={slashSelection}
+                    onSlashSelectionChange={setSlashSelection}
+                  />
+                  </div>
+                </div>
+              ) : null}
+            </section>
+            {rightPanelOpen ? (
+              <SplitHandle
+                label="Resize preview"
+                value={rightWidth}
+                min={320}
+                max={600}
+                onPointerDown={(event) => resizeSidebar('right', event)}
+                onReset={() => setRightWidth(440)}
+                onNudge={(delta) => setRightWidth((value) => Math.max(320, Math.min(600, value - delta)))}
+              />
+            ) : null}
+
+            <aside
+              style={{ '--preview-width': `${rightWidth}px` } as React.CSSProperties}
+              className={`${mobileView === 'preview' ? 'flex' : 'hidden'} relative min-w-0 flex-1 flex-col overflow-hidden border-l border-line/60 bg-panel transition-[width] duration-[250ms] ease-panel lg:flex lg:flex-none ${
+              rightPanelOpen ? 'lg:w-[var(--preview-width)]' : 'lg:w-14'
+            }`}>
+              <div className="lg:hidden">
+                <TopBar
+                  snap={snap}
+                  streamOk={connected}
+                  onStart={requestStartDaemon}
+                  onStop={requestStopDaemon}
+                  onManage={() => setDaemonManageOpen(true)}
+                  onOpenSessions={() => setSidebarOpen(true)}
+                  mobileView={mobileView}
+                  onToggleMobileView={() => setMobileView('activity')}
+                  busy={daemonBusy}
+                  snapshotStale={snapQ.isError}
+                  readOnly={kiosk}
+                  missionView={missionView}
+                />
+              </div>
+              <ResearchCanvas
+                sid={loadedSid}
+                artifacts={artifactsQ.data}
+                error={artifactsQ.isError}
+                onExpand={setArtifactPath}
+                className={`min-h-0 flex-1 ${rightPanelOpen ? 'lg:flex' : 'lg:hidden'}`}
+                embedded
+                onCollapse={() => setRightPanelOpen(false)}
+                missionView={missionView}
+                activityEvents={activityEvents}
+              />
+              {!rightPanelOpen ? (
+                <div className="hidden h-12 items-center justify-center border-b border-line/50 text-ink-faint lg:flex">
+                  <button type="button" onClick={() => setRightPanelOpen(true)} aria-label="Expand preview" title="Expand preview" className="flex h-8 w-8 items-center justify-center rounded-md border border-line/50 bg-bg/40 hover:border-blue/50 hover:text-ink">
+                    <FontAwesomeIcon icon={faAnglesLeft} className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ) : null}
+            </aside>
+          </>
+        ) : (
+          <Landing
+            loading={projectsQ.isLoading || Boolean(activeSid && snapQ.isLoading)}
+            hasProjects={projects.length > 0}
+            error={
+              projectsQ.isError && projects.length === 0
+                ? errorText(projectsQ.error)
+                : snapQ.isError && !snap
+                ? errorText(snapQ.error)
+                : undefined
+            }
+            onRetry={() => {
+              void projectsQ.refetch();
+              if (activeSid) void snapQ.refetch();
+            }}
+            onNew={() => setNewDaemonOpen(true)}
+            onChoose={() => setSidebarOpen(true)}
+            canCreate={!kiosk}
+          />
+        )}
+      </main>
+
+      {/* global overlays */}
+      <CommandPalette open={overlay === 'palette'} onClose={() => setOverlay('none')} items={paletteItems} />
+      <KeybindingHelp open={overlay === 'help'} onClose={() => setOverlay('none')} />
+      {activeSid && <DoctorModal sid={activeSid} open={overlay === 'doctor'} onClose={() => setOverlay('none')} />}
+      {activeSid && <ConfigModal sid={activeSid} open={overlay === 'config'} onClose={() => setOverlay('none')} />}
+      {activeSid && <IdentityModal sid={activeSid} open={overlay === 'identity'} onClose={() => setOverlay('none')} />}
+      {activeSid && <TranscriptModal sid={activeSid} open={overlay === 'transcript'} onClose={() => setOverlay('none')} />}
+      {activeSid && snap ? (
+        <ProjectInspectorModal
+          open={overlay === 'inspector'}
+          snap={snap}
+          journal={journalQ.data ?? []}
+          busy={actions.disposeBacklog.isPending || actions.stopBacklog.isPending}
+          onClose={() => setOverlay('none')}
+          onDispose={requestDispose}
+          onStop={requestStopIteration}
+          onInspect={setTaskItemId}
+        />
+      ) : null}
+      {activeSid && snap ? (
+        <OperationsModal
+          open={overlay === 'operations'}
+          sid={activeSid}
+          snap={snap}
+          onClose={() => setOverlay('none')}
+          onChanged={() => {
+            void snapQ.refetch();
+            void projectsQ.refetch();
+          }}
+          onRestored={async (restoredSid) => {
+            await projectsQ.refetch();
+            selectProject(restoredSid);
+          }}
+        />
+      ) : null}
+      <ArtifactModal sid={activeSid} path={artifactPath} onClose={() => setArtifactPath(null)} />
+      <TaskDetailModal
+        sid={activeSid}
+        itemId={taskItemId}
+        onClose={() => setTaskItemId(null)}
+        onDone={(id) => requestDispose(id, 'done')}
+        onSkip={(id) => requestDispose(id, 'rm')}
+        onStop={requestStopIteration}
+        busy={actions.disposeBacklog.isPending || actions.stopBacklog.isPending}
+        readOnly={kiosk}
+      />
+      <NewDaemonModal
+        open={newDaemonOpen}
+        busy={creatingDaemon}
+        onClose={() => setNewDaemonOpen(false)}
+        onCreate={createDaemon}
+      />
+      <PendingReplyDialog
+        reply={pendingReply}
+        open={pendingReplyOpen}
+        busy={pendingReplyBusy}
+        onClose={() => setPendingReplyOpen(false)}
+        onSubmit={answerPendingReply}
+      />
+      {activeSid && snap ? (
+        <DaemonManageModal
+          open={daemonManageOpen}
+          sid={activeSid}
+          name={snap.session.display_name || ''}
+          alive={snap.daemon.alive}
+          controlAvailable={snap.daemon.control_available !== false}
+          busy={daemonBusy}
+          onClose={() => setDaemonManageOpen(false)}
+          onRename={manageRenameProject}
+          onStart={manageStartDaemon}
+          onPause={managePauseDaemon}
+          onDelete={manageDeleteProject}
+        />
+      ) : null}
+      <ActionNotice notice={notice} onClose={dismissNotice} />
+    </div>
+  );
+}

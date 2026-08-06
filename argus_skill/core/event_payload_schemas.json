@@ -1,0 +1,963 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "schema_version": 1,
+  "events": {
+    "agent.io.start": {
+      "version": 1,
+      "required": ["call_id", "run_label"],
+      "properties": {
+        "call_id": {"type": "string", "minLength": 1},
+        "run_label": {"type": "string"},
+        "backend": {"type": "string"},
+        "model": {"type": ["string", "null"]},
+        "working_dir": {"type": ["string", "null"]},
+        "resume_thread_id": {"type": ["string", "null"]}
+      }
+    },
+    "agent.io.stream": {
+      "version": 1,
+      "required": ["call_id", "stream", "line"],
+      "properties": {
+        "call_id": {"type": "string", "minLength": 1},
+        "run_label": {"type": ["string", "null"]},
+        "stream": {"type": "string", "enum": ["stdout", "stderr"]},
+        "line": {"type": "string"}
+      }
+    },
+    "agent.io.complete": {
+      "version": 1,
+      "required": ["call_id", "run_label"],
+      "properties": {
+        "call_id": {"type": "string", "minLength": 1},
+        "run_label": {"type": "string"},
+        "backend": {"type": "string"},
+        "model": {"type": ["string", "null"]},
+        "exit_code": {"type": ["integer", "null"]},
+        "thread_id": {"type": ["string", "null"]},
+        "fatal_error": {"type": ["string", "null"]},
+        "input_tokens": {"type": "integer", "minimum": 0},
+        "cached_input_tokens": {"type": "integer", "minimum": 0},
+        "cache_write_tokens": {"type": "integer", "minimum": 0},
+        "output_tokens": {"type": "integer", "minimum": 0},
+        "reasoning_output_tokens": {"type": "integer", "minimum": 0},
+        "premium_requests": {"type": ["number", "null"], "minimum": 0},
+        "premium_requests_present": {"type": "boolean"},
+        "total_nano_aiu": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "agent.io.error": {
+      "version": 1,
+      "required": ["call_id", "error"],
+      "properties": {
+        "call_id": {"type": "string", "minLength": 1},
+        "run_label": {"type": "string"},
+        "backend": {"type": "string"},
+        "error": {"type": "string", "minLength": 1}
+      }
+    },
+    "usage.recorded": {
+      "version": 2,
+      "required": ["call_id", "schema_version", "provider", "status", "usage", "pricing"],
+      "properties": {
+        "call_id": {"type": "string", "minLength": 1},
+        "schema_version": {"type": "integer", "const": 2},
+        "project_id": {"type": "string"},
+        "mission_id": {"type": ["string", "null"]},
+        "thread_id": {"type": ["string", "null"]},
+        "provider": {"type": "string", "minLength": 1},
+        "model": {"type": "string"},
+        "run_label": {"type": "string"},
+        "status": {"type": "string", "enum": ["completed", "error", "denied"]},
+        "duration_ms": {"type": "integer", "minimum": 0},
+        "usage": {"type": "object"},
+        "pricing": {"type": "object"}
+      }
+    },
+    "provider.request.started": {
+      "version": 1,
+      "required": ["provider", "run_label"],
+      "properties": {
+        "provider": {"type": "string", "minLength": 1},
+        "run_label": {"type": "string"},
+        "call_id": {"type": "string"},
+        "daily_calls": {"type": "integer", "minimum": 0},
+        "daily_cap": {"type": "integer", "minimum": 0}
+      }
+    },
+    "provider.request.completed": {
+      "version": 1,
+      "required": ["provider", "run_label"],
+      "properties": {
+        "provider": {"type": "string", "minLength": 1},
+        "run_label": {"type": "string"},
+        "call_id": {"type": "string"},
+        "success": {"type": "boolean"},
+        "error": {"type": "string"},
+        "premium_requests": {"type": "number", "minimum": 0}
+      }
+    },
+    "provider.request.denied": {
+      "version": 1,
+      "required": ["provider", "run_label"],
+      "properties": {
+        "provider": {"type": "string", "minLength": 1},
+        "run_label": {"type": "string"},
+        "call_id": {"type": "string"},
+        "reason": {"type": "string"}
+      }
+    },
+    "budget.reservation.created": {
+      "version": 1,
+      "required": ["reservation_id", "call_id", "amount_usd"],
+      "properties": {
+        "reservation_id": {"type": "string", "minLength": 1},
+        "call_id": {"type": "string", "minLength": 1},
+        "amount_usd": {"type": "number", "minimum": 0},
+        "provider": {"type": "string"},
+        "model": {"type": "string"},
+        "run_label": {"type": "string"}
+      }
+    },
+    "budget.reservation.denied": {
+      "version": 1,
+      "required": ["call_id", "reason"],
+      "properties": {
+        "call_id": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "provider": {"type": "string"},
+        "model": {"type": "string"},
+        "run_label": {"type": "string"}
+      }
+    },
+    "budget.reservation.settled": {
+      "version": 1,
+      "required": ["reservation_id", "call_id", "pricing_status"],
+      "properties": {
+        "reservation_id": {"type": "string", "minLength": 1},
+        "call_id": {"type": "string", "minLength": 1},
+        "amount_usd": {"type": "number", "minimum": 0},
+        "cost_usd": {"type": ["number", "null"], "minimum": 0},
+        "overrun_usd": {"type": ["number", "null"], "minimum": 0},
+        "pricing_status": {"type": "string"}
+      }
+    },
+    "budget.reservation.released": {
+      "version": 1,
+      "required": ["reservation_id", "call_id"],
+      "properties": {
+        "reservation_id": {"type": "string", "minLength": 1},
+        "call_id": {"type": "string", "minLength": 1},
+        "amount_usd": {"type": "number", "minimum": 0},
+        "reason": {"type": "string"}
+      }
+    },
+    "budget.unpriced.blocked": {
+      "version": 1,
+      "required": ["call_id", "reason"],
+      "properties": {
+        "call_id": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "provider": {"type": "string"},
+        "model": {"type": "string"},
+        "run_label": {"type": "string"}
+      }
+    },
+    "life.mission.started": {
+      "version": 1,
+      "required": ["item_id"],
+      "properties": {
+        "item_id": {"type": "string", "minLength": 1},
+        "title": {"type": "string"},
+        "objective": {"type": "string"},
+        "scope": {"type": "string"},
+        "missions_started": {"type": "integer", "minimum": 0},
+        "attempt": {"type": "integer", "minimum": 1},
+        "usage_attempt_id": {"type": "string"}
+      }
+    },
+    "life.mission.completed": {
+      "version": 1,
+      "required": ["item_id", "status"],
+      "properties": {
+        "item_id": {"type": "string", "minLength": 1},
+        "title": {"type": "string"},
+        "objective": {"type": "string"},
+        "scope": {"type": "string"},
+        "status": {"type": "string", "minLength": 1},
+        "outcome_class": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "incomplete",
+            "stalled",
+            "blocked",
+            "failed",
+            "ended"
+          ]
+        },
+        "outcome": {
+          "type": "object",
+          "required": [
+            "execution_status",
+            "review_status",
+            "stage_certification",
+            "interruption_kind",
+            "resumable"
+          ],
+          "properties": {
+            "execution_status": {"type": "string"},
+            "review_status": {"type": "string"},
+            "stage_certification": {"type": "string"},
+            "interruption_kind": {"type": "string"},
+            "resumable": {"type": "boolean"}
+          }
+        },
+        "success": {"type": "boolean"},
+        "rounds": {"type": "integer", "minimum": 0},
+        "elapsed_seconds": {"type": "number", "minimum": 0},
+        "cost_usd": {"type": ["number", "null"], "minimum": 0},
+        "known_cost_usd": {"type": "number", "minimum": 0},
+        "pricing_status": {"type": "string"},
+        "research_result": {"type": ["object", "null"]},
+        "repair_capability": {"type": ["object", "null"]},
+        "stop_kind": {
+          "type": ["string", "null"],
+          "enum": [
+            "budget_exhausted",
+            "provider_cooldown",
+            "provider_fence",
+            "daemon_shutdown",
+            "operator_pause",
+            "operator_abort",
+            "backend_unavailable",
+            "transient_error",
+            "permanent_error",
+            null
+          ]
+        },
+        "recoverable": {"type": "boolean"}
+      }
+    },
+    "round.start": {
+      "version": 1,
+      "required": ["round_index"],
+      "properties": {
+        "round_index": {"type": "integer", "minimum": 0},
+        "round_max": {"type": "integer", "minimum": 0},
+        "session_id": {"type": ["string", "null"]}
+      }
+    },
+    "round.main.completed": {
+      "version": 1,
+      "required": ["round_index"],
+      "properties": {
+        "round_index": {"type": "integer", "minimum": 0},
+        "exit_code": {"type": "integer"},
+        "input_tokens": {"type": "integer", "minimum": 0},
+        "cached_input_tokens": {"type": "integer", "minimum": 0},
+        "output_tokens": {"type": "integer", "minimum": 0},
+        "reasoning_output_tokens": {"type": "integer", "minimum": 0},
+        "stop_kind": {
+          "type": ["string", "null"],
+          "enum": [
+            "budget_exhausted",
+            "provider_cooldown",
+            "provider_fence",
+            "daemon_shutdown",
+            "operator_pause",
+            "operator_abort",
+            "backend_unavailable",
+            "transient_error",
+            "permanent_error",
+            null
+          ]
+        }
+      }
+    },
+    "round.review.started": {
+      "version": 1,
+      "required": ["round_index"],
+      "properties": {
+        "round_index": {"type": "integer", "minimum": 0},
+        "status": {"type": "string"}
+      }
+    },
+    "round.review.deferred": {
+      "version": 1,
+      "required": ["round_index", "next_step"],
+      "properties": {
+        "round_index": {"type": "integer", "minimum": 0},
+        "round_max": {"type": "integer", "minimum": 0},
+        "next_step": {"type": "string", "minLength": 1},
+        "deferral_count": {"type": "integer", "minimum": 1},
+        "deferral_limit": {"type": "integer", "minimum": 1}
+      }
+    },
+    "round.review.completed": {
+      "version": 1,
+      "required": ["status", "reason"],
+      "properties": {
+        "round_index": {"type": "integer", "minimum": 0},
+        "status": {
+          "type": "string",
+          "enum": [
+            "done",
+            "continue",
+            "blocked",
+            "replan_requested",
+            "error",
+            "research_incomplete",
+            "paused_no_breakthrough",
+            "exhausted_current_methods"
+          ]
+        },
+        "reason": {"type": "string"},
+        "next_action": {"type": "string"},
+        "operator_question": {"type": "string"},
+        "review_source": {"type": "string"},
+        "text": {"type": "string"},
+        "review_skipped": {"type": "boolean"},
+        "prompt_block_stats": {"type": "object"},
+        "input_tokens": {"type": "integer", "minimum": 0},
+        "cached_input_tokens": {"type": "integer", "minimum": 0},
+        "output_tokens": {"type": "integer", "minimum": 0},
+        "reasoning_output_tokens": {"type": "integer", "minimum": 0},
+        "premium_requests": {"type": "number", "minimum": 0},
+        "backend_unavailable": {"type": "boolean"},
+        "usage_scope": {"type": "string", "enum": ["delta"]},
+        "stop_kind": {
+          "type": ["string", "null"],
+          "enum": [
+            "budget_exhausted",
+            "provider_cooldown",
+            "provider_fence",
+            "daemon_shutdown",
+            "operator_pause",
+            "operator_abort",
+            "backend_unavailable",
+            "transient_error",
+            "permanent_error",
+            null
+          ]
+        }
+      }
+    },
+    "round.secret_redacted": {
+      "version": 1,
+      "required": ["round_index", "redacted_paths", "replacement_count"],
+      "properties": {
+        "round_index": {"type": "integer", "minimum": 0},
+        "round_max": {"type": "integer", "minimum": 0},
+        "redacted_paths": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "replacement_count": {"type": "integer", "minimum": 0},
+        "scanned_files": {"type": "integer", "minimum": 0},
+        "scan_errors": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "truncated": {"type": "boolean"},
+        "operator_alert": {"type": "boolean"}
+      }
+    },
+    "life.planner.start": {
+      "version": 1,
+      "required": [],
+      "properties": {
+        "manager_intent": {"type": "object"},
+        "cycle": {"type": "integer", "minimum": 0}
+      }
+    },
+    "life.planner.verdict": {
+      "version": 1,
+      "required": [
+        "status",
+        "success",
+        "recoverable",
+        "reason",
+        "summary",
+        "project_id",
+        "mission_id"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "planned",
+            "completed",
+            "research_incomplete",
+            "paused_budget",
+            "paused_no_breakthrough",
+            "exhausted_current_methods",
+            "provider_cooldown",
+            "infra_blocked",
+            "error"
+          ]
+        },
+        "success": {"type": "boolean"},
+        "recoverable": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "summary": {"type": "string"},
+        "project_id": {"type": "string"},
+        "mission_id": {"type": "string"},
+        "research_target_level": {"type": ["string", "null"]},
+        "correctness_status": {"type": ["string", "null"]},
+        "novelty_status": {"type": ["string", "null"]},
+        "significance_status": {"type": ["string", "null"]},
+        "stop_kind": {"type": ["string", "null"]},
+        "completion_kind": {"type": ["string", "null"]},
+        "delivery_id": {"type": "string", "minLength": 1},
+        "tasks_added": {"type": "integer", "minimum": 0}
+      }
+    },
+    "life.planner.error": {
+      "version": 1,
+      "required": ["error"],
+      "properties": {
+        "error": {"type": "string", "minLength": 1},
+        "reason": {"type": "string"}
+      }
+    },
+    "life.planner.task_added": {
+      "version": 1,
+      "required": ["item_id"],
+      "properties": {
+        "item_id": {"type": "string", "minLength": 1},
+        "title": {"type": "string"},
+        "objective": {"type": "string"},
+        "deps": {"type": "array", "items": {"type": "string"}},
+        "priority": {"type": "integer"},
+        "impact_score": {"type": "number"},
+        "impact_area": {"type": "string"},
+        "branch_id": {"type": "string"},
+        "parent_branch_id": {"type": ["string", "null"]}
+      }
+    },
+    "life.planner.task_skipped": {
+      "version": 1,
+      "required": ["reason"],
+      "properties": {
+        "item_id": {"type": "string"},
+        "title": {"type": "string"},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "life.manager.intent.completed": {
+      "version": 1,
+      "required": ["intent_id", "item_id", "objective", "vertical", "kind", "stages"],
+      "properties": {
+        "intent_id": {"type": "string", "minLength": 1},
+        "item_id": {"type": "string", "minLength": 1},
+        "objective": {"type": "string"},
+        "vertical": {"type": "string"},
+        "kind": {"type": "string"},
+        "stages": {"type": "array", "items": {"type": "string"}},
+        "reason": {"type": "string"}
+      }
+    },
+    "life.inbox.drained": {
+      "version": 1,
+      "required": ["count", "messages"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 1},
+        "messages": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "life.operator_question.pending": {
+      "version": 1,
+      "required": ["item_id", "question"],
+      "properties": {
+        "item_id": {"type": "string", "minLength": 1},
+        "title": {"type": "string"},
+        "question": {"type": "string", "minLength": 1},
+        "agent_layer": {"type": "string"}
+      }
+    },
+    "life.operator_question.answered": {
+      "version": 1,
+      "required": ["item_id", "continuation_item_id", "question", "manager_decision"],
+      "properties": {
+        "item_id": {"type": "string", "minLength": 1},
+        "continuation_item_id": {"type": "string", "minLength": 1},
+        "question": {"type": "string", "minLength": 1},
+        "manager_decision": {"type": "string", "minLength": 1}
+      }
+    },
+    "engineer.progress": {
+      "version": 1,
+      "required": ["kind"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "text": {"type": "string"},
+        "actor": {"type": "string"},
+        "agent_layer": {"type": "string"},
+        "message_id": {"type": "string"},
+        "replace": {"type": "boolean"},
+        "round_index": {"type": "integer", "minimum": 0},
+        "experiment_id": {"type": "string"},
+        "branch_id": {"type": "string"}
+      }
+    },
+    "skill.created": {
+      "version": 1,
+      "required": [],
+      "properties": {
+        "skill_id": {"type": "string"},
+        "name": {"type": "string"},
+        "version": {"type": "integer", "minimum": 1},
+        "scope": {"type": "string"},
+        "path": {"type": "string"},
+        "text": {"type": "string"}
+      }
+    },
+    "skill.updated": {
+      "version": 1,
+      "required": [],
+      "properties": {
+        "skill_id": {"type": "string"},
+        "name": {"type": "string"},
+        "version": {"type": "integer", "minimum": 1},
+        "scope": {"type": "string"},
+        "path": {"type": "string"},
+        "text": {"type": "string"}
+      }
+    },
+    "skill.archived": {
+      "version": 1,
+      "required": [],
+      "properties": {
+        "skill_id": {"type": "string"},
+        "name": {"type": "string"},
+        "version": {"type": "integer", "minimum": 1},
+        "scope": {"type": "string"},
+        "path": {"type": "string"},
+        "reason": {"type": "string"},
+        "text": {"type": "string"}
+      }
+    },
+    "skill.cost.completed": {
+      "version": 1,
+      "required": ["matcher", "distiller", "usage_scope"],
+      "properties": {
+        "agent_layer": {"type": "string"},
+        "matcher_model": {"type": "string"},
+        "distiller_model": {"type": "string"},
+        "matcher": {"type": "object"},
+        "distiller": {"type": "object"},
+        "input_tokens": {"type": "integer", "minimum": 0},
+        "cached_input_tokens": {"type": "integer", "minimum": 0},
+        "output_tokens": {"type": "integer", "minimum": 0},
+        "reasoning_output_tokens": {"type": "integer", "minimum": 0},
+        "premium_requests": {"type": "number", "minimum": 0},
+        "usage_scope": {"type": "string", "enum": ["delta", "cumulative"]}
+      }
+    },
+    "skill.outcome": {
+      "version": 1,
+      "required": ["skill_hit", "skill_distilled", "rounds", "status", "success"],
+      "properties": {
+        "skill_name": {"type": "string"},
+        "skill_hit": {"type": "boolean"},
+        "skill_distilled": {"type": "boolean"},
+        "matcher_model": {"type": "string"},
+        "distiller_model": {"type": "string"},
+        "matcher_tokens": {"type": "integer", "minimum": 0},
+        "distiller_tokens": {"type": "integer", "minimum": 0},
+        "rounds": {"type": "integer", "minimum": 0},
+        "status": {"type": "string"},
+        "success": {"type": "boolean"}
+      }
+    },
+    "skill.scientist.started": {
+      "version": 1,
+      "required": [],
+      "properties": {"text": {"type": "string"}}
+    },
+    "skill.scientist.created": {
+      "version": 1,
+      "required": ["name"],
+      "properties": {
+        "skill_id": {"type": "string"},
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "integer", "minimum": 1},
+        "path": {"type": "string"},
+        "text": {"type": "string"}
+      }
+    },
+    "skill.tidied": {
+      "version": 1,
+      "required": ["name", "placement", "path", "text"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "placement": {"type": "string", "enum": ["global", "vertical"]},
+        "vertical": {"type": "string"},
+        "path": {"type": "string", "minLength": 1},
+        "text": {"type": "string", "minLength": 1}
+      }
+    },
+    "skill.compacted": {
+      "version": 1,
+      "required": ["source_skill", "target_skill"],
+      "properties": {
+        "source_skill": {"type": "string", "minLength": 1},
+        "target_skill": {"type": "string", "minLength": 1},
+        "text": {"type": "string"}
+      }
+    },
+    "skill.compact.error": {
+      "version": 1,
+      "required": ["error"],
+      "properties": {
+        "error": {"type": "string", "minLength": 1},
+        "text": {"type": "string"}
+      }
+    },
+    "skill.op.error": {
+      "version": 1,
+      "required": ["operation", "error"],
+      "properties": {
+        "operation": {"type": "string"},
+        "name": {"type": "string"},
+        "error": {"type": "string", "minLength": 1},
+        "text": {"type": "string"}
+      }
+    },
+    "skill.op.refused": {
+      "version": 1,
+      "required": ["operation", "reason"],
+      "properties": {
+        "operation": {"type": "string"},
+        "name": {"type": "string"},
+        "reason": {"type": "string", "minLength": 1},
+        "text": {"type": "string"}
+      }
+    },
+    "skill.proposal.rejected": {
+      "version": 1,
+      "required": ["operation", "reason"],
+      "properties": {
+        "operation": {"type": "string"},
+        "reason": {"type": "string", "minLength": 1},
+        "text": {"type": "string"}
+      }
+    },
+    "skill.distill.rejected": {
+      "version": 1,
+      "required": ["reason"],
+      "properties": {
+        "name": {"type": "string"},
+        "reason": {"type": "string", "minLength": 1},
+        "text": {"type": "string"}
+      }
+    },
+    "skill.revised": {
+      "version": 1,
+      "required": ["skill", "version", "previous_version_path"],
+      "properties": {
+        "skill_id": {"type": "string"},
+        "skill": {"type": "string", "minLength": 1},
+        "version": {"type": "integer", "minimum": 1},
+        "path": {"type": "string"},
+        "previous_version_path": {"type": "string", "minLength": 1},
+        "text": {"type": "string"}
+      }
+    },
+    "skill.use.recorded": {
+      "version": 1,
+      "required": ["skill_id", "skill_name", "task_fingerprint", "success"],
+      "properties": {
+        "skill_id": {"type": "string"},
+        "skill_name": {"type": "string", "minLength": 1},
+        "task_fingerprint": {"type": "string", "minLength": 1},
+        "success": {"type": "boolean"},
+        "successful_uses": {"type": "integer", "minimum": 0},
+        "failed_uses": {"type": "integer", "minimum": 0},
+        "text": {"type": "string"}
+      }
+    },
+    "skill.history.compressed": {
+      "version": 1,
+      "required": ["count", "keep_hot"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 1},
+        "keep_hot": {"type": "integer", "minimum": 0},
+        "paths": {"type": "array", "items": {"type": "string"}},
+        "truncated": {"type": "boolean"},
+        "bytes_before": {"type": "integer", "minimum": 0},
+        "bytes_after": {"type": "integer", "minimum": 0},
+        "bytes_saved": {"type": "integer", "minimum": 0},
+        "text": {"type": "string"}
+      }
+    },
+    "skill.evolution.completed": {
+      "version": 1,
+      "required": ["ops_proposed", "created", "updated", "archived", "rejected"],
+      "properties": {
+        "ops_proposed": {"type": "integer", "minimum": 0},
+        "created": {"type": "integer", "minimum": 0},
+        "updated": {"type": "integer", "minimum": 0},
+        "archived": {"type": "integer", "minimum": 0},
+        "rejected": {"type": "integer", "minimum": 0},
+        "compaction_clusters": {"type": "integer", "minimum": 0},
+        "compacted": {"type": "integer", "minimum": 0},
+        "history_compressed": {"type": "integer", "minimum": 0},
+        "history_bytes_saved": {"type": "integer", "minimum": 0},
+        "errors": {"type": "integer", "minimum": 0},
+        "project_skill_dir": {"type": "string"},
+        "global_skill_dir": {"type": "string"},
+        "project_skill_count": {"type": "integer", "minimum": 0},
+        "global_skill_count": {"type": "integer", "minimum": 0},
+        "text": {"type": "string"}
+      }
+    },
+    "wiki.initialized": {
+      "version": 1,
+      "required": ["project", "path", "auto"],
+      "properties": {
+        "project": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "auto": {"type": "boolean"},
+        "text": {"type": "string"}
+      }
+    },
+    "wiki.initialization.failed": {
+      "version": 1,
+      "required": ["workdir", "error"],
+      "properties": {
+        "workdir": {"type": "string", "minLength": 1},
+        "error": {"type": "string", "minLength": 1},
+        "text": {"type": "string"}
+      }
+    },
+    "wiki.hook.ok": {
+      "version": 1,
+      "required": ["project", "path", "sources_written", "scratch_written"],
+      "properties": {
+        "project": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "sources_written": {"type": "integer", "minimum": 0},
+        "scratch_written": {"type": "integer", "minimum": 0},
+        "text": {"type": "string"}
+      }
+    },
+    "wiki.hook.warning": {
+      "version": 1,
+      "required": ["operation", "error"],
+      "properties": {
+        "operation": {"type": "string"},
+        "error": {"type": "string", "minLength": 1},
+        "text": {"type": "string"}
+      }
+    },
+    "wiki.compacted": {
+      "version": 1,
+      "required": ["card_type", "page_id", "target_id"],
+      "properties": {
+        "card_type": {"type": "string"},
+        "page_id": {"type": "string", "minLength": 1},
+        "target_id": {"type": "string", "minLength": 1},
+        "retired_path": {"type": "string"},
+        "evidence_sources": {"type": "array", "items": {"type": "string"}},
+        "text": {"type": "string"}
+      }
+    },
+    "wiki.compact.error": {
+      "version": 1,
+      "required": ["error"],
+      "properties": {
+        "card_type": {"type": "string"},
+        "page_id": {"type": "string"},
+        "error": {"type": "string", "minLength": 1},
+        "text": {"type": "string"}
+      }
+    },
+    "wiki.created": {
+      "version": 1,
+      "required": ["page_id", "card_type", "path"],
+      "properties": {
+        "page_id": {"type": "string", "minLength": 1},
+        "card_type": {"type": "string"},
+        "title": {"type": "string"},
+        "status": {"type": "string"},
+        "path": {"type": "string", "minLength": 1},
+        "text": {"type": "string"}
+      }
+    },
+    "wiki.updated": {
+      "version": 1,
+      "required": ["page_id", "card_type", "path"],
+      "properties": {
+        "page_id": {"type": "string", "minLength": 1},
+        "card_type": {"type": "string"},
+        "title": {"type": "string"},
+        "status": {"type": "string"},
+        "path": {"type": "string", "minLength": 1},
+        "text": {"type": "string"}
+      }
+    },
+    "wiki.retired": {
+      "version": 1,
+      "required": ["page_id", "card_type"],
+      "properties": {
+        "page_id": {"type": "string", "minLength": 1},
+        "card_type": {"type": "string"},
+        "reason": {"type": "string"},
+        "text": {"type": "string"}
+      }
+    },
+    "wiki.source.created": {
+      "version": 1,
+      "required": ["source_id", "path"],
+      "properties": {
+        "source_id": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "text": {"type": "string"}
+      }
+    },
+    "wiki.source.skipped": {
+      "version": 1,
+      "required": ["source_id", "reason"],
+      "properties": {
+        "source_id": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "text": {"type": "string"}
+      }
+    },
+    "wiki.promotion.promoted": {
+      "version": 1,
+      "required": ["card_type", "page_id", "from_status", "to_status"],
+      "properties": {
+        "card_type": {"type": "string"},
+        "page_id": {"type": "string", "minLength": 1},
+        "from_status": {"type": "string"},
+        "to_status": {"type": "string"},
+        "references": {"type": "integer", "minimum": 0},
+        "successful_references": {"type": "integer", "minimum": 0},
+        "failed_references": {"type": "integer", "minimum": 0},
+        "text": {"type": "string"}
+      }
+    },
+    "wiki.promotion.demoted": {
+      "version": 1,
+      "required": ["card_type", "page_id", "from_status", "to_status"],
+      "properties": {
+        "card_type": {"type": "string"},
+        "page_id": {"type": "string", "minLength": 1},
+        "from_status": {"type": "string"},
+        "to_status": {"type": "string"},
+        "references": {"type": "integer", "minimum": 0},
+        "successful_references": {"type": "integer", "minimum": 0},
+        "failed_references": {"type": "integer", "minimum": 0},
+        "text": {"type": "string"}
+      }
+    },
+    "wiki.retired.compressed": {
+      "version": 1,
+      "required": ["count", "keep_hot"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 1},
+        "keep_hot": {"type": "integer", "minimum": 0},
+        "paths": {"type": "array", "items": {"type": "string"}},
+        "truncated": {"type": "boolean"},
+        "bytes_before": {"type": "integer", "minimum": 0},
+        "bytes_after": {"type": "integer", "minimum": 0},
+        "bytes_saved": {"type": "integer", "minimum": 0},
+        "text": {"type": "string"}
+      }
+    },
+    "wiki.evolution.completed": {
+      "version": 1,
+      "required": ["wiki_count"],
+      "properties": {
+        "wiki_count": {"type": "integer", "minimum": 0},
+        "ops_proposed": {"type": "integer", "minimum": 0},
+        "sources": {"type": "integer", "minimum": 0},
+        "scratch_pages": {"type": "integer", "minimum": 0},
+        "created": {"type": "integer", "minimum": 0},
+        "updated": {"type": "integer", "minimum": 0},
+        "retired": {"type": "integer", "minimum": 0},
+        "skipped": {"type": "integer", "minimum": 0},
+        "rejected": {"type": "integer", "minimum": 0},
+        "promoted": {"type": "integer", "minimum": 0},
+        "demoted": {"type": "integer", "minimum": 0},
+        "compaction_clusters": {"type": "integer", "minimum": 0},
+        "compacted": {"type": "integer", "minimum": 0},
+        "retired_compressed": {"type": "integer", "minimum": 0},
+        "retired_bytes_saved": {"type": "integer", "minimum": 0},
+        "errors": {"type": "integer", "minimum": 0},
+        "paths": {"type": "array", "items": {"type": "string"}},
+        "text": {"type": "string"}
+      }
+    },
+    "project.completed": {
+      "version": 1,
+      "required": ["vertical", "source", "required_gate", "evidence_refs", "from_state"],
+      "properties": {
+        "vertical": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1},
+        "required_gate": {"type": "string", "minLength": 1},
+        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+        "from_state": {"type": "string", "minLength": 1},
+        "agent_layer": {"type": "string"}
+      }
+    },
+    "project.completion_refused": {
+      "version": 1,
+      "required": ["vertical", "source", "required_gate", "reason"],
+      "properties": {
+        "vertical": {"type": "string", "minLength": 1},
+        "source": {"type": "string"},
+        "required_gate": {"type": "string"},
+        "reason": {"type": "string", "minLength": 1},
+        "agent_layer": {"type": "string"}
+      }
+    },
+    "research.achievement.certified": {
+      "version": 1,
+      "required": ["achievement_id", "title", "goal", "reviewer_certified"],
+      "properties": {
+        "achievement_id": {"type": "string", "minLength": 1},
+        "title": {"type": "string", "minLength": 1},
+        "goal": {"type": "string"},
+        "summary": {"type": "string"},
+        "evidence": {"type": "array", "items": {"type": "string"}},
+        "reviewer_certified": {"type": "boolean", "const": true}
+      }
+    },
+    "daemon.command.submitted": {
+      "version": 1,
+      "required": ["command_id", "operation", "revision"],
+      "properties": {
+        "command_id": {"type": "string", "minLength": 1},
+        "operation": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 0},
+        "expected_revision": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "daemon.command.completed": {
+      "version": 1,
+      "required": ["command_id", "operation", "status", "revision"],
+      "properties": {
+        "command_id": {"type": "string", "minLength": 1},
+        "operation": {"type": "string", "minLength": 1},
+        "status": {"type": "string", "enum": ["applied", "failed"]},
+        "revision": {"type": "integer", "minimum": 0},
+        "error": {"type": "string"},
+        "result": {"type": "object"}
+      }
+    },
+    "daemon.command.rejected": {
+      "version": 1,
+      "required": ["command_id", "operation", "status", "revision", "error"],
+      "properties": {
+        "command_id": {"type": "string", "minLength": 1},
+        "operation": {"type": "string", "minLength": 1},
+        "status": {"type": "string", "const": "rejected"},
+        "revision": {"type": "integer", "minimum": 0},
+        "error": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

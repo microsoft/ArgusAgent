@@ -1,0 +1,250 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { RELEASE_ID, RELEASE_SOURCE_DIGEST } from '../../../core/src/release.generated';
+import {
+  API_PROTOCOL,
+  REQUIRED_API_CAPABILITIES,
+  SNAPSHOT_SCHEMA_VERSION,
+} from '../../../core/src/protocol';
+
+const currentMeta = {
+  service: 'argus-skill-webapi',
+  protocol: { name: API_PROTOCOL.name, major: API_PROTOCOL.major, minor: API_PROTOCOL.minServerMinor },
+  snapshot_schema_version: SNAPSHOT_SCHEMA_VERSION,
+  capabilities: [...REQUIRED_API_CAPABILITIES],
+  runtime: {
+    package_version: '0.1.1',
+    source_root: '/checkout/argus-skill',
+    configured_source_root: '/checkout/argus-skill',
+    source_root_matches_config: true,
+    revision: 'abc123',
+    pid: 12,
+    python_version: '3.13.0',
+    executable: '/venv/bin/python',
+    started_at: '2026-07-11T00:00:00Z',
+    release_id: RELEASE_ID,
+    manifest_source_digest: RELEASE_SOURCE_DIGEST,
+    runtime_source_digest: RELEASE_SOURCE_DIGEST,
+    release_matches_source: true,
+  },
+};
+
+describe('web API protocol handshake', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.stubGlobal('window', { location: { search: '' } });
+    vi.stubGlobal('localStorage', { getItem: () => null });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('rejects an old backend before requesting projects', async () => {
+    const fetchMock = vi.fn(async () => new Response('not found', { status: 404 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { api } = await import('../api');
+
+    await expect(api.listProjects()).rejects.toThrow(/does not expose \/api\/meta/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('performs one compatible handshake before project reads', async () => {
+    const fetchMock = vi.fn(async (path: string, _init?: RequestInit) => {
+      const body = path === '/api/meta' ? currentMeta : { projects: [] };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { api } = await import('../api');
+
+    await expect(api.listProjects()).resolves.toEqual([]);
+    await expect(api.listProjects()).resolves.toEqual([]);
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      '/api/meta',
+      '/api/projects',
+      '/api/projects',
+    ]);
+  });
+
+  it('allows source drift, warns, and still requests projects', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const driftedMeta = {
+      ...currentMeta,
+      runtime: {
+        ...currentMeta.runtime,
+        release_matches_source: false,
+        runtime_source_digest: 'deadbeef',
+      },
+    };
+    const fetchMock = vi.fn(async (path: string, _init?: RequestInit) => {
+      const body = path === '/api/meta' ? driftedMeta : { projects: [] };
+      return Response.json(body);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { api } = await import('../api');
+
+    await expect(api.listProjects()).resolves.toEqual([]);
+    expect(warning).toHaveBeenCalledWith(expect.stringMatching(
+      /source differs from its release manifest/,
+    ));
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      '/api/meta',
+      '/api/projects',
+    ]);
+  });
+
+  it('passes cancellation signals to project reads', async () => {
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify({ events: [] }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    const { api } = await import('../api');
+    const controller = new AbortController();
+
+    await expect(api.events('s-test', 120, controller.signal)).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/projects/s-test/events?limit=120&view=ui',
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+
+  it('posts mission aborts to the mission abort endpoint with the reason body', async () => {
+    const reason = 'operator asked to stop';
+    const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
+      expect(path).toBe('/api/projects/s-test/mission/abort');
+      expect(init).toMatchObject({
+        method: 'POST',
+        headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
+      });
+      expect(JSON.parse(String(init?.body))).toEqual({ reason });
+      return Response.json({
+        requested: true,
+        item_id: 'item-1',
+        message: 'Stop requested for running task item-1.',
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { api } = await import('../api');
+
+    await expect(api.abortMission('s-test', reason)).resolves.toEqual({
+      requested: true,
+      item_id: 'item-1',
+      message: 'Stop requested for running task item-1.',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries one malformed HTTP daemon create with the same command id', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (_path: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+      if (bodies.length === 1) {
+        return new Response('Invalid HTTP request received.', { status: 400 });
+      }
+      return Response.json({
+        sid: 's-retried', rc: 0, daemon: { alive: false }, objective: '',
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { api } = await import('../api');
+
+    await expect(api.createDaemon('', 'Retry create', '/workspace/output')).resolves.toMatchObject({
+      sid: 's-retried',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(bodies[0].command_id).toBe(bodies[1].command_id);
+    expect(bodies[0].workdir).toBe('/workspace/output');
+    expect(bodies[0]).not.toHaveProperty('launch_cwd');
+  });
+
+  it('wires the complete Web administration surface', async () => {
+    const fetchMock = vi.fn(async (path: string, _init?: RequestInit) => {
+      if (path === '/api/metrics') return Response.json({ slo: { status: 'healthy' } });
+      if (path.startsWith('/api/trash?')) return Response.json({ entries: [], total: 0 });
+      if (path.endsWith('/plan')) return Response.json({ steps: [], notes: [], error: '' });
+      if (path.endsWith('/skills')) return Response.json({ text: 'skills' });
+      return Response.json({ ok: true, rc: 0, sid: 's-restored' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { api } = await import('../api');
+
+    await api.metrics();
+    await api.trash();
+    await api.previewPlan('s-test', 'inspect');
+    await api.setConfig('s-test', 'manager_model', 'gpt-5.6-sol');
+    await api.setBudgets('s-test', {
+      per_mission_cap: '20',
+      daily_cap: '60',
+      global_daily_cap: '120',
+      codex_daily_requests: '400',
+      copilot_daily_requests: '800',
+      copilot_daily_premium: '300',
+    });
+    await api.setIdentity('s-test', 'operator');
+    await api.resetManager('s-test');
+    await api.skills('s-test', 'ls');
+    await api.setLaunchCwd('s-test', '/workspace');
+    await api.setWorkdir('s-test', '/workspace');
+    await api.replaceDaemon('s-test', 's-victim');
+    await api.upgradeDaemon('s-test');
+    await api.restoreTrash('0:projects_trash/20260712/s-old');
+
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      '/api/metrics',
+      '/api/trash?query=&limit=100&offset=0',
+      '/api/projects/s-test/plan',
+      '/api/projects/s-test/config/set',
+      '/api/projects/s-test/config/budget',
+      '/api/projects/s-test/identity',
+      '/api/projects/s-test/reset',
+      '/api/projects/s-test/skills',
+      '/api/projects/s-test/launch-cwd',
+      '/api/projects/s-test/workdir',
+      '/api/projects/s-test/daemon/replace',
+      '/api/projects/s-test/daemon/upgrade',
+      '/api/trash/0%3Aprojects_trash%2F20260712%2Fs-old/restore',
+    ]);
+    const replaceBody = JSON.parse(String(fetchMock.mock.calls[10][1]?.body));
+    expect(replaceBody).toMatchObject({ victim_sid: 's-victim', resume_continuous: false });
+  });
+
+  it('rejects HTTP-successful daemon command failures', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      rc: 2,
+      command_status: 'rejected',
+      error: 'stale command revision',
+    })));
+    const { api } = await import('../api');
+
+    await expect(api.startDaemon('s-test', 1)).rejects.toThrow(
+      'stale command revision',
+    );
+    await expect(api.stopDaemon('s-test', true, 1)).rejects.toThrow(
+      'stale command revision',
+    );
+    await expect(api.upgradeDaemon('s-test', 1)).rejects.toThrow(
+      'stale command revision',
+    );
+  });
+
+  it('message endpoint returns dispatch ack reply for task results', async () => {
+    const taskResult = {
+      kind: 'task',
+      reply: 'executor started',
+      daemon: { rc: 0, pid: 42 },
+      daemon_alive: false,
+      item: { id: 'item-1', title: 'test task' },
+    };
+    const fetchMock = vi.fn(async (path: string) => {
+      if (path === '/api/meta') return Response.json(currentMeta);
+      return Response.json(taskResult);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { api } = await import('../api');
+
+    const result = await api.message('s-test', 'do something');
+    expect(result.reply).toBe('executor started');
+    expect(result.kind).toBe('task');
+  });
+});

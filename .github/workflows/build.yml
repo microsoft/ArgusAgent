@@ -1,0 +1,63 @@
+name: Build and verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  wheel:
+    name: Python wheel
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install source and build tools
+        run: |
+          python -m pip install --upgrade pip build pytest packaging
+          python -m pip install -e .
+
+      - name: Run focused contract tests
+        run: |
+          python -m pytest -q \
+            tests/scripts/test_build_release.py \
+            tests/scripts/test_install_contract.py \
+            tests/core/test_backend_readiness.py \
+            tests/planner/test_bounded_dag.py \
+            tests/test_pi_backend.py \
+            tests/test_reviewer_named_contract.py \
+            tests/apps/test_tui_launcher.py \
+            tests/core/test_release.py
+
+      - name: Build wheel
+        run: python -m build --wheel --outdir dist-wheel
+
+      - name: Verify clean wheel install
+        run: |
+          python -m venv "$RUNNER_TEMP/argus-wheel-smoke"
+          "$RUNNER_TEMP/argus-wheel-smoke/bin/python" -m pip install \
+            --disable-pip-version-check \
+            --no-input \
+            dist-wheel/*.whl
+          "$RUNNER_TEMP/argus-wheel-smoke/bin/python" -c \
+            'import argus_skill; print("argus_skill import passed")'
+          "$RUNNER_TEMP/argus-wheel-smoke/bin/argus" --version
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: argus-wheel
+          path: dist-wheel/*.whl
+          if-no-files-found: error
+          retention-days: 7

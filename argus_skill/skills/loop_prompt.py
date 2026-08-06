@@ -1,0 +1,95 @@
+"""Prompt/context assembly phase for ``SkillLoop.run``.
+
+Owns building the per-round Engineer prompt: the static Effective Task
+Contract + skill playbook + original-request + current-task scaffold
+(``_build_engineer_prompt``), plus draining any live Manager/operator
+steering guidance on top of it (``_build_round_prompt``, extracted
+verbatim from the historical ``build_prompt`` closure).
+"""
+from __future__ import annotations
+
+import logging
+
+from ..core.event_catalog import EventType
+from .loop_state import MissionContext, SkillLibraryState
+
+log = logging.getLogger(__name__)
+
+
+def _resolve_project_skill_dir(skill_store: object) -> str | None:
+    """Return the Engineer-owned project Skill directory."""
+    from .role_memory import project_role_skill_dir
+
+    value = project_role_skill_dir(skill_store, "engineer")
+    return str(value) if value is not None else None
+
+
+class PromptContextMixin:
+    """Prompt-assembly phase methods for ``SkillLoop``."""
+
+    def _build_round_prompt(self, mission: MissionContext, state: SkillLibraryState, next_action: str | None, include_static: bool = True) -> str:
+        prompt = self._build_engineer_prompt(
+            task=mission.task,
+            skill_text=state.skill_text,
+            next_action=next_action,
+            original_request=mission.request_anchor,
+            include_static=include_static,
+            role_banner=mission.engineer_role_banner,
+            require_post_task_learning=self.config.require_post_task_learning,
+            file_read_budget=self.config.engineer_file_read_budget,
+            test_run_budget=self.config.engineer_test_run_budget,
+            project_root=mission.workdir,
+            project_skill_dir=_resolve_project_skill_dir(self.skill_store),
+        )
+        guidance: list[str] = []
+        if self.extra_guidance_provider is not None:
+            try:
+                guidance = [
+                    str(item).strip()
+                    for item in self.extra_guidance_provider()
+                    if str(item).strip()
+                ]
+            except Exception:  # noqa: BLE001 — steering must fail soft
+                log.exception("live Manager guidance provider failed")
+        if not guidance:
+            return prompt
+        self._emit({
+            "type": EventType.LIFE_INBOX_DRAINED,
+            "count": len(guidance),
+            "messages": guidance,
+            "source": "engineer_round",
+        })
+        from ..roles.prompts.engineer import append_live_guidance
+
+        return append_live_guidance(prompt, guidance)
+
+    @staticmethod
+    def _build_engineer_prompt(
+        *,
+        task: str,
+        skill_text: str,
+        next_action: str | None,
+        original_request: str = "",
+        include_static: bool = True,
+        role_banner: str = "",
+        require_post_task_learning: bool = False,
+        file_read_budget: int = 12,
+        test_run_budget: int = 3,
+        project_root=None,
+        project_skill_dir: str | None = None,
+    ) -> str:
+        from ..roles.prompts.engineer import build_mission_prompt
+
+        return build_mission_prompt(
+            task=task,
+            skill_text=skill_text,
+            next_action=next_action,
+            original_request=original_request,
+            include_static=include_static,
+            role_banner=role_banner,
+            require_post_task_learning=require_post_task_learning,
+            file_read_budget=file_read_budget,
+            test_run_budget=test_run_budget,
+            project_root=project_root,
+            project_skill_dir=project_skill_dir,
+        )
