@@ -82,8 +82,11 @@ human cohort, or systems measurement.
 0. **Build the project research platform.** The Engineer may create the
    project-local environment, data/model bindings, evaluator, runner, telemetry,
    and teardown tooling needed by the research question. Run the real entrypoint
-   on the smallest faithful case and retain its native output. Platform failures
-   route back to Engineer repair and are not evidence about the scientific idea.
+   on the smallest faithful case and retain its native output, but label that run
+   plumbing-only. Before claim-bearing execution, query the live model catalog and
+   move to the current-generation backbone selected in the plan; a cached or familiar
+   previous-generation model cannot become headline evidence by inertia. Platform
+   failures route back to Engineer repair and are not evidence about the scientific idea.
 1. **Smoke the real path.** Run the smallest faithful end-to-end public-data or
    official-evaluator check that catches wiring errors.
 2. **Execute the preregistered comparison.** Keep data, metric, compute, and

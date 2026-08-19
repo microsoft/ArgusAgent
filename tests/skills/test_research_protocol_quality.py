@@ -161,6 +161,25 @@ def test_research_selector_prioritizes_frontier_ambition_over_local_ease() -> No
     )
 
 
+def test_research_plan_and_run_require_current_generation_backbone() -> None:
+    plan = {item.id: item.statement for item in STAGE_CHECKLISTS["plan"]}
+    benchmark = {item.id: item.statement for item in STAGE_CHECKLISTS["benchmark"]}
+    run = {item.id: item.statement for item in STAGE_CHECKLISTS["run"]}
+    runner = _skill("engineer/research-experiment-runner.md")
+    results_review = _skill("reviewer/experiment-results-review.md")
+
+    assert "current open model generation" in plan["plan.backbone"]
+    assert "live model catalog" in plan["plan.backbone"]
+    assert "never the primary publication evidence" in plan["plan.backbone"]
+    assert "current-generation headline model" in benchmark["benchmark.backbone"]
+    assert "actually execute" in run["run.backbone"]
+    assert "plumbing-only" in runner
+    assert "cannot become headline evidence by inertia" in runner
+    assert "Do not accept it as headline evidence" in " ".join(
+        results_review.split()
+    )
+
+
 def test_literature_grounding_advises_ai_and_foundation_balance() -> None:
     discovery = " ".join(_skill("engineer/idea-discovery.md").split())
     pipeline = " ".join(_skill("engineer/auto-research-pipeline.md").split())

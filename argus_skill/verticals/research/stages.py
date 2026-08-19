@@ -132,6 +132,24 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
     ),
     "plan": _checklist(
         ChecklistItem(
+            id="plan.backbone",
+            statement=(
+                "For model-backed experiments, select the headline backbone from a "
+                "current open model generation after checking the live model catalog, "
+                "release dates, architecture, context support, and relevant leaderboard "
+                "or official evaluations. Record exact org/model id, release date, "
+                "parameter count, attention/KV architecture, and why it tests this claim. "
+                "Previous-generation models may be plumbing or compatibility baselines, "
+                "never the primary publication evidence merely because they are cached, "
+                "familiar, or easy to fit. Read `argus_builtin_skills/engineer/"
+                "training-infrastructure-guide.md` before locking the plan."
+            ),
+            evidence_hint=(
+                "research/INFRA_CHOICE.md + research/EXPERIMENT_PLAN.md model table "
+                "with dated current-generation comparison"
+            ),
+        ),
+        ChecklistItem(
             id="plan.experiment",
             statement=(
                 "Experiment plan states the hypothesis, the proposed method, the "
@@ -193,6 +211,15 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
         ),
     ),
     "benchmark": _checklist(
+        ChecklistItem(
+            id="benchmark.backbone",
+            statement=(
+                "The real benchmark path loads the current-generation headline model "
+                "locked in plan.backbone. Legacy/small-model plumbing remains labeled "
+                "non-headline and cannot substitute for the current model run."
+            ),
+            evidence_hint="run manifest model revision + research/INFRA_CHOICE.md",
+        ),
         ChecklistItem(
             id="benchmark.environment_preflight",
             statement=(
@@ -266,6 +293,16 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
         ),
     ),
     "run": _checklist(
+        ChecklistItem(
+            id="run.backbone",
+            statement=(
+                "Headline result artifacts identify and actually execute the planned "
+                "current-generation backbone. If the live catalog has materially moved "
+                "since planning, refresh the choice before expensive reruns. Older-model "
+                "results remain compatibility evidence, not the paper's main result."
+            ),
+            evidence_hint="experiment manifests + model revision/release metadata",
+        ),
         ChecklistItem(
             id="run.environment_preflight",
             statement=(
