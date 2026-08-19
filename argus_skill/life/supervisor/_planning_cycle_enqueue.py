@@ -74,6 +74,13 @@ def _research_stage_ready_for_close(
             or str(pipeline.get("current_stage") or "").strip() != "research"
         ):
             return False
+        selection = evidence_root / "research" / "IDEA_SELECTION.json"
+        positioning = evidence_root / "paper" / "novelty_audit.md"
+        grounding = evidence_root / "research" / "LITERATURE_GROUNDING.json"
+        if not selection.is_file() or not (
+            positioning.is_file() or grounding.is_file()
+        ):
+            return False
         definition = load_vertical("research", project_root=state_root)
         return not vertical_stage_completion_issues(
             definition,
@@ -313,12 +320,24 @@ class PlanningCycleEnqueueMixin:
         state_reader = getattr(self, "_artifact_root", None)
         state_root = state_reader() if callable(state_reader) else Path(context_root)
         auto_close_research = (
-            len(planned_tasks) == 1
-            and _research_stage_ready_for_close(
+            _research_stage_ready_for_close(
                 state_root=Path(state_root),
                 evidence_root=Path(context_root).resolve(),
             )
         )
+        if auto_close_research:
+            try:
+                from ...skills.stage_machine import advance_stage
+
+                advance_stage(
+                    state_root,
+                    target_stage="plan",
+                    reason="selected research target and positioning are complete",
+                    advanced_by="manager:auto_completion",
+                    evidence_root=Path(context_root).resolve(),
+                )
+            except Exception:  # noqa: BLE001 - normal Manager planning remains available
+                log.debug("automatic research stage advance failed", exc_info=True)
         for task in planned_tasks:
             task = replace(task, context_refs=[], execution_workdir="")
             sanitized_title = _sanitize_planner_task_text(task.title)
@@ -379,7 +398,6 @@ class PlanningCycleEnqueueMixin:
                 canonical_scope == PLANNER_SCOPE_FINAL_SUBMISSION
                 or getattr(task, "stage_repair", False)
                 or _stage_closing_forced()
-                or auto_close_research
             )
             canonical_require_review = (
                 canonical_stage_closing or _independent_review_forced()
