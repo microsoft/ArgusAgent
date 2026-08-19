@@ -39,6 +39,7 @@ OPEN_ENDED_PROJECT_DONE_ERROR = (
     "delegate the next distinct task or report an explicit wait"
 )
 PLANNER_SUPERSEDED_ERROR = "planner superseded by newer continuous generation"
+MISSING_STAGE_DECISION_ERROR = "planner staged decision requires advance_to_stage"
 _PLANNER_REPAIR_ATTEMPTS = 1
 _PLANNER_REPAIR_TEXT_LIMIT = 8000
 _FORBIDDEN_BINARY_OUTCOME = re.compile(
@@ -70,6 +71,8 @@ class PlannerConfig:
     role_session_path: Path | None = None
     objective_revision: str = ""
     on_event: Any = None
+    require_stage_decision: bool = False
+    current_stage: str = ""
 
 
 @dataclass(frozen=True)
@@ -346,12 +349,24 @@ class Planner:
             )
         verdict = parse_planner_text(text)
         rejection = verdict.error
+        if (
+            not rejection
+            and cfg.require_stage_decision
+            and verdict.new_tasks
+            and not verdict.advance_to_stage
+        ):
+            rejection = (
+                f"{MISSING_STAGE_DECISION_ERROR}; set it to "
+                f"{cfg.current_stage!r} or a later canonical stage"
+            )
         open_ended_done = bool(cfg.open_ended and verdict.project_done)
         if open_ended_done:
             rejection = OPEN_ENDED_PROJECT_DONE_ERROR
         repairable_metadata_error = str(rejection or "").startswith(
             ("invalid planner task metadata:", "planner task ")
-        ) or rejection == INVALID_DEPENDENCY_IDENTIFIER_ERROR
+        ) or rejection == INVALID_DEPENDENCY_IDENTIFIER_ERROR or str(
+            rejection or ""
+        ).startswith(MISSING_STAGE_DECISION_ERROR)
         if (
             rejection == NO_CONCRETE_TASKS_ERROR
             or rejection == FORBIDDEN_BARE_VERDICT_ERROR
@@ -368,6 +383,9 @@ class Planner:
                 planning_cycle=planning_cycle,
                 resume_thread_id=repair_thread_id,
                 open_ended=bool(cfg.open_ended),
+                required_stage=(
+                    cfg.current_stage if cfg.require_stage_decision else ""
+                ),
             )
         return verdict
 
@@ -432,6 +450,7 @@ class Planner:
         planning_cycle: int,
         resume_thread_id: str,
         open_ended: bool = False,
+        required_stage: str = "",
     ) -> PlannerVerdict:
         """Retry one malformed Planner decision without inventing work."""
         last_error = previous_error
@@ -473,15 +492,26 @@ class Planner:
                 )
                 continue
             repaired = parse_planner_text(text)
+            missing_stage = bool(
+                required_stage
+                and repaired.new_tasks
+                and not repaired.advance_to_stage
+            )
             if (
                 not repaired.error
                 and not (open_ended and repaired.project_done)
+                and not missing_stage
             ):
                 return repaired
             last_error = (
                 OPEN_ENDED_PROJECT_DONE_ERROR
                 if open_ended and repaired.project_done
-                else repaired.error
+                else (
+                    f"{MISSING_STAGE_DECISION_ERROR}; set it to "
+                    f"{required_stage!r} or a later canonical stage"
+                    if missing_stage
+                    else repaired.error
+                )
             )
         return PlannerVerdict(
             project_done=False,

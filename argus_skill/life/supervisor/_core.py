@@ -395,6 +395,18 @@ class LifeSupervisor(
 
         workdir = self._planner_workdir()
         state_root = Path(self.memory.root)
+        try:
+            from ...core.pipeline_state import read_pipeline_state
+
+            pipeline = read_pipeline_state(state_root)
+        except Exception:  # noqa: BLE001 - non-staged projects keep legacy behavior
+            pipeline = None
+        current_pipeline_stage = (
+            str(pipeline.get("current_stage") or "").strip()
+            if isinstance(pipeline, dict)
+            and str(pipeline.get("vertical") or "").strip()
+            else ""
+        )
         return PlannerConfig(
             model=resolve_role_model("planner", role_env="ARGUS_SKILL_PLAN_MODEL")
             or self.reviewer_model,
@@ -414,6 +426,8 @@ class LifeSupervisor(
                 f"{objective_revision(expected.objective)}"
             ),
             on_event=getattr(self.sink, "handle_event", None),
+            require_stage_decision=bool(current_pipeline_stage),
+            current_stage=current_pipeline_stage,
         )
 
     # ------------------------------------------------------------------
