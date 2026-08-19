@@ -169,12 +169,7 @@ def read_copilot_usage_since(
 ) -> CopilotCallUsage | None:
     if cursor is None or not session_id:
         return None
-    changed = (
-        _signature(cursor.db_path) != cursor.db_signature
-        or _signature(cursor.db_path.with_name(cursor.db_path.name + "-wal"))
-        != cursor.wal_signature
-    )
-    deadline = time.monotonic() + (timeout if changed else 0.0)
+    deadline = time.monotonic() + max(0.0, timeout)
     stable_reads = 0
     last_ids: tuple[int, ...] = ()
     while True:

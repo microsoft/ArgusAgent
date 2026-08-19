@@ -244,6 +244,22 @@ def _create_frontend_dependency_link(source: Path, target: Path) -> str:
         return "junction"
 
 
+def _maintenance_release_build_required(paths: set[str]) -> bool:
+    """Return whether a maintenance patch changes generated release inputs."""
+    release_exact = {
+        "argus_skill/core/event_payload_schemas.json",
+        "argus_skill/release.py",
+        "argus_skill/release_manifest.json",
+    }
+    return any(
+        path in release_exact
+        or path.startswith("frontend/")
+        or path.startswith("desktop/")
+        or path.startswith("argus_skill/release_tools/")
+        for path in paths
+    )
+
+
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
@@ -1512,26 +1528,40 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
             # files through git ls-files. The generated manifest itself is excluded
             # from that digest.
             _run(["git", "add", "-A"], cwd=worktree)
-            dependency_root = self._dependency_source_root(state)
-            with _frontend_dependency_links(dependency_root, worktree):
-                _run(
-                    [sys.executable, "-m", "argus_skill.release_tools.build_release"],
-                    cwd=worktree,
-                    timeout=300.0,
-                )
-            validate_generated_outputs()
-            _run(["git", "add", "-A"], cwd=worktree)
+            release_artifacts_built = _maintenance_release_build_required(
+                initial_changed
+            )
+            if release_artifacts_built:
+                dependency_root = self._dependency_source_root(state)
+                with _frontend_dependency_links(dependency_root, worktree):
+                    _run(
+                        [
+                            sys.executable,
+                            "-m",
+                            "argus_skill.release_tools.build_release",
+                        ],
+                        cwd=worktree,
+                        timeout=300.0,
+                    )
+                validate_generated_outputs()
+                _run(["git", "add", "-A"], cwd=worktree)
             outside = unauthorized(changed_paths())
             if outside:
                 raise ValueError(
                     "maintenance changed paths outside Manager authorization: "
                     + ", ".join(outside)
                 )
-            _run(
-                [sys.executable, "-m", "argus_skill.release_tools.generate_manifest", "--check"],
-                cwd=worktree,
-                timeout=120.0,
-            )
+            if release_artifacts_built:
+                _run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "argus_skill.release_tools.generate_manifest",
+                        "--check",
+                    ],
+                    cwd=worktree,
+                    timeout=120.0,
+                )
             _run(["git", "diff", "--check", base_revision], cwd=worktree)
             staged = _run(
                 ["git", "diff", "--cached", "--quiet"],
@@ -1620,6 +1650,7 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
             failed_repair_revision="",
             failed_repair_paths=[],
             failed_repair_attempts=0,
+            release_artifacts_built=release_artifacts_built,
             error="",
         )
         return worktree
@@ -1796,14 +1827,20 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
             return False
         if actual_commit != expected_commit or clean:
             return False
-        try:
-            _run(
-                [sys.executable, "-m", "argus_skill.release_tools.generate_manifest", "--check"],
-                cwd=candidate,
-                timeout=120.0,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return False
+        if bool(state.get("release_artifacts_built", True)):
+            try:
+                _run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "argus_skill.release_tools.generate_manifest",
+                        "--check",
+                    ],
+                    cwd=candidate,
+                    timeout=120.0,
+                )
+            except (OSError, subprocess.SubprocessError):
+                return False
         return True
 
     def failed_start_rollback_candidate(

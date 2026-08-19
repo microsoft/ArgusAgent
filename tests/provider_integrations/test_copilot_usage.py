@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -101,6 +103,47 @@ def test_reads_exact_rows_added_after_cursor(tmp_path: Path, monkeypatch) -> Non
     assert usage.cache_write_tokens == 300
     assert usage.reasoning_tokens == 7
     assert usage.cost_usd == pytest.approx(0.08099)
+
+
+def test_read_waits_for_delayed_usage_row_even_when_store_initially_unchanged(
+    tmp_path: Path, monkeypatch
+) -> None:
+    home = tmp_path / "copilot"
+    path = _db(home)
+    monkeypatch.setenv("COPILOT_HOME", str(home))
+    cursor = capture_copilot_usage_cursor()
+    assert cursor is not None and cursor.max_id == 0
+
+    inserted = threading.Event()
+
+    def insert_later() -> None:
+        time.sleep(0.1)
+        _insert(
+            path,
+            session="session-1",
+            model="gpt-5.6-sol",
+            created_at="2026-07-11T10:00:00Z",
+            input_tokens=20,
+            output_tokens=3,
+            cache_read_tokens=10,
+            total_nano_aiu=2_000_000_000,
+        )
+        inserted.set()
+
+    thread = threading.Thread(target=insert_later)
+    thread.start()
+    try:
+        usage = read_copilot_usage_since(cursor, session_id="session-1", timeout=1.0)
+    finally:
+        thread.join(timeout=1.0)
+
+    assert inserted.is_set()
+    assert usage is not None
+    assert usage.model == "gpt-5.6-sol"
+    assert usage.input_tokens == 20
+    assert usage.cache_read_tokens == 10
+    assert usage.output_tokens == 3
+    assert usage.cost_usd == pytest.approx(0.02)
 
 
 def test_cursor_survives_store_created_by_new_copilot_process(

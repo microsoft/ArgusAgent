@@ -247,6 +247,21 @@ def test_frontend_dependency_links_are_temporary(tmp_path: Path) -> None:
     assert not (worktree / "frontend/tui/node_modules").exists()
 
 
+def test_backend_only_maintenance_does_not_require_release_build() -> None:
+    assert not self_maintenance_mod._maintenance_release_build_required(
+        {
+            "argus_skill/provider_integrations/copilot_usage.py",
+            "tests/provider_integrations/test_copilot_usage.py",
+        }
+    )
+    assert self_maintenance_mod._maintenance_release_build_required(
+        {"frontend/web/src/main.tsx"}
+    )
+    assert self_maintenance_mod._maintenance_release_build_required(
+        {"argus_skill/core/event_payload_schemas.json"}
+    )
+
+
 def _controller(tmp_path: Path, manager: _Manager) -> DaemonSelfMaintenance:
     memory = LifeMemory.open(tmp_path / "life")
     memory.init()
@@ -1635,16 +1650,7 @@ def test_publication_stages_new_files_and_preserves_repository_identity(
         text=True,
     ).stdout.strip()
     assert author == "seed <seed@example.com>"
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "argus_skill.release_tools.generate_manifest",
-            "--check",
-        ],
-        cwd=repo,
-        check=True,
-    )
+    assert controller._state()["release_artifacts_built"] is False
 
 
 def test_publication_cleans_ignored_worktree_artifacts(tmp_path: Path) -> None:
