@@ -319,6 +319,30 @@ class PlanningCycleEnqueueMixin:
         context_root = self._project_workdir()
         state_reader = getattr(self, "_artifact_root", None)
         state_root = state_reader() if callable(state_reader) else Path(context_root)
+        requested_stage = str(
+            getattr(state.verdict, "advance_to_stage", "") or ""
+        ).strip()
+        if requested_stage:
+            try:
+                from ...skills.stage_machine import advance_stage, current_stage
+
+                if requested_stage != current_stage(state_root):
+                    advance_stage(
+                        state_root,
+                        target_stage=requested_stage,
+                        reason=state.verdict.reason or "Planner requested stage advance",
+                        advanced_by="manager:planner_request",
+                        evidence_root=Path(context_root).resolve(),
+                    )
+            except Exception as exc:  # noqa: BLE001 - invalid requests replan safely
+                self._emit({
+                    "type": EventType.LIFE_PLANNER_TASK_SKIPPED,
+                    "cycle": self._planning_cycles,
+                    "skip_category": "invalid_stage_transition_request",
+                    "reason": f"{type(exc).__name__}: {exc}",
+                    "requested_stage": requested_stage,
+                })
+                return PLAN_RETRY
         auto_close_research = (
             _research_stage_ready_for_close(
                 state_root=Path(state_root),

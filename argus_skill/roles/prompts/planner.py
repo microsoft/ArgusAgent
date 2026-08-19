@@ -28,7 +28,8 @@ OPERATIONS = frozenset(
 
 _PLANNER_DECISION_EVENT = decision_event_instruction(
     "planner",
-    '{"project_done":false,"reason":"why","tasks":[{"key":"task-key",'
+    '{"project_done":false,"reason":"why","advance_to_stage":"run",'
+    '"tasks":[{"key":"task-key",'
     '"deps":[],"title":"title","objective":"work and decisive check"}]}',
 )
 
@@ -56,10 +57,11 @@ commands, tests, and iteration.
 - `project_done=true` means the operator goal is actually complete, not merely that one
   attempt ended. Integrity and reproducibility are admission constraints, not a routing command.
   Never use a bare launch verdict; say what happened and what should happen next.
-- The decision payload contains `project_done`, `reason`, and `tasks`. Each task uses
-  `key`, `deps`, `title`, `objective`, and optional `acceptance_check`,
-  `parallel_safe`, `owns_paths`, and `vertical`. Omit `vertical` to inherit the
-  campaign route; set it only when another existing role clearly fits this node.
+- Payload fields: `project_done`, `reason`, `tasks`, and optional
+  `advance_to_stage`. Set it to the exact later canonical stage when these tasks
+  belong there; omit it otherwise. Host validates it. Task fields: `key`, `deps`,
+  `title`, `objective`, and optional `acceptance_check`, `parallel_safe`,
+  `owns_paths`, and `vertical`; omit `vertical` to inherit the campaign route.
 - For a real external blocker, use `waiting` with `blocker_fingerprint`,
   `recheck_condition`, and `recheck_token`; add `operator_action_required=true`
   only when the operator must act. Never poll a watched durable task; use
