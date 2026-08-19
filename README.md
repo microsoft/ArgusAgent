@@ -10,7 +10,7 @@
 
 Long-running agent work that can plan, execute, verify, pause, and continue beyond a single model turn.
 
-**Preview v0.1.2 · Official Microsoft open-source preview.**
+**Argus v0.1.2 · Official Microsoft open-source release.**
 
 [![GitHub Stars](https://img.shields.io/github/stars/microsoft/ArgusAgent?style=flat-square)](https://github.com/microsoft/ArgusAgent/stargazers)
 [![License](https://img.shields.io/github/license/microsoft/ArgusAgent?style=flat-square)](LICENSE)
@@ -24,6 +24,13 @@ Long-running agent work that can plan, execute, verify, pause, and continue beyo
 </div>
 
 ---
+
+> [!IMPORTANT]
+> **Repository status:** This is the official Argus release repository. Preview
+> updates are published at
+> **[lbx154/Argus](https://github.com/lbx154/Argus)**. Updates are synchronized
+> between both repositories; Watch or Star either repository to follow the
+> project.
 
 ## What is Argus?
 
