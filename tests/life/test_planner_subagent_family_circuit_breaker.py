@@ -157,6 +157,40 @@ def _flat_verdict_kv(*tasks: tuple[str, str, str]) -> str:
     return "\n".join(lines)
 
 
+def test_planner_structured_stage_request_advances_before_enqueue(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    pipeline = project_root / ".argus" / "PIPELINE_STATE.json"
+    pipeline.parent.mkdir(parents=True)
+    pipeline.write_text(
+        json.dumps({"vertical": "research", "current_stage": "plan"}),
+        encoding="utf-8",
+    )
+    supervisor = _make_supervisor(
+        tmp_path,
+        monkeypatch,
+        "\n".join(
+            [
+                "PROJECT_DONE=false",
+                "REASON=run the real benchmark next",
+                "ADVANCE_TO_STAGE=benchmark",
+                "TASK_KEY=benchmark",
+                "TASK_TITLE=Run real benchmark",
+                "TASK_OBJECTIVE=Execute the real public benchmark.",
+            ]
+        ),
+        project_worktree=project_root,
+    )
+    supervisor.config.project_state_dir = project_root
+
+    assert supervisor._plan_next_work() is True
+    assert json.loads(pipeline.read_text())["current_stage"] == "benchmark"
+    item = supervisor.memory.backlog.all()[0]
+    assert "stage:benchmark" in item.tags
+
+
 def test_missing_parent_context_ref_is_dropped_without_rejecting_batch(
     tmp_path,
     monkeypatch,

@@ -166,6 +166,7 @@ class PlannerVerdict:
     waiting: bool = False
     waiting_reason: str = ""
     waiting_contract: WaitingContract | None = None
+    advance_to_stage: str = ""
 
 
 class Planner:
@@ -502,6 +503,7 @@ _GLOBAL_KEY_VALUE_KEYS = (
     "STATUS",
     "REASON",
     "SUMMARY",
+    "ADVANCE_TO_STAGE",
     "WAITING",
     "WAITING_REASON",
     "BLOCKER_FINGERPRINT",
@@ -737,7 +739,8 @@ def _build_no_task_repair_prompt(
         "should happen next.\n\n"
         + decision_event_instruction(
             "planner",
-            '{"project_done":false,"reason":"why","tasks":[{"key":"task-key",'
+            '{"project_done":false,"reason":"why","advance_to_stage":"run",'
+            '"tasks":[{"key":"task-key",'
             '"deps":[],"title":"title","objective":"work and decisive check"}]}',
         )
         + "\n\n"
@@ -770,6 +773,7 @@ def parse_planner_text(text: str) -> PlannerVerdict:
     values, task_rows = _planner_key_values(text)
     project_done = _parse_completion_bool(values)
     reason = values.get("REASON") or values.get("SUMMARY") or ""
+    advance_to_stage = values.get("ADVANCE_TO_STAGE", "").strip().lower()
     if project_done is None:
         return PlannerVerdict(
             project_done=False,
@@ -919,6 +923,7 @@ def parse_planner_text(text: str) -> PlannerVerdict:
             reason=reason or "planner reported follow-up key-value tasks",
             new_tasks=new_tasks,
             raw_text=text,
+            advance_to_stage=advance_to_stage,
         )
     return PlannerVerdict(
         project_done=True,
@@ -944,6 +949,9 @@ def _planner_decision_text(payload: dict[str, Any]) -> str:
         f"PROJECT_DONE={render(value('project_done', False))}",
         f"REASON={render(value('reason'))}",
     ]
+    advance_to_stage = render(value("advance_to_stage"))
+    if advance_to_stage:
+        lines.append(f"ADVANCE_TO_STAGE={advance_to_stage}")
     waiting = value("waiting", False)
     if isinstance(waiting, dict):
         waiting_fields = waiting

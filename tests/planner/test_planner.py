@@ -433,6 +433,21 @@ def test_parse_planner_task_vertical() -> None:
     assert verdict.new_tasks[0].vertical == "argus_maintenance"
 
 
+def test_parse_planner_structured_stage_advance() -> None:
+    verdict = parse_planner_text(
+        "PROJECT_DONE=false\n"
+        "REASON=the next task is a real benchmark\n"
+        "ADVANCE_TO_STAGE=benchmark\n"
+        "TASK_KEY=benchmark\n"
+        "TASK_TITLE=Run benchmark\n"
+        "TASK_OBJECTIVE=Execute the real benchmark."
+    )
+
+    assert verdict.error == ""
+    assert verdict.advance_to_stage == "benchmark"
+    assert verdict.new_tasks[0].key == "benchmark"
+
+
 def test_plan_next_repairs_not_done_empty_task_response(monkeypatch) -> None:
     runner = _SequenceRunner([
         "PROJECT_DONE=false\nREASON=implementation still needs a concrete follow-up",
