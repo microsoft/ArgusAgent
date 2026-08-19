@@ -106,9 +106,10 @@ produces a result no main-conference reviewer will believe.
    budget it was sized against, and give a one-line reason the size is
    appropriate. If you deliberately use a small model, the reason must be a
    research reason, not "it was easier / faster to train".
-4. **Reviewer blocker.** A headline run on a stale or sub-~8B backbone while
-   large GPUs sit underused is a hard blocker, the same as a self-written
-   training loop. Fix the backbone before claiming the run stage complete.
+4. **Headline boundary.** A stale backbone may remain a compatibility baseline,
+   but it cannot carry the paper's main empirical claim when a relevant current
+   generation is available. Parameter count alone is not the rule: verify model
+   generation, architecture, task capability, context support, and release date.
 
 ## 🔥 Hardware saturation contract (run stage)
 

@@ -497,6 +497,34 @@ def test_research_library_hook_forms_quorum_pipeline(
     assert len(task_board.snapshot(Path(events[0]["team_root"]))) == 24
 
 
+def test_research_library_requires_training_guide_after_selection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _pipeline(tmp_path)
+    monkeypatch.setenv("ARGUS_SKILL_VENUE_RESEARCH", "0")
+    monkeypatch.setenv("ARGUS_SKILL_IDEA_SEARCH", "0")
+    required: list[str] = []
+
+    prepare_skill_libraries(
+        VerticalLibraryContext(
+            workdir=tmp_path,
+            stage="plan",
+            objective="design current-model experiments",
+            direction="locked",
+            workflow_mode="staged",
+            paper_mission=True,
+            team_task_id=None,
+            runner=None,
+            model=None,
+            emit=lambda _event: None,
+            required_skill_paths=required,
+        )
+    )
+    assert "engineer/training-infrastructure-guide.md" in required
+    assert "engineer/training-infrastructure-guide.md" in required
+
+
 def test_research_library_hook_never_recurses_inside_team_task(
     tmp_path: Path,
     monkeypatch,

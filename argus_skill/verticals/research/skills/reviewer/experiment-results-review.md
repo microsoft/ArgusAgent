@@ -156,6 +156,7 @@ Return JSON:
 
 ## Infrastructure validity
 Flag infrastructure only when it invalidates the comparison, measurement, or
-claim. Do not reject a custom runtime, small model, CPU path, or unbatched
-execution merely because a larger/faster setup was available; those choices may
-be the research subject or a controlled design decision.
+claim. A small or older model is acceptable when model scale is the research
+subject or when it is explicitly labeled plumbing/compatibility evidence. Do not
+accept it as headline evidence when the plan requires a current-generation
+backbone and relevant current models are available.
