@@ -53,6 +53,37 @@ def _stage_closing_forced() -> bool:
     ).strip().casefold() in {"1", "true", "yes", "on"}
 
 
+def _research_stage_ready_for_close(
+    *,
+    state_root: Path,
+    evidence_root: Path,
+) -> bool:
+    """Promote the next single task when deterministic research blockers are gone."""
+    try:
+        from ...core.pipeline_state import read_pipeline_state
+        from ...verticals._base import (
+            load_vertical,
+            vertical_stage_completion_issues,
+        )
+
+        pipeline = read_pipeline_state(state_root)
+        if not isinstance(pipeline, dict):
+            return False
+        if (
+            str(pipeline.get("vertical") or "").strip() != "research"
+            or str(pipeline.get("current_stage") or "").strip() != "research"
+        ):
+            return False
+        definition = load_vertical("research", project_root=state_root)
+        return not vertical_stage_completion_issues(
+            definition,
+            stage="research",
+            project_root=evidence_root,
+        )
+    except Exception:  # noqa: BLE001 - automatic closing is fail-open to normal planning
+        return False
+
+
 class PlanningCycleEnqueueMixin:
     """Dedupe index, pending-item construction, commit, and final emission."""
 
@@ -277,8 +308,18 @@ class PlanningCycleEnqueueMixin:
         # dep list, so its enqueue is byte-for-byte identical to the old path.
         key_map: dict[str, str] = {}
         pending_items: list[tuple[Any, Any]] = []  # (task, item)
-        for task in state.verdict.new_tasks:
-            context_root = self._project_workdir()
+        planned_tasks = list(state.verdict.new_tasks)
+        context_root = self._project_workdir()
+        state_reader = getattr(self, "_artifact_root", None)
+        state_root = state_reader() if callable(state_reader) else Path(context_root)
+        auto_close_research = (
+            len(planned_tasks) == 1
+            and _research_stage_ready_for_close(
+                state_root=Path(state_root),
+                evidence_root=Path(context_root).resolve(),
+            )
+        )
+        for task in planned_tasks:
             task = replace(task, context_refs=[], execution_workdir="")
             sanitized_title = _sanitize_planner_task_text(task.title)
             sanitized_objective = _sanitize_planner_task_text(task.objective)
@@ -338,6 +379,7 @@ class PlanningCycleEnqueueMixin:
                 canonical_scope == PLANNER_SCOPE_FINAL_SUBMISSION
                 or getattr(task, "stage_repair", False)
                 or _stage_closing_forced()
+                or auto_close_research
             )
             canonical_require_review = (
                 canonical_stage_closing or _independent_review_forced()
@@ -366,8 +408,6 @@ class PlanningCycleEnqueueMixin:
             from ...verticals._base import load_vertical, vertical_planner_task_issues
 
             policy_root = Path(context_root or self._project_workdir()).resolve()
-            state_reader = getattr(self, "_artifact_root", None)
-            state_root = state_reader() if callable(state_reader) else policy_root
             policy_stage = current_stage(state_root)
             campaign_vertical = resolve_vertical(state_root)
             policy_vertical = (
