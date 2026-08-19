@@ -12,9 +12,10 @@ defensible argument to the target community. Evidence constrains the argument;
 artifact completeness does not create publication value.
 
 Use this skill only after the run and analysis stages have authentic,
-claim-relevant evidence. If the evidence does not yet support a worthwhile
-thesis, return to research, implementation, or experiments instead of producing
-a submission-shaped failure report.
+claim-relevant evidence. Draft from the strongest honest conclusion available.
+Negative, null, mixed, and baseline-losing results should be developed into a
+boundary, mechanism, scaling, benchmark, or decision paper rather than routed
+back merely because the original headline failed.
 
 ## 1. Pass the thesis gate before LaTeX
 
@@ -27,16 +28,15 @@ nearest prior work, and current venue profile. State in `research/NARRATIVE_REPO
 - the strongest evidence;
 - the strongest likely rejection argument and the evidence-based answer.
 
-The thesis gate fails when the paper would introduce a method as its main
-contribution and then make that method's failure its main conclusion. Before
-declaring the idea dead, audit implementation fidelity, reference behavior,
-executed configuration, evaluator semantics, tuning/optimization, data, and
-resource adequacy. Pursue concrete repairs while they have credible information
-gain and fit the available budget; there is no fixed retry count.
-
-A negative or boundary result may become a paper only when it is itself
-surprising, robust, decision-relevant, and distinguishable from an
-under-engineered implementation. "We tried X and it did not win" is not a thesis.
+When the method does not win, do not present a chronological failure report.
+First complete the positive-recovery loop over implementation, optimization, data,
+scale, evaluator, and method repairs under the approved budget. Prefer a genuine
+recovered positive result supported at a scale proportional to its claim; it need
+not win on every seed, benchmark, or strongest baseline. If recovery remains
+impossible after independent engineering-adequacy review, use the completed diagnosis to state what failed,
+where, why, how reliably, and what design or deployment decision changes. The
+paper need not prove the original optimistic hypothesis; it must explain a
+truthful reusable finding.
 
 ## 2. Separate the audit trail from the paper story
 

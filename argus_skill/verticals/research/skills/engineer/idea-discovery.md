@@ -247,9 +247,11 @@ resource or time limit, that wins):
 
 **Novelty bet**: <what makes this a new method, not a re-run of the cited work>
 
-> A candidate with no credible evidence path inside the available resources is
-> not executable yet. Stage it, narrow the claim, seek additional resources, or
-> pivot before the signal-de-risk gate.
+> Local ease is not a selection advantage. Do not prefer a no-training,
+> shortest-evidence-path, cheap, small-model, or single-GPU idea over a stronger
+> scientific contribution. A candidate may require additional compute or data when
+> it has a credible staged resource plan. Rank scientific ambition first, then make
+> the winning plan executable without weakening its core claim.
 
 **Anticipated kill-argument**: <strongest 50-word rejection a hostile
 reviewer would write; this skill must articulate it so kill-argument
@@ -260,26 +262,33 @@ later can stress-test it for real>
 
 Every route has its own fresh `idea-review` task. That reviewer searches for the
 nearest implementation, benchmark, negative result, and simpler explanation,
-then judges novelty, technical depth, theoretical/causal foundation, frontier
-significance, falsifiability, benchmark validity, and local feasibility. Local
-ease cannot rescue a shallow or already-occupied idea. Flag theory-only or
-AI-frontier-only coverage and inspect the missing side when useful, but do not
-reject or block solely for source-bucket imbalance.
+including a date-sorted search over the latest 12 months of arXiv and the current
+major-venue cycle, then judges novelty, technical depth, theoretical/causal
+foundation, frontier significance, falsifiability, and publication-scale evidence.
+Local ease cannot rescue a shallow or already-occupied idea and cannot outrank a
+stronger idea. A qualified route must be a high-novelty method or a large-scale
+empirical contribution; small diagnostics and benchmark audits need a field-changing
+question and publication-scale evaluation plan.
 
 ### Step 6 — select at the 80% review quorum, then smoke once
 
 Wait until at least 80% of the 12 routes have completed independent reviews:
 `ceil(12 × 0.8) = 10`. Do not wait for the final two. Give those ten route and
 review artifacts to one fresh selector Agent, which chooses the strongest idea
-qualitatively by theory, novelty, generality, top-conference shape, and credible
-evidence path. The selector writes `research/IDEA_SELECTION.json`.
+by current-frontier novelty, technical depth, generality, and top-conference
+contribution. The winner must be a high-novelty method or publication-scale empirical
+study. No-training convenience, shortest evidence path, cheapness, and single-GPU fit
+are not positive criteria; resource gaps become a staged compute plan. The selector
+writes `research/IDEA_SELECTION.json`.
 
-Only the selected route receives one advisory probe, normally within ten
-minutes. It must not run a full benchmark, training job, broad sweep, or
-publication-scale multi-seed evaluation. Its supported/refuted/inconclusive
-evidence cannot reverse the selector's judgment; weak results become later
-implementation or experiment-design notes. The final two routes may finish in
-the background but do not block planning.
+Only the selected route receives an advisory feasibility record. Run a sub-ten-minute
+observation only when it checks plumbing, data shape, or evaluator availability without
+pretending to decide a large-scale empirical hypothesis. Otherwise record the probe as
+skipped/untested and advance. Research must not run a full benchmark, training job,
+broad sweep, or publication-scale multi-seed evaluation. Success, failure, or absence
+of this observation cannot reverse the selector's judgment; plan/benchmark/run own the
+scientific result. The final two routes may finish in the background but do not block
+planning.
 
 ## Anti-patterns
 

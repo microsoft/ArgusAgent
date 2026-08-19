@@ -40,7 +40,7 @@ def test_paper_drafting_skills_stay_compact() -> None:
     assert sum(sizes.values()) < 22_000
 
 
-def test_protocol_does_not_auto_publish_negative_results() -> None:
+def test_protocol_runs_positive_recovery_before_accepting_negative_results() -> None:
     results_review = _skill("reviewer/experiment-results-review.md")
     result_to_claim = _skill("engineer/result-to-claim.md")
     analysis = _skill("engineer/research-results-analysis-and-figures.md")
@@ -50,23 +50,29 @@ def test_protocol_does_not_auto_publish_negative_results() -> None:
     assert "at most ONE" not in results_review
     assert "write the paper on the current results" not in results_review
     assert "There is no fixed number of optimization passes" in results_review
-    assert "does not automatically advance to drafting" in runner
+    assert "independent Reviewer must confirm engineering adequacy" in runner
+    assert "no universal requirement to pass every" in runner
+    assert "documented methodological reason" in runner
     assert "not automatic write-up" in pipeline
-    assert "post-selection repair loop" in result_to_claim
+    assert "positive-recovery loop" in result_to_claim
+    assert "It need not win on every seed" in result_to_claim
+    assert "independent Reviewer" in results_review
+    assert "Aim to recover a genuine positive result" in " ".join(pipeline.split())
     assert "chronological experiment report" in analysis
-    assert "change labels, discard seeds" in pipeline
+    assert "change labels, discard seeds" not in pipeline
+    assert "cherry-pick" not in result_to_claim
+    assert "silently selecting favorable" not in results_review
 
 
-def test_paper_is_claim_driven_without_hiding_contrary_evidence() -> None:
+def test_paper_is_claim_driven_and_selective() -> None:
     result_to_claim = _skill("engineer/result-to-claim.md")
     final_review = _skill("engineer/final-paper-review.md")
     analysis = {item.id: item.statement for item in STAGE_CHECKLISTS["analysis"]}
     draft = {item.id: item.statement for item in STAGE_CHECKLISTS["draft"]}
 
     assert "claim-driven" in result_to_claim
-    assert "claim-critical contrary evidence" in result_to_claim
     assert "strongest valid evidence for its thesis" in final_review
-    assert "strongest valid evidence for the thesis" in analysis["analysis.thesis"]
+    assert "manuscript remains a selective argument" in analysis["analysis.thesis"]
     assert "not a chronological experiment report" in draft["draft.tex"]
 
 
@@ -76,10 +82,12 @@ def test_live_checklist_requires_thesis_and_implementation_adequacy() -> None:
     draft = {item.id: item.statement for item in STAGE_CHECKLISTS["draft"]}
     review = {item.id: item.statement for item in STAGE_CHECKLISTS["review"]}
 
-    assert "under-engineered" in run["run.method_diagnosis_recall"]
+    assert "positive-recovery diagnosis loop" in run["run.method_diagnosis_recall"]
+    assert "engineering/debugging signal first" in run["run.method_diagnosis_recall"]
     assert "selective argument" in analysis["analysis.thesis"]
     assert "same thesis" in draft["draft.tex"]
-    assert "weak result cannot be rescued" in review["review.publication_value"]
+    assert "constructive senior coauthor" in review["review.publication_value"]
+    assert "Result sign" in review["review.publication_value"]
 
 
 def test_broad_paper_ideation_uses_eighty_percent_review_quorum() -> None:
@@ -97,7 +105,7 @@ def test_broad_paper_ideation_uses_eighty_percent_review_quorum() -> None:
     assert "A single model call" in discovery
     assert "fresh independent reviewer" in discovery
     assert "`ceil(12 × 0.8) = 10`" in discovery
-    assert "one advisory probe" in discovery
+    assert "advisory feasibility record" in discovery
     assert "at least four routes" in discovery
     assert "network/statistical physics" in normalized_discovery
     assert "12-route team explores concurrently" in research["research.idea_portfolio"]
@@ -133,6 +141,24 @@ def test_research_idea_selection_requires_ambition_without_decorative_math() -> 
     assert "decorative math" in thesis
     assert "Research review is qualitative" in thesis
     assert "shallow prompt/schema/wrapper/scale" in peer_review
+
+
+def test_research_selector_prioritizes_frontier_ambition_over_local_ease() -> None:
+    discovery = " ".join(_skill("engineer/idea-discovery.md").split())
+    creator = " ".join(_skill("engineer/idea-creator.md").split())
+    pipeline = " ".join(_skill("engineer/auto-research-pipeline.md").split())
+    research = {item.id: item.statement for item in STAGE_CHECKLISTS["research"]}
+
+    for text in (discovery, creator, pipeline):
+        assert "high-novelty method" in text
+        assert "publication-scale empirical" in text
+        assert "shortest evidence path" in text or "shortest-evidence-path" in text
+        assert "single-GPU fit" in text
+    assert "latest 12 months of arXiv" in discovery
+    assert "current major venue cycle" in creator
+    assert "resource gaps become an explicit staged compute plan" in (
+        research["research.adversarial_selection"]
+    )
 
 
 def test_literature_grounding_advises_ai_and_foundation_balance() -> None:
@@ -202,9 +228,11 @@ def test_research_smokes_record_power_limits_without_rejecting_ideas() -> None:
     for text in (probe, pipeline, runner, plan_review, results_review):
         assert "headroom" in text
         assert "inconclusive" in text
-    assert "baseline ceiling/floor saturation" in research["research.signal_derisk"]
-    assert "predeclared power and headroom" in research["research.signal_derisk"]
-    assert "cannot kill or block" in research["research.signal_derisk"]
+    assert "Research does not decide whether" in research["research.signal_derisk"]
+    assert "explicitly skip the probe" in research["research.signal_derisk"]
+    assert "cannot kill, block, downgrade, or re-rank" in (
+        research["research.signal_derisk"]
+    )
     assert "Never reject a qualitatively strong idea" in " ".join(pipeline.split())
 
 
@@ -230,10 +258,10 @@ def test_route_review_precedes_quorum_selection_and_advisory_probe() -> None:
     assert "earlier dependency" in brief
     assert "Before any probe is designed or executed" in research["research.thesis"]
     assert "thesis may evolve later" in research["research.thesis"]
-    assert "Only after research.thesis" in research["research.signal_derisk"]
+    assert "After research.thesis admits" in research["research.signal_derisk"]
     normalized_planner = " ".join(role_banner("planner").split())
     assert "At an 80% review quorum" in normalized_planner
-    assert "Probe only that winner" in normalized_planner
+    assert "Probe only that winner when" in normalized_planner
     assert "80% review quorum" not in generic_planner
     assert "must not silently change the frozen premise" in creator
     assert "Keep route reviews parallel until at least 80%" in " ".join(
@@ -309,7 +337,7 @@ def test_experiment_review_does_not_repeat_idea_selection() -> None:
     assert "not repeating upstream idea selection" in results_review
     assert "Do not re-rank or re-litigate" in results_review
     assert "engineering and protocol validity" in results_review
-    assert "decide publication value" in results_review
+    assert "decide publication value" in " ".join(results_review.split())
     assert "`pass` means the experiment is engineering-valid" in " ".join(
         results_review.split()
     )

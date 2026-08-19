@@ -463,8 +463,8 @@ def build_parser() -> argparse.ArgumentParser:
     gates_grp.add_argument(
         "--project-root",
         default=".",
-        help="project root for --evidence-chain-check / "
-             "--anti-mediocrity-check / --lifecycle-status (default cwd)",
+        help="project root for management commands such as --status when run "
+             "outside the workdir, and for evidence/lifecycle checks (default cwd)",
     )
     gates_grp.add_argument(
         "--proposed-condition",

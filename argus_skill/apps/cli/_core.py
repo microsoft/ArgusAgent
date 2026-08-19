@@ -138,8 +138,12 @@ def _resolve_session_id(
         return None, False
 
 
-def _session_for_current_workdir(global_root: Path) -> str | None:
-    """Newest session bound to the shell cwd, preferring a live daemon.
+def _session_for_current_workdir(
+    global_root: Path,
+    *,
+    workdir: Path | None = None,
+) -> str | None:
+    """Newest session bound to the selected workdir, preferring a live daemon.
 
     Web/TUI sessions are keyed by session id rather than the legacy cwd
     fingerprint. Without this bridge, running ``argus --status`` from the exact
@@ -153,7 +157,9 @@ def _session_for_current_workdir(global_root: Path) -> str | None:
     )
 
     try:
-        current = Path.cwd().resolve(strict=True)
+        current = (workdir if workdir is not None else Path.cwd()).resolve(
+            strict=True
+        )
     except (OSError, RuntimeError):
         return None
     live_ids = {meta.id for meta in live_daemon_sessions(global_root)}
@@ -180,9 +186,30 @@ def _resolve_project_bundle(args: argparse.Namespace):
     # the legacy cwd fingerprint.
     sid, _is_new = _resolve_session_id(args, global_root, default_to_new=False)
     if sid is None:
-        sid = _session_for_current_workdir(global_root)
+        raw_workdir = getattr(args, "project_root", None)
+        selected_workdir = (
+            core_paths.resolve_runtime_path(raw_workdir, context="--project-root")
+            if raw_workdir is not None
+            else Path.cwd()
+        )
+        try:
+            selected_workdir = selected_workdir.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise core_paths.PathResolutionError(
+                f"--project-root is unavailable: {exc}"
+            ) from exc
+        if not selected_workdir.is_dir():
+            raise core_paths.PathResolutionError(
+                f"--project-root is not a directory: {selected_workdir}"
+            )
+        sid = _session_for_current_workdir(
+            global_root,
+            workdir=selected_workdir,
+        )
+    else:
+        selected_workdir = Path.cwd()
     if sid is None:
-        return MemoryBundle.for_cwd(Path.cwd(), global_root=global_root)
+        return MemoryBundle.for_cwd(selected_workdir, global_root=global_root)
     from ...core.session import (
         migrate_legacy_session_workdir,
         read_session_meta,

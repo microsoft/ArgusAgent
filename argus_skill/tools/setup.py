@@ -80,7 +80,7 @@ def _banner() -> None:
     print(
         _dim(
             "  Guide / 指引: "
-            "https://github.com/microsoft/ArgusAgent#installation"
+            "https://github.com/microsoft/ArgusAgent#quick-install"
         )
     )
     print()

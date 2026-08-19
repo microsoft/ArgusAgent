@@ -78,8 +78,8 @@ def test_the_verdict_vocabulary_is_stated_once(monkeypatch):
     # policy. Two definitions of the same four words is the redundancy this
     # budget exists to catch, and it cost more than the sentence it funded.
     p = _build(measured=False, monkeypatch=monkeypatch)
-    assert p.count("agent-fixable in-scope gap") == 1
-    assert p.count("replacement route, or boundary change") == 1
+    assert p.count("concrete in-scope material gap") == 1
+    assert p.count("wrong target or real boundary change") == 1
 
 
 def test_reviewer_records_prompt_block_token_estimates(monkeypatch):
@@ -200,12 +200,12 @@ def test_reviewer_prompt_records_process_decision_without_final_footer(monkeypat
     assert "OUTPUT CONTRACT (STRICT)" not in prompt
 
 
-def test_reviewer_replans_materially_ungrounded_external_implementation(
+def test_reviewer_accepts_implementation_grounding_proportionally(
     monkeypatch,
 ) -> None:
     prompt = _build(measured=False, monkeypatch=monkeypatch)
 
     assert "primary-source grounding" in prompt
-    assert "Community implementations alone are insufficient" in prompt
-    assert "Return `replan_requested`" in prompt
-    assert "do not demand new research for local-only work" in prompt
+    assert "community implementations may suffice for implementation details" in prompt
+    assert "`replan_requested` rarely" in prompt
+    assert "Do not demand extra research" in prompt

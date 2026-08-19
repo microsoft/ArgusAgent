@@ -134,16 +134,19 @@ A project may finish with a paper only when:
 - the L2 Reviewer certifies the full pipeline checklist.
 
 A method losing to a baseline triggers implementation and research diagnosis,
-not automatic write-up. Preserve the result; optimize, repair, or pivot according
-to the diagnosed cause and expected information gain. Draft only after Reviewer
-certifies an independently defensible publication thesis.
+not automatic write-up. Preserve the result and enter a positive-recovery loop:
+debug implementation, optimization, data, evaluator, scale, and the method itself;
+reproduce reference behavior; then rerun decisive tests. Aim to recover a genuine
+positive result with evidence proportional to the claim and available budget. There
+is no universal requirement that every seed, benchmark, or strongest baseline must
+succeed. Protocols may change for a documented scientific reason when prior outcomes
+remain visible and the final claim is scoped accordingly. Draft after Reviewer
+certifies engineering adequacy and an independently defensible publication thesis.
 
 After an idea is selected, do not use a weak first result as an excuse to write a
 negative paper. Give the core mechanism a faithful, competitive implementation;
 diagnose concrete failures; make targeted improvements; and rerun decisive tests
-while credible fixes remain. This is scientific development, not permission to
-change labels, discard seeds, switch metrics after inspection, or hide evidence
-that would overturn the claim.
+while credible fixes remain.
 
 ## Research figure contract
 
@@ -180,9 +183,14 @@ that would overturn the claim.
   prior-art attack and adversarial review.
 - Stream discovery into validation: each completed route receives a fresh
   independent review immediately. At an 80% review quorum (10 of 12 by default),
-  a fresh selector Agent chooses the strongest idea qualitatively; do not wait
-  for the final two routes. Only the selected idea receives one short advisory
-  probe. The final two routes and weak smoke results are not stage blockers.
+  a fresh selector Agent chooses a current-frontier high-novelty method or
+  publication-scale empirical contribution. No-training convenience, shortest
+  evidence path, cheapness, and single-GPU fit are not ranking advantages; require
+  a credible staged resource plan. Do not wait for the final two routes. Only the
+  selected idea receives one short advisory feasibility check only when a tiny
+  slice is representative; otherwise record it skipped/untested and advance.
+  Scientific success belongs to plan/benchmark/run. The final two routes and
+  weak or absent smoke results are not stage blockers.
 - For a broad publishable/doctoral Agent paper, at least four portfolio routes
   must independently search for load-bearing mathematical or physical
   foundations. Cover distinct relevant lenses rather than variants of one

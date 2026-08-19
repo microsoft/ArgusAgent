@@ -23,6 +23,7 @@ def prepare_skill_libraries(context: VerticalLibraryContext) -> None:
         return
     from .idea_portfolio import (
         QUORUM_COUNT,
+        SELECTION_POLICY,
         ensure_idea_portfolio,
         idea_portfolio_selection,
         portfolio_required,
@@ -54,7 +55,7 @@ def prepare_skill_libraries(context: VerticalLibraryContext) -> None:
                 "review_quorum": QUORUM_COUNT,
                 "task_count": 24,
                 "selection": selection or {},
-                "policy": "quorum_80_agent_judgment",
+                "policy": SELECTION_POLICY,
                 "text": (
                     f"streaming 12-route idea pipeline selected {selection['route_id']}"
                     if selection

@@ -492,10 +492,9 @@ def render_reviewer_prompt(
     rollback_block = (
         "## Upstream defects\n"
         f"Current stage: `{stage}`. Earlier stages: {earlier_stages}.\n"
-        "If earlier-stage evidence is broken and this mission cannot repair it "
-        "within its own scope, return `replan_requested` (never `continue`) and "
-        "name the earliest broken stage and concrete evidence in `reason`; the "
-        "Manager owns rollback. "
+        "Rollback only when a concrete earlier defect makes the current result unusable. "
+        "Optional or non-claim-critical artifacts are advisory. If rollback is necessary, "
+        "return `replan_requested` with the earliest stage and evidence; Manager owns rollback. "
         "Never edit `.argus/PIPELINE_STATE.json`."
     )
     operator_text = (
@@ -615,19 +614,17 @@ def render_reviewer_prompt(
         + (shell_contract + "\n\n" if shell_contract else "")
         + MODEL_INTEGRITY_BOUNDARY
         + "\n\n## Reviewer role\n"
-        "Check whether the task is actually done and useful. Inspect evidence when needed; "
-        "use tools only in proportion to unresolved uncertainty. You do not change the "
-        "work under review: not its sources, not its artifacts, not its build. Recording "
-        "your own verdict through a command your vertical gives you is review. Use `done` "
-        "when it passes, `continue` for an agent-fixable "
-        "in-scope gap, `replan_requested` for a new mission, replacement route, or boundary "
-        "change, and `blocked` only for an external blocker. External claims need "
-        "primary-source grounding when semantics affect the result; Community "
-        "implementations alone are insufficient. Do not demand research for local-only "
-        "or already-grounded work; do not demand new research for local-only work. "
-        "Do not require extra abstractions, defensive machinery, or future-proofing "
-        "without a demonstrated need. "
-        "Return `replan_requested` when missing grounding could change the mechanism.\n\n"
+        "Advance useful work. Default to `done` when the requested outcome materially "
+        "works; optional evidence, polish, and future robustness are advisory. Inspect "
+        "only claim-critical uncertainty and use tools only in proportion to unresolved "
+        "uncertainty. You do not change the work under review: not its sources, not its "
+        "artifacts, not its build. Recording your own verdict through a command your "
+        "vertical gives you is review. Use `continue` for one "
+        "concrete in-scope material gap, `replan_requested` rarely for a wrong target or "
+        "real boundary change, and `blocked` only for an external blocker. Semantic "
+        "external claims need primary-source grounding; community implementations may "
+        "suffice for implementation details. Do not demand extra research, abstractions, "
+        "defensive machinery, or future-proofing.\n\n"
         + ("" if _requires_engineering_audit else _verification_directive())
         + audit_integrity_block
         + "## Decision\n"
@@ -643,8 +640,8 @@ def render_reviewer_prompt(
         + "\n"
         + decision_event_instruction(
             "reviewer",
-            '{"status":"continue","reason":"why","next_action":"one Engineer '
-            'instruction","forward_progress":true,"plan_signal":"continue"}',
+            '{"status":"done","reason":"requested outcome is materially complete",'
+            '"next_action":"","forward_progress":true,"plan_signal":"keep"}',
         )
         + "\nUse plan fields only when the result changes the plan. Judge "
         "forward_progress against the operator goal, not activity. Put the next Engineer "
@@ -659,13 +656,14 @@ def render_reviewer_prompt(
         + "\n\n"
         + venv_skill_block
         + "\n\n## Handoff policy\n"
-        "`done` needs concrete evidence. Missing evidence means `continue`; a weak proxy "
-        "for the claimed system means `replan_requested`. One timeout or failed attempt "
-        "does not prove impossibility. A threshold miss only shows that this run missed "
-        "its target; a root-cause, dominant/bottleneck-stage, or replacement-architecture "
+        "`done` needs enough evidence for the material outcome, not exhaustive proof or "
+        "artifact completeness. Only missing claim-critical evidence means `continue`; "
+        "optional evidence and minor weaknesses stay advisory. One timeout, failed attempt, "
+        "or threshold miss is not impossibility. A threshold miss only shows that this run "
+        "missed its target; a root-cause, dominant/bottleneck-stage, or replacement-architecture "
         "claim needs code-path evidence plus profiling, timing, or a controlled comparison. "
-        "Integrity is mandatory but is not scientific value by itself. "
-        "Technical problems get a concrete NEXT_ACTION, not an operator question. Ask the "
+        "Give one highest-impact NEXT_ACTION. "
+        "Integrity is mandatory but not scientific value by itself. Ask the "
         "operator one question only for authority or information only they can provide. "
         "Bounded `done` closes this task; final-submission `done` may certify the project.\n\n"
         + objective_block

@@ -151,27 +151,26 @@ def test_measured_mode_trusts_scorer_and_refocuses(monkeypatch):
     assert "OVERRIDES the generic" in p
 
 
-def test_non_measured_keeps_anti_fabrication_floor(monkeypatch):
-    # Trust-first must NOT remove the floor: the reviewer still defaults to
-    # `continue` (not `done`) when a claim is NOT backed by shown evidence.
+def test_non_measured_blocks_only_on_claim_critical_evidence(monkeypatch):
     p = _prompt(measured=False, monkeypatch=monkeypatch)
-    assert "Missing evidence means `continue`" in p
+    assert "Only missing claim-critical evidence means `continue`" in p
+    assert "optional evidence and minor weaknesses stay advisory" in p
 
 
-def test_done_means_goal_achieved_not_merely_error_free(monkeypatch):
+def test_done_is_default_for_materially_complete_outcome(monkeypatch):
     p = _prompt(measured=False, monkeypatch=monkeypatch)
 
-    assert "`done` needs concrete evidence" in p
+    assert "Default to `done`" in p
+    assert "not exhaustive proof or artifact completeness" in p
     assert "Current operator > objective > mission" in p
-    assert "One timeout or failed attempt does not prove impossibility" in p
+    assert "One timeout, failed attempt" in p
 
 
 def test_reviewer_separates_integrity_from_scientific_value(monkeypatch):
     p = _prompt(measured=False, monkeypatch=monkeypatch)
     assert "Integrity is mandatory" in p
     assert "not scientific value by itself" in p
-    assert "a weak proxy" in p
-    assert "`replan_requested`" in p
+    assert "`replan_requested` rarely" in p
 
 
 def test_reviewer_reasons_in_prose_structured_only_at_handoff(monkeypatch):
@@ -183,4 +182,4 @@ def test_reviewer_reasons_in_prose_structured_only_at_handoff(monkeypatch):
     p = _prompt(measured=False, monkeypatch=monkeypatch)
     assert "Any later response is plain language" in p
     assert "ARGUS_ROLE_DECISION=" in p
-    assert '"status":"continue"' in p
+    assert '"status":"done"' in p

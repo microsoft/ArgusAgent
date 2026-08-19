@@ -36,10 +36,11 @@ than editing generated review JSON.
 
 ## Stop or route back
 
-- If the argument lacks evidence, return to experiments or analysis. For a
-  selected idea whose mechanism remains plausible, diagnose and improve the
-  method or test before shrinking the prose around a weak result.
-- If the evidence does not support a worthwhile thesis, return to research/plan.
+- If a claim lacks evidence, remove or scope that claim first. Return to experiments
+  only when one bounded, decision-changing run is clearly necessary.
+- If the original thesis failed, construct the strongest supported negative,
+  boundary, mechanism, scaling, or benchmark thesis before considering a return
+  to research/plan. Result sign alone never routes the paper backward.
 - If the paper is sound, stop polishing minor preferences.
 
 ## Handoff
