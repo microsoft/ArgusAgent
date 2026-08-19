@@ -7,10 +7,12 @@ description: "Run the cheapest faithful observation that informs a research idea
 
 ## Purpose
 
-After an idea has passed method-reasonableness selection, obtain one short real
-observation before committing substantial compute. This is advisory context,
-not a routing gate, not a miniature benchmark, and never a reason by itself to
-kill or replace a promising idea.
+After an idea has passed method-reasonableness selection, optionally obtain one
+short feasibility observation before committing substantial compute. This is
+advisory context, not a routing gate, not a miniature benchmark, and never a
+reason to kill, replace, or downgrade a promising idea. If a cheap slice would
+misrepresent a training-heavy or large-scale hypothesis, record it skipped and
+advance to plan/benchmark/run.
 
 For publishable/doctoral work, a successful probe does not waive the ambition
 standard: nontrivial technical core, verified originality, claim-relevant
@@ -19,11 +21,9 @@ feasibility cannot promote a shallow idea.
 
 ## How to work
 
-1. Read the research brief and the completed selection reasoning. If technical
-   validity, prior-art reduction, originality, significance, falsifiability, or
-   resource feasibility is still unresolved, stop before model/API/GPU execution
-   and finish selection first. Otherwise identify the selected idea's uncertain
-   empirical premise whose answer would most change the plan.
+1. Read the research brief and completed selection reasoning. Identify only a
+   wiring, data-shape, evaluator, or resource question that a tiny observation can
+   answer faithfully. Research-stage scientific success is not such a question.
 2. Choose the cheapest short probe that can touch it. Target at most ten minutes
    and a tiny real slice. Never run the formal benchmark, training, large sweep,
    or publication-scale multi-seed evaluation in this step. If a faithful test
@@ -42,9 +42,9 @@ feasibility cannot promote a shallow idea.
    - execute baselines with the same information and intervention timing. A
      historical trace that already executed an action or a post-hoc verifier is a
      diagnostic, not an online prevention baseline.
-5. Run it for real and preserve the command, raw output, and analysis under a
-   sensible project path. Reuse existing run conventions instead of creating a
-   special de-risk packet.
+5. Run it for real when representative, or record `skipped` / `untested` when it
+   is not. Preserve any command, raw output, and analysis under a sensible project
+   path. Reuse existing run conventions instead of creating a special de-risk packet.
 6. Write a short factual note in `research/RESEARCH_BRIEF.md` or the existing
    experiment log:
    - what was observed;

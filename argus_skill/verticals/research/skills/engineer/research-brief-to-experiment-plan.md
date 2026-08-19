@@ -99,7 +99,8 @@ evaluation projects should not fill one another's schemas.
 
 - thesis and claim(s) under test;
 - public evidence source and authentic evaluator;
-- strongest baseline and claim-critical controls/ablations;
+- relevant competitive baselines and claim-critical controls/ablations, proportional
+  to the claim and available budget;
 - fair budgets/configurations and implementation validation;
 - uncertainty/repeatability appropriate to the data;
 - staged execution from real smoke to decisive evidence;

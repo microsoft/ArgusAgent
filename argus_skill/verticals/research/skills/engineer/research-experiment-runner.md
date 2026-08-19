@@ -37,9 +37,10 @@ This skill supports:
 4. **Use the strongest relevant comparisons.** Reproduce or faithfully compare
    against the closest feasible published baseline, standard method, or accepted
    reference implementation. Do not pad the matrix with arbitrary weak baselines.
-5. **Publication value is required.** A clean null, boundary, or failure
-   mechanism is publishable only when it yields a surprising, robust,
-   decision-relevant insight that is not explained by weak implementation.
+5. **Actively recover the intended result.** Treat an initial null, loss, or
+   failure as a likely engineering signal. Debug implementation, optimization,
+   data, evaluator, scale, and method details; reproduce reference behavior; and
+   iteratively apply scientifically motivated repairs while credible paths remain.
 
 ## Before execution
 
@@ -123,12 +124,18 @@ ceiling/floor, the task slice does not exercise the claimed mechanism, or the
 cases/repeats cannot resolve the predeclared contrast. Redesign the next probe;
 do not rerun the same non-discriminative comparison.
 
-Before `supported_negative` or `supported_boundary`, perform an implementation
-adequacy audit: reference parity, executed configuration, evaluator semantics,
-optimization/tuning, data, and resource sufficiency. A concrete under-engineering
-diagnosis justifies targeted repair while expected information gain exceeds its
-cost. There is no universal retry cap. A valid negative result is evidence, but
-does not automatically advance to drafting.
+Before `supported_negative` or `supported_boundary`, complete a positive-recovery
+loop: establish reference parity, inspect executed configuration and evaluator
+semantics, verify gradients/learning signals and treatment activation, test
+optimization/tuning/data/scale sufficiency, and implement credible mechanism-based
+repairs while expected information gain and approved budget permit. There is no
+universal retry cap. An independent Reviewer must confirm engineering adequacy
+before genuine failure is accepted. Evidence is proportional to the claim, variance,
+field norms, and available budget; there is no universal requirement to pass every
+planned seed, benchmark, or strongest baseline. The evaluator, conditions, repeats,
+and comparisons may change for a documented methodological reason if earlier results
+remain visible and claims distinguish exploratory from confirmatory evidence. Do not
+require a universal protocol shape.
 
 ## Public benchmark provenance
 

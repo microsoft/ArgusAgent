@@ -8,6 +8,7 @@ import pytest
 from argus_skill.apps.cli import _core
 from argus_skill.core import paths as core_paths
 from argus_skill.core.session import SessionMeta, read_session_meta, write_session_meta
+from argus_skill.life import MemoryBundle
 
 
 def _args() -> SimpleNamespace:
@@ -172,6 +173,70 @@ def test_cli_management_prefers_live_session_for_shell_workdir(
 
     assert bundle.project.root == root / "projects" / "s-live"
     assert bundle.project_worktree == workspace.resolve()
+
+
+def test_cli_management_uses_explicit_project_root_outside_workdir(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "state"
+    workspace = tmp_path / "workspace"
+    other_cwd = tmp_path / "other"
+    workspace.mkdir()
+    other_cwd.mkdir()
+    sid = "s-explicit-workdir"
+    (root / "projects" / sid).mkdir(parents=True)
+    write_session_meta(
+        root,
+        SessionMeta(
+            id=sid,
+            created=10.0,
+            last_active=10.0,
+            workdir=str(workspace),
+        ),
+    )
+    monkeypatch.chdir(other_cwd)
+    monkeypatch.setattr(_core, "_resolve_global_root", lambda _args: root)
+    monkeypatch.setattr(
+        _core,
+        "_resolve_session_id",
+        lambda *_args, **_kwargs: (None, False),
+    )
+    args = _args()
+    args.project_root = str(workspace)
+
+    bundle = _core._resolve_project_bundle(args)
+
+    assert bundle.project.root == root / "projects" / sid
+    assert bundle.project_worktree == workspace.resolve()
+
+
+def test_cli_management_fallback_uses_explicit_project_root(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "state"
+    workspace = tmp_path / "workspace"
+    other_cwd = tmp_path / "other"
+    workspace.mkdir()
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+    monkeypatch.setattr(_core, "_resolve_global_root", lambda _args: root)
+    monkeypatch.setattr(
+        _core,
+        "_resolve_session_id",
+        lambda *_args, **_kwargs: (None, False),
+    )
+    args = _args()
+    args.project_root = str(workspace)
+
+    bundle = _core._resolve_project_bundle(args)
+
+    assert bundle.project_worktree == workspace.resolve()
+    assert bundle.project.root == MemoryBundle.for_cwd(
+        workspace,
+        global_root=root,
+    ).project.root
 
 
 def test_cli_legacy_resume_persists_first_explicit_workdir(

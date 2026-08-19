@@ -24,7 +24,7 @@ def test_setup_banner_highlights_agent_assisted_installation(capsys) -> None:
     output = capsys.readouterr().out
     assert "★ Recommended / 推荐" in output
     assert "current Code Agent" in output
-    assert "https://github.com/microsoft/ArgusAgent#installation" in output
+    assert "https://github.com/microsoft/ArgusAgent#quick-install" in output
 
 
 def test_setup_banner_uses_bold_yellow_highlight_on_tty(monkeypatch) -> None:

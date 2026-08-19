@@ -78,25 +78,26 @@ If no audit exists: label verdict as "provisional — no integrity audit run"
 #### `no` — Claim not supported
 1. Record what was tested, what the evidence rejects, and which broad claim is unsafe.
 2. If the idea has already passed selection and the core mechanism remains
-   plausible, run a post-selection repair loop before drafting or reframing:
+   plausible, treat the negative as a probable engineering/debugging signal and run a
+   positive-recovery loop before drafting or reframing:
    diagnose implementation fidelity, optimization, evaluator semantics, data,
-   budgets, and mechanism-specific failures; make the most credible targeted
-   improvement; then rerun the decisive comparison.
-3. Stop repair only when credible improvements are exhausted, contradicted by
-   evidence, or no longer worth their information gain. Preserve every prior run;
-   never improve the result by changing labels, dropping seeds, switching metrics
-   after inspection, or searching for a favorable slice.
-4. Only then test whether the evidence supports a surprising, robust,
-   independently useful boundary or diagnostic thesis. A post-hoc account of
-   unsuccessful experiments is not such a thesis.
-5. If no worthwhile contribution remains, pivot to the next idea or alternative
-   approach and update pipeline state.
+   budgets, scale, and mechanism-specific failures; make credible targeted
+   improvements; then rerun the decisive comparison.
+3. Continue while scientifically justified repairs remain and the approved budget
+   permits. Require independent confirmation of reference parity, valid learning
+   signal, fair evaluation, adequate tuning/scale, and implementation adequacy before
+   accepting genuine method failure.
+4. Build the strongest truthful paper thesis the evidence supports: a characterized
+   boundary, mechanism failure, scaling regime, benchmark lesson, or practical
+   decision can be the contribution. Do not require the original method to win.
+5. Advance to analysis/draft by default. Pivot only when the measurement is invalid
+   or no useful conclusion remains after bounded reframing.
 
 #### `partial` — Claim partially supported
 1. Update the working claim to reflect what IS supported.
-2. Diagnose whether a concrete method, implementation, or experimental weakness
-   can be improved. For a selected idea, prefer a credible targeted repair and
-   decisive rerun over immediately shrinking the paper around a weak result.
+2. Diagnose concrete method, implementation, optimization, data, scale, and evaluator
+   weaknesses. Iteratively apply credible mechanism-based repairs and rerun the
+   decisive comparison while they retain information value.
 3. Choose a concrete scenario/pain point only when it is independently motivated
    by the original question or literature, not mined after seeing the results.
 4. Record the comparison boundary: absent baselines, stronger baselines, missing
@@ -143,22 +144,22 @@ If no audit exists: label verdict as "provisional — no integrity audit run"
 - A single positive result on one dataset does not support a general claim
 - If confidence is low, treat as inconclusive — add experiments rather than committing
 - Always record the verdict and reasoning, regardless of outcome
-- Multiple rounds of `partial` on the same claim → consider narrowing scope
+- Multiple rounds of `partial` on the same claim → crystallize the supported
+  boundary and advance to the paper rather than looping
 - Keep the complete evidence record internal. The manuscript is a claim-driven
   selection of the strongest valid evidence needed to establish and explain its
   thesis, not a chronological experiment report.
-- Include claim-critical contrary evidence that would materially change a
-  reasonable reader's interpretation. Do not dump unrelated failed trials into
-  the paper, and do not hide a valid result that would reverse the headline claim.
 - Do not describe missing comparisons as absent because the method performed poorly. Explain comparison gaps in methodological terms: the current study isolates a narrower scenario, answers a different deployment question, or reports a bounded diagnostic.
 - If another method wins a reported metric, preserve the comparison internally
   and disclose it when it bears on the thesis. Improve the selected method when a
   credible repair exists; otherwise reframe only around a genuinely supported,
   independently motivated contribution rather than a self-defeating chronology.
 - A scenario-scoped reframing is valid only when the scenario, pain point, and contribution are supported by local evidence or cited literature; it must not imply untested superiority.
-- Improving the idea means changing the method, implementation, theory, or test
-  quality for a scientific reason. It never means result manipulation,
-  cherry-picking seeds/metrics, suppressing claim-critical evidence, or p-hacking.
+- Judge a successful recovery with evidence proportional to its actual claim,
+  variance, field norms, and budget. It need not win on every seed, benchmark, or
+  strongest baseline. Evaluators, slices, repeats, and comparisons may evolve for
+  documented methodological reasons when previous outcomes remain visible and the
+  final claim is scoped to what was tested.
 
 ## Integration
 

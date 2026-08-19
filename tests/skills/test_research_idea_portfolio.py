@@ -35,6 +35,7 @@ def _pipeline(root: Path, *, direction: str = "broad") -> None:
 def _route_text(task: dict) -> str:
     headings = (
         "## Mechanism",
+        "## Frontier search",
         "## Primary sources\nhttps://example.com/paper",
         "## Closest work",
         "## Kill argument",
@@ -45,7 +46,7 @@ def _route_text(task: dict) -> str:
 
 def _review_payload(task: dict, *, verdict: str) -> dict:
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "route_id": task["target"],
         "verdict": verdict,
         "summary": f"{task['target']} independent review",
@@ -56,6 +57,13 @@ def _review_payload(task: dict, *, verdict: str) -> dict:
         "generality": "high",
         "top_conference_case": "strong",
         "local_feasibility": "conditional",
+        "contribution_mode": "both",
+        "frontier_freshness": "Date-sorted search covered the latest 12 months.",
+        "novelty_delta": "Introduces a new training objective absent from closest work.",
+        "publication_scale_plan": (
+            "Evaluate three model families, four datasets, current baselines, and seeds."
+        ),
+        "resource_requirements": "Stage on local GPUs, then scale to four GPUs.",
         "fatal_concerns": [] if verdict == "qualified" else ["prior art collision"],
         "probe": {},
     }
@@ -182,8 +190,8 @@ def _complete_selection(
     selection_path.parent.mkdir(parents=True, exist_ok=True)
     selection_path.write_text(
         json.dumps({
-            "schema_version": 1,
-            "policy": "quorum_80_agent_judgment",
+            "schema_version": 2,
+            "policy": "frontier_ambition_v2",
             "route_id": selected_route["target"],
             "route_task_id": selected_route["task_id"],
             "review_task_id": selected_review["task_id"],
@@ -194,6 +202,13 @@ def _complete_selection(
             "novelty": "high",
             "generality": "high",
             "top_conference_case": "strong",
+            "contribution_mode": "both",
+            "frontier_freshness": "Latest 12 months and current venue cycle checked.",
+            "novelty_delta": "A new training objective with a nontrivial mechanism.",
+            "publication_scale_plan": (
+                "Three model families, four datasets, strongest baselines, and seeds."
+            ),
+            "resource_requirements": "Four-GPU staged training and evaluation.",
             "unresolved_risks": ["implementation details will evolve"],
         }, indent=2) + "\n",
         encoding="utf-8",
@@ -260,8 +275,9 @@ def test_selection_waits_for_eighty_percent_review_quorum(tmp_path: Path) -> Non
         task for task in task_board.snapshot(root) if task["role"] == "idea-review"
     )
     assert "ACL/EMNLP/NAACL" in route_task["objective"]
-    assert "guidance, not a quota" in route_task["objective"]
-    assert "never reject or stall solely" in review_task["objective"]
+    assert "date-sorted arXiv query" in route_task["objective"]
+    assert "latest 12 months/current major-venue cycle" in review_task["objective"]
+    assert "Do not award credit for no-training convenience" in review_task["objective"]
     assert "Do not create, ensure, launch, or delegate another Team" in (
         route_task["objective"]
     )
@@ -297,6 +313,11 @@ def test_quorum_selector_can_choose_best_not_earliest(tmp_path: Path) -> None:
         if task["role"] == "idea-selector"
     )
     assert "balanced AI-frontier and foundation grounding" in selector_task["objective"]
+    assert "Do not prefer no-training, shortest-evidence-path" in (
+        selector_task["objective"]
+    )
+    assert "publication-scale empirical contribution" in selector_task["objective"]
+    assert "latest-12-month arXiv" in selector_task["objective"]
     assert "Do not create, ensure, launch, or delegate another Team" in (
         selector_task["objective"]
     )
@@ -470,7 +491,7 @@ def test_research_library_hook_forms_quorum_pipeline(
         "engineer/agent-team-lead.md",
     ]
     assert events[0]["type"] == "idea.portfolio.formed"
-    assert events[0]["policy"] == "quorum_80_agent_judgment"
+    assert events[0]["policy"] == "frontier_ambition_v2"
     assert events[0]["review_quorum"] == 10
     assert events[0]["task_count"] == 24
     assert len(task_board.snapshot(Path(events[0]["team_root"]))) == 24

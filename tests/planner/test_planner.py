@@ -3,6 +3,7 @@ from __future__ import annotations
 from argus_skill.core.models import RunnerResult
 from argus_skill.planner.planner import (
     FORBIDDEN_BARE_VERDICT_ERROR,
+    INVALID_DEPENDENCY_IDENTIFIER_ERROR,
     NO_CONCRETE_TASKS_ERROR,
     OPEN_ENDED_PROJECT_DONE_ERROR,
     PLANNER_SUPERSEDED_ERROR,
@@ -481,6 +482,45 @@ def test_plan_next_repairs_not_done_empty_task_response(monkeypatch) -> None:
     assert '"title":"title"' in runner.calls[1]["prompt"]
     assert '"objective":"work and decisive check"' in runner.calls[1]["prompt"]
     assert runner.calls[1]["options"].working_dir == "/tmp/project"
+
+
+def test_plan_next_repairs_invalid_dependency_identifier(monkeypatch) -> None:
+    runner = _SequenceRunner([
+        "\n".join(
+            [
+                "PROJECT_DONE=false",
+                "REASON=queue the selected implementation",
+                "TASK_KEY=ri<REDACTED:openai-key>",
+                "TASK_TITLE=Implement the selected method",
+                "TASK_OBJECTIVE=Build the first working method prototype.",
+            ]
+        ),
+        "\n".join(
+            [
+                "PROJECT_DONE=false",
+                "REASON=queue the selected implementation",
+                "TASK_KEY=risk-kv-offline-evaluator",
+                "TASK_TITLE=Implement the selected method",
+                "TASK_OBJECTIVE=Build the first working method prototype.",
+            ]
+        ),
+    ])
+    monkeypatch.setattr(
+        Planner,
+        "_build_planner_prompt",
+        staticmethod(lambda **kwargs: "original planner prompt"),
+    )
+
+    verdict = Planner(runner).plan_next(
+        continuous_objective="build the selected method",
+        planning_cycle=8,
+        config=PlannerConfig(working_dir="/tmp/project"),
+    )
+
+    assert verdict.error == ""
+    assert verdict.new_tasks[0].key == "risk-kv-offline-evaluator"
+    assert runner.calls[1]["run_label"] == "planner.cycle8.repair1"
+    assert INVALID_DEPENDENCY_IDENTIFIER_ERROR in runner.calls[1]["prompt"]
 
 def test_plan_next_repairs_binary_outcome_label(monkeypatch) -> None:
     forbidden_label = "no" + "-go"

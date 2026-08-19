@@ -23,10 +23,16 @@ not by itself create publication value.
   originality, claim-relevant formal/causal grounding, and field-level
   consequence.
 - Be skeptical about unsupported claims, not biased toward positive results.
+- Review constructively: first identify the strongest publishable argument the
+  evidence can support, including a negative or mixed-result argument, and limit
+  blocking feedback to issues that would actually change the venue decision.
 - Do not reward a PDF merely for existing.
-- Do not automatically accept or reject a contribution by result sign. For a
-  negative/boundary paper, require a surprising and independently useful insight,
-  plus evidence that rules out ordinary implementation inadequacy.
+- Do not accept or reject a contribution by result sign. For a negative/boundary
+  paper, value a robustly characterized regime, mechanism, scaling law, benchmark
+  lesson, or practical decision only after the positive-recovery record establishes
+  reference parity, valid learning signal/evaluator, adequate tuning and scale, and
+  exhausted credible repairs. Do not demand that the original method win after
+  engineering adequacy has been established.
 - Broader claims require broader validation; narrow claims may be supported by a
   focused public benchmark plus decisive controls.
 - Every weakness must identify a concrete repair or a justified scope boundary.

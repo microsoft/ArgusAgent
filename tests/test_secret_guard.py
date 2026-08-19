@@ -44,6 +44,19 @@ def test_redacts_sensitive_headers_and_known_environment_values() -> None:
     assert redact_secrets_text(redacted, known_values=known) == redacted
 
 
+def test_known_secret_redaction_does_not_guess_from_task_identifier_shape() -> None:
+    secret = "sk-example-secret-value-123456"
+    text = (
+        "TASK_KEY=risk-kv-offline-evaluator\n"
+        f"payload={secret}\n"
+    )
+
+    redacted = redact_secrets_text(text, known_values=(secret,))
+
+    assert "TASK_KEY=risk-kv-offline-evaluator" in redacted
+    assert secret not in redacted
+
+
 def test_structured_json_redaction_preserves_valid_json() -> None:
     redacted = redact_secrets_text(
         json.dumps(

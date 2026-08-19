@@ -17,9 +17,15 @@ from ...core.research_contract import (
 )
 from ...team import formation, pool, task_board
 
-TEAM_ID = "research-idea-pipeline-v4"
+TEAM_ID = "research-idea-pipeline-v5"
 TEAM_WIDTH = 12
 QUORUM_COUNT = math.ceil(TEAM_WIDTH * 0.8)
+SELECTION_POLICY = "frontier_ambition_v2"
+_REVIEW_SCHEMA_VERSION = 2
+_SELECTION_SCHEMA_VERSION = 2
+_CONTRIBUTION_MODES = frozenset(
+    {"high_novelty_method", "large_scale_empirical", "both"}
+)
 TEAM_ROOT = Path(".argus") / "teams"
 _STATE_PATH = Path("research") / "IDEA_PORTFOLIO.json"
 _SELECTION_PATH = Path("research") / "IDEA_SELECTION.json"
@@ -71,21 +77,33 @@ def _route_task(
             f"Time-box this independent route to {_ROUTE_TIMEOUT_S // 60} minutes. "
             f"Investigate {theme} for the Manager's current broad paper direction. "
             f"Create `{output}` immediately, then update it progressively with one "
-            "general, high-upside mechanism; a compact "
-            "primary-source trail; closest work; non-obvious gap; strongest kill "
-            "argument; and one tiny advisory observation. Use headings `## Mechanism`, "
-            "`## Primary sources`, `## Closest work`, `## Kill argument`, and "
-            "`## Faithful probe`; include primary URLs. Briefly inspect both the recent "
-            "AI frontier (ACL/EMNLP/NAACL, ICLR/ICML/NeurIPS, AAAI/AAMAS, or relevant "
-            "2024-2026 arXiv) and foundational mathematics/physics/statistics/ML when "
-            "they bear on the claim. This is guidance, not a quota: if one side has no "
-            "direct neighbor, record the limitation and continue. Inspect official "
-            "code/benchmarks and practitioner signals when useful. Stop once the "
-            "novelty boundary is credible; do not search merely to fill categories. "
+            "general, high-upside contribution in at least one of two modes: "
+            "(A) a genuinely new method, architecture, training objective, or algorithm "
+            "with a nontrivial technical delta; or (B) a publication-scale empirical "
+            "study across multiple model families, datasets/tasks, strongest current "
+            "baselines, and statistically defensible repeated trials. A small diagnostic, "
+            "benchmark audit, or negative result qualifies only with a field-changing "
+            "question and a publication-scale evidence plan. Do not prefer a route "
+            "because it needs no training, has the shortest evidence path, is cheapest, "
+            "or fits one local GPU. Feasibility is a staged resource plan, not the "
+            "scientific ranking objective. "
+            "Record a primary-source trail, closest work, non-obvious gap, strongest kill "
+            "argument, and one tiny advisory observation. Use headings `## Mechanism`, "
+            "`## Frontier search`, `## Primary sources`, `## Closest work`, "
+            "`## Kill argument`, and `## Faithful probe`; include primary URLs. Under "
+            "`## Frontier search`, record the search date, a date-sorted arXiv query "
+            "covering at least the latest 12 months, the current-year proceedings or "
+            "accepted-paper lists for the nearest major venues (ICLR/ICML/NeurIPS, "
+            "ACL/EMNLP/NAACL, AAAI/AAMAS, as relevant), and the newest close neighbors "
+            "found. Inspect foundational mathematics/physics/statistics/ML "
+            "when they bear on the claim. If no close recent work exists, preserve the "
+            "query and cutoff as evidence instead of silently falling back to classics. "
+            "Inspect official code/benchmarks and practitioner signals when useful. "
             f"{_NO_NESTED_TEAM}"
         ),
         "acceptance_check": (
-            f"`{output}` exists and contains the mechanism, sources, closest work, "
+            f"`{output}` exists and contains the mechanism, dated frontier search, "
+            "sources, closest work, contribution mode, publication-scale evidence plan, "
             "kill argument, and short probe sketch."
         ),
         "role": "idea-route",
@@ -108,21 +126,29 @@ def _review_task(
         "title": f"Independently review candidate {route_id}",
         "objective": (
             f"Time-box this review to {_REVIEW_TIMEOUT_S // 60} minutes. Act as a "
-            f"fresh research reviewer for `{route_output}`. Verify only the nearest "
-            "claim-critical prior art needed to judge the route. Decide primarily from "
-            "theoretical depth, novelty, mechanism, generality, top-conference shape, "
-            "and professional plausibility. Missing engineering detail, uncertain "
-            "early evidence, or an untested premise are not rejection reasons. Reject "
-            "only a clear prior-art duplicate, trivial wrapper, incoherent mechanism, "
-            "or no credible path to evidence. Create the output early, then finish "
+            f"fresh research reviewer for `{route_output}`. Verify the nearest "
+            "claim-critical prior art and independently repeat a date-sorted search over "
+            "the latest 12 months/current major-venue cycle. Reject stale frontier "
+            "coverage, a clear prior-art duplicate, trivial wrapper, incoherent "
+            "mechanism, or a proposal that is neither a high-novelty method nor a "
+            "publication-scale empirical contribution. A small diagnostic or benchmark "
+            "audit is not top-conference-shaped without a field-changing question and a "
+            "large, decisive evaluation plan. Decide primarily from frontier freshness, "
+            "technical novelty, mechanism, generality, and top-conference contribution. "
+            "Do not award credit for no-training convenience, shortest evidence path, "
+            "cheapness, or single-GPU fit; record resource gaps as requirements instead "
+            "of using them to select a scientifically weaker route. Missing engineering "
+            "detail or an untested premise alone is not a rejection reason. Create the "
+            "output early, then finish "
             "exactly one JSON object at "
-            f"`{output}` with schema_version=1, route_id, verdict (`qualified` or "
+            f"`{output}` with schema_version={_REVIEW_SCHEMA_VERSION}, route_id, "
+            "verdict (`qualified` or "
             "`rejected`), summary, technical_depth, originality, "
             "theoretical_grounding, field_significance, generality, "
-            "top_conference_case, local_feasibility, fatal_concerns (array), and probe "
-            "(object). Flag an AI-frontier-only or theory-only source mix as an advisory "
-            "risk and briefly inspect the missing side when relevant, but never reject "
-            "or stall solely for bucket completeness. "
+            "top_conference_case, local_feasibility, contribution_mode "
+            "(`high_novelty_method`, `large_scale_empirical`, or `both`), "
+            "frontier_freshness, novelty_delta, publication_scale_plan, "
+            "resource_requirements, fatal_concerns (array), and probe (object). "
             f"{_NO_NESTED_TEAM} A qualified probe object contains "
             "premise, evaluator_identity, comparison_identity, minimum_signal, and "
             "stop_rules."
@@ -185,23 +211,39 @@ def _selection_tasks(
             "objective": (
                 f"Read exactly the {QUORUM_COUNT} route/review pairs listed below and "
                 "choose the strongest review-qualified idea by qualitative Agent "
-                "judgment. Prioritize theoretical support, genuine novelty, generality, "
-                "a compelling top-conference thesis, balanced AI-frontier and foundation "
-                "grounding, and a credible path to evidence. "
+                "judgment. Rank frontier freshness, genuine method novelty or "
+                "publication-scale empirical contribution, technical depth, generality, "
+                "a compelling top-conference thesis, and balanced AI-frontier and "
+                "foundation grounding above local convenience. The "
+                "winner must be `high_novelty_method`, `large_scale_empirical`, or "
+                "`both`. Do not prefer no-training, shortest-evidence-path, cheapest, "
+                "smallest-model, or single-GPU ideas. Treat local feasibility only as a "
+                "requirement for a credible staged resource/compute plan; if the strongest "
+                "idea needs more compute, record that gap rather than substituting a "
+                "scientifically weaker diagnostic. Small diagnostics, benchmark audits, "
+                "and negative results are ineligible unless their planned empirical "
+                "coverage is publication-scale and the conclusion would change a "
+                "field-level belief. Require independently checked current-year/latest-"
+                "12-month arXiv and major-venue coverage, not merely a search performed "
+                "today over older known papers. "
                 "Do not inspect probe results and do not wait for the final "
                 f"{TEAM_WIDTH - QUORUM_COUNT} routes. Candidate manifest:\n"
                 + json.dumps(candidates, ensure_ascii=True, indent=2)
                 + "\nWrite `research/IDEA_SELECTION.json` as one JSON object with "
-                "schema_version=1, policy=`quorum_80_agent_judgment`, route_id, "
+                f"schema_version={_SELECTION_SCHEMA_VERSION}, "
+                f"policy=`{SELECTION_POLICY}`, route_id, "
                 "route_task_id, review_task_id, route_artifact, review_artifact, "
                 "rationale, theory_strength, novelty, generality, top_conference_case, "
-                "and unresolved_risks (array). Select only a route whose review verdict "
-                "is qualified. This is a qualitative paper decision, not a metric rank. "
+                "contribution_mode, frontier_freshness, novelty_delta, "
+                "publication_scale_plan, resource_requirements, and unresolved_risks "
+                "(array). Select only a route whose review verdict is qualified. "
+                "This is a qualitative paper decision, not a metric rank. "
                 f"{_NO_NESTED_TEAM}"
             ),
             "acceptance_check": (
                 "`research/IDEA_SELECTION.json` selects one qualified quorum route "
-                "with a substantive theory/novelty/generality rationale."
+                "with current-frontier evidence and either a high-novelty method or a "
+                "publication-scale empirical contribution."
             ),
             "role": "idea-selector",
             "owns_paths": [str(_SELECTION_PATH)],
@@ -211,22 +253,27 @@ def _selection_tasks(
         },
         {
             "task_id": probe_id,
-            "title": "Record one advisory smoke observation for the selected idea",
+            "title": "Record an advisory feasibility note for the selected idea",
             "objective": (
                 "Read `research/IDEA_SELECTION.json` and the selected route/review. "
-                f"Own only `{probe_root}/`. Run one real advisory observation with a "
-                f"hard {_PROBE_TIMEOUT_S // 60}-minute task budget. Never run a full "
-                "benchmark, training, broad sweep, or publication-scale multi-seed "
-                "study. Preserve raw evidence and write "
-                f"`{probe_root}/EVIDENCE.json` as valid research idea evidence with "
-                "decision=`continue`. Record supported/refuted/inconclusive/untested "
-                "honestly, but never use the smoke result to kill or block the selected "
-                "idea; weak evidence becomes a later implementation/design note. "
+                f"Own only `{probe_root}/`. Research does not decide whether a "
+                "large-scale empirical idea succeeds; plan/benchmark/run own that "
+                "question. If a representative observation below "
+                f"{_PROBE_TIMEOUT_S // 60} minutes can cheaply verify plumbing, data "
+                "shape, or evaluator availability without pretending to test the "
+                "publication hypothesis, run it. Otherwise skip it without consuming "
+                "model/API/GPU calls. Never run a full benchmark, training, broad sweep, "
+                "or publication-scale multi-seed study here. Preserve any raw evidence "
+                f"and write `{probe_root}/EVIDENCE.json` with decision=`continue` for "
+                "an executed feasibility observation or decision=`skipped` plus "
+                "idea_status=`untested` when deferring evidence downstream. A weak, null, "
+                "or absent research-stage observation cannot kill, block, or downgrade "
+                "the selected idea. "
                 f"{_NO_NESTED_TEAM}"
             ),
             "acceptance_check": (
-                f"`{probe_root}/EVIDENCE.json` records one bounded honest observation "
-                "with decision=continue and links to any raw artifact."
+                f"`{probe_root}/EVIDENCE.json` honestly records one bounded feasibility "
+                "observation or an untested skip; neither decides scientific success."
             ),
             "role": "idea-probe",
             "owns_paths": [probe_root],
@@ -242,7 +289,7 @@ def _portfolio_identity(direction: str) -> tuple[str, str, str]:
     normalized = " ".join(str(direction or "").split())
     if not normalized:
         raise ValueError("broad research portfolio requires a direction")
-    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(f"{TEAM_ID}\n{normalized}".encode("utf-8")).hexdigest()
     key = digest[:12]
     return (
         f"{TEAM_ID}-{key}",
@@ -353,12 +400,17 @@ def _review_payload(project_root: Path, task: dict[str, Any]) -> dict[str, Any] 
         "generality",
         "top_conference_case",
         "local_feasibility",
+        "frontier_freshness",
+        "novelty_delta",
+        "publication_scale_plan",
+        "resource_requirements",
     )
     if (
         payload is None
-        or payload.get("schema_version") != 1
+        or payload.get("schema_version") != _REVIEW_SCHEMA_VERSION
         or str(payload.get("route_id") or "") != target
         or str(payload.get("verdict") or "") not in _REVIEW_VERDICTS
+        or str(payload.get("contribution_mode") or "") not in _CONTRIBUTION_MODES
         or not str(payload.get("summary") or "").strip()
         or any(not str(payload.get(key) or "").strip() for key in required_scores)
         or not isinstance(payload.get("fatal_concerns"), list)
@@ -393,11 +445,16 @@ def _selection_payload(project_root: Path) -> dict[str, Any] | None:
         "novelty",
         "generality",
         "top_conference_case",
+        "frontier_freshness",
+        "novelty_delta",
+        "publication_scale_plan",
+        "resource_requirements",
     )
     if (
         payload is None
-        or payload.get("schema_version") != 1
-        or payload.get("policy") != "quorum_80_agent_judgment"
+        or payload.get("schema_version") != _SELECTION_SCHEMA_VERSION
+        or payload.get("policy") != SELECTION_POLICY
+        or str(payload.get("contribution_mode") or "") not in _CONTRIBUTION_MODES
         or any(not str(payload.get(key) or "").strip() for key in required)
         or not isinstance(payload.get("unresolved_risks"), list)
     ):
@@ -504,7 +561,10 @@ def _base_state(
         "direction_sha256": direction_digest,
         "team_id": team_id,
     }
-    if str(current.get("direction_sha256") or "") == direction_digest:
+    if (
+        str(current.get("direction_sha256") or "") == direction_digest
+        and str(current.get("team_id") or "") == team_id
+    ):
         for key in ("quorum_review_task_ids", "selection_team_id"):
             if key in current:
                 payload[key] = current[key]
@@ -551,7 +611,7 @@ def _ensure_selection_team(
             team_id=selection_team_id,
             mission=(
                 f"Select one ICLR-grade idea after {QUORUM_COUNT}/{TEAM_WIDTH} "
-                "independent reviews, then record one advisory smoke observation."
+                "independent reviews, then record or skip one advisory feasibility note."
             ),
             lead="engineer",
             cwd=project_root,
@@ -700,8 +760,8 @@ def _selection_from_tasks(
         return None
     return {
         **selection,
-        "schema_version": 1,
-        "policy": "quorum_80_agent_judgment",
+        "schema_version": _SELECTION_SCHEMA_VERSION,
+        "policy": SELECTION_POLICY,
         "team_id": team_id,
         "selection_team_id": f"{team_id}-selection",
         "direction_sha256": direction_digest,
@@ -806,6 +866,7 @@ def idea_portfolio_completion_issues(project_root: Path) -> tuple[str, ...]:
 
 __all__ = [
     "QUORUM_COUNT",
+    "SELECTION_POLICY",
     "TEAM_ID",
     "TEAM_ROOT",
     "TEAM_WIDTH",

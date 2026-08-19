@@ -41,14 +41,11 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
         ChecklistItem(
             id="research.literature",
             statement=(
-                "The canonical literature ledger covers the claims the project "
-                "actually depends on: the nearest competing methods, the relevant "
-                "AI-venue/recent-arXiv frontier, lineage/classic foundations, "
-                "contradictory evidence, and unresolved frontier. The Reviewer flags "
-                "source-mix imbalance as an advisory risk, not a fixed quota or "
-                "completion blocker. Each retained source has a verifiable primary URL "
-                "and project implication; judge connected coverage and documented "
-                "limitations, not category counts."
+                "The literature ledger covers claim-critical competitors, the "
+                "AI-venue/recent-arXiv frontier, foundations, and contradictions. "
+                "Source-mix imbalance is an advisory risk, not a fixed quota or "
+                "completion blocker. Retained sources need primary URLs and project "
+                "implications; judge connected coverage."
             ),
             evidence_hint=(
                 "research/LITERATURE_GROUNDING.json (canonical); "
@@ -72,9 +69,11 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
             id="research.adversarial_selection",
             statement=(
                 "After at least 80% of reviews (10/12 by default), a fresh Agent selects "
-                "qualitatively by theory, novelty, generality, and top-conference "
-                "potential. Probe metrics cannot veto the choice; final routes do not "
-                "block planning."
+                "a current-frontier contribution that is either a high-novelty method or "
+                "a publication-scale empirical study. No-training convenience, shortest "
+                "evidence path, cheapness, and single-GPU fit are not ranking advantages; "
+                "resource gaps become an explicit staged compute plan. Probe metrics "
+                "cannot veto the choice; final routes do not block planning."
             ),
             evidence_hint=(
                 "research/IDEA_SELECTION.json + selected route/review/EVIDENCE.json"
@@ -93,11 +92,13 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
             statement=(
                 "The selected thesis has a plausible nontrivial technical core, "
                 "originality, formal/causal structure, field-level potential, and an "
-                "evidence path. Research review is qualitative: no finished theorem, "
-                "fixed implementation, or reliable effect size is required. Reject only "
-                "clear duplicates, trivial prompt/schema/wrapper/scale variants, "
-                "incoherent mechanisms, or decorative math. Before any probe is designed "
-                "or executed, lock method reasonableness; the thesis may evolve later."
+                "evidence path sized to the contribution: a high-novelty method or a "
+                "publication-scale empirical study, not merely a small diagnostic. "
+                "Research review is qualitative: no finished theorem, fixed implementation, "
+                "or reliable effect size is required. Reject clear duplicates, trivial "
+                "prompt/schema/wrapper/scale variants, incoherent mechanisms, or decorative "
+                "math. Before any probe is designed or executed, lock method reasonableness; "
+                "the thesis may evolve later."
             ),
             evidence_hint=(
                 "research/RESEARCH_BRIEF.md and research/ideation/{routes,debates}/"
@@ -106,15 +107,17 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
         ChecklistItem(
             id="research.signal_derisk",
             statement=(
-                "Only after research.thesis has qualitatively admitted a candidate, "
-                "run one REAL advisory probe, normally <=10 minutes / <=$1; never run "
-                "the formal benchmark, training, broad sweep, or publication-scale "
-                "multi-seed study. The Planner authors the evidence contract. Preserve "
-                "commands/raw outputs and record untested/inconclusive/supported/refuted "
-                "honestly. The probe cannot kill or block a qualified idea or become a "
-                "mechanical routing decision: infrastructure/implementation failures, "
-                "baseline ceiling/floor saturation, and missing predeclared power and "
-                "headroom are limitations. Later stages own decisive benchmarks. "
+                "Research does not decide whether the selected empirical idea succeeds. "
+                "After research.thesis admits a candidate, optionally run one <=10-minute "
+                "feasibility observation only when it checks plumbing, data shape, or "
+                "evaluator availability without masquerading as a hypothesis test. For "
+                "training-heavy or large-scale empirical work, explicitly skip the probe "
+                "as untested and advance to plan/benchmark/run. The Planner authors the "
+                "evidence contract. Preserve raw evidence honestly. A weak, failed, or "
+                "inconclusive probe cannot kill, block, downgrade, or re-rank a qualified "
+                "idea or become a mechanical routing decision. Infrastructure failures, "
+                "saturation, and missing predeclared power or headroom are limitations; "
+                "later stages own scientific outcomes and decisive benchmarks. "
                 "`argus_skill.verticals.research.signal_derisk validate` is available "
                 "only for "
                 "the default scalar-comparison shape and never decides quality."
@@ -319,16 +322,26 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
         ChecklistItem(
             id="run.method_diagnosis_recall",
             statement=(
-                "Before calling an underperforming idea a scientific failure, audit "
-                "whether the implementation is faithful and competitive: compare "
+                "Treat an underperforming selected idea as an engineering/debugging "
+                "signal first, not evidence that the idea is wrong. Before accepting a "
+                "scientific failure, run a positive-recovery diagnosis loop: compare "
                 "against trusted reference behavior, inspect actual executed knobs "
                 "and loaded checkpoint identity/capability when relevant, inspect "
                 "evaluator semantics, diagnose optimization/tuning/capacity/data "
-                "limits, and test concrete plausible repairs when their information "
-                "gain justifies the cost. Classify the outcome as misconfigured, "
-                "under-engineered, genuine method failure, or infeasible. Do not use "
-                "a fixed retry count, generic extra scale, or passing unit tests as a "
-                "substitute for this diagnosis."
+                "limits, verify gradients/learning signals and treatment activation, "
+                "reproduce a relevant competitive baseline, and iteratively test concrete "
+                "plausible method/implementation repairs while they have scientific "
+                "rationale and information value. Aim to recover a genuine positive "
+                "result with evidence proportional to the claim and budget. There is no "
+                "universal requirement that every seed, benchmark, or strongest baseline "
+                "must succeed. Evaluators, conditions, and comparisons may evolve for a "
+                "documented methodological reason when earlier outcomes remain visible "
+                "and the final claim is scoped accordingly. Classify the result as genuine "
+                "method failure only after an independent Reviewer finds the "
+                "implementation competitive and no credible repair remains or the "
+                "approved resource budget is exhausted. Classify interim outcomes as "
+                "misconfigured, under-engineered, inconclusive, or still-repairable. Do "
+                "not stop because of a fixed retry count."
             ),
             evidence_hint=(
                 "reference reproduction + implementation source + executed manifests "
@@ -370,16 +383,20 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
         ChecklistItem(
             id="analysis.thesis",
             statement=(
-                "The evidence supports one defensible, venue-relevant thesis. Internal "
-                "records preserve all valid outcomes, but the proposed paper is a "
-                "selective argument: it leads with the strongest valid evidence for the "
-                "thesis, retains claim-critical contrary evidence, and keeps "
-                "misconfigured runs, exploratory dead ends, and secondary diagnostics "
-                "in audit artifacts or an appendix rather than dumping them into the "
-                "main narrative. A selected idea with a plausible mechanism receives "
-                "credible targeted repair before weak results are reframed for a paper. "
-                "If no strong thesis survives, return to implementation, experiments, "
-                "or research/plan instead of drafting."
+                "Convert the completed evidence into the strongest honest, venue-relevant "
+                "paper thesis. Positive, mixed, null, and negative outcomes are all valid "
+                "starting points. When the original headline fails, characterize the "
+                "boundary, mechanism, scaling regime, failure law, benchmark lesson, or "
+                "practical decision it reveals, and make that insight the paper rather "
+                "than treating result sign as a reason to abandon drafting. Internal "
+                "records preserve all valid outcomes; the manuscript remains a selective "
+                "argument that leads with its strongest evidence and includes contrary "
+                "evidence when it changes interpretation. Before settling on a negative "
+                "thesis, complete the run-stage positive-recovery loop and incorporate "
+                "credible engineering repairs with clear information value. This is "
+                "active method development, not defensive paperwork. Return upstream "
+                "only when the measurement is invalid "
+                "or no truthful, useful conclusion can be formed after this reframing."
             ),
             evidence_hint="paper/main.tex + canonical raw evidence + Reviewer judgment",
         ),
@@ -391,9 +408,11 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
                 "paper/main.tex uses the selected venue's official structure and tells "
                 "one coherent argument, not a chronological experiment report. The "
                 "title, abstract, introduction, method, and experiments all serve the "
-                "same thesis; the paper does not introduce "
-                "a method as its contribution and then make that method's failure the "
-                "main conclusion without an independently valuable insight. A "
+                "same thesis. If a proposed method does not win, write the paper around "
+                "the robustly characterized boundary, mechanism, scaling behavior, "
+                "failure mode, or practical decision that the experiments establish; "
+                "do not write an apologetic failure log and do not abandon a truthful "
+                "paper merely because the sign is negative. A "
                 "literature review instead aligns its scope, taxonomy/comparison "
                 "frame, source evidence, synthesis, limitations, and conclusions; it "
                 "must not invent a method or experiment section merely to mimic an "
@@ -501,11 +520,15 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
         ChecklistItem(
             id="review.publication_value",
             statement=(
-                "As a venue reviewer, identify the strongest accept argument before "
-                "passing. A valid experiment, transparent failure report, or complete "
-                "artifact bundle is not enough. Original research must deliver a clear "
-                "insight, method/system, theorem, or decision-relevant boundary. A "
-                "weak result cannot be rescued by renaming it a diagnostic. A "
+                "Act as a constructive senior coauthor before acting as a gatekeeper: "
+                "identify and strengthen the best accept argument supported by the "
+                "actual evidence. Result sign, failure to beat a baseline, modest effect "
+                "size, or a changed thesis is not by itself a rejection reason. Positive "
+                "or negative original research may contribute a method/system, theorem, "
+                "mechanism, scaling law, robust boundary, benchmark lesson, or "
+                "decision-relevant finding. Request at most the few claim-critical "
+                "repairs that would change the decision; keep lesser concerns advisory "
+                "and do not reopen settled stages. A "
                 "literature review must deliver valuable coverage, synthesis, critique, "
                 "and a defensible map of the field rather than a paper-by-paper list."
             ),
@@ -658,9 +681,9 @@ def _apply_venue_to_checklist_body(body: str, venue: VenueProfile) -> str:
     )
     body = body.replace(
         "The title, abstract, introduction, method, and experiments all serve "
-        "the same thesis;",
+        "the same thesis.",
         f"Required venue end matter: {venue.draft_section_tail()}. The title, "
-        "abstract, introduction, method, and experiments all serve the same thesis;",
+        "abstract, introduction, method, and experiments all serve the same thesis.",
     )
     if venue.key == "FRONTIERS_SLEEP":
         replacements = {
@@ -859,32 +882,55 @@ VERIFICATION_STAGE_PROFILES = {
 # independent Reviewer; an Engineer verifier cannot waive this review.
 REQUIRE_INDEPENDENT_REVIEW = True
 
+_PROGRESS_ORIENTED_RESEARCH_POLICY = (
+    "Progress-oriented paper policy: use each stage to make the paper stronger, not "
+    "to search for reasons to stop. Apply requirements proportionally to the actual "
+    "claim and contribution shape; mark inapplicable items instead of manufacturing "
+    "work. Reuse certified upstream evidence and do not reopen it without a concrete "
+    "contradiction. Default to advance with explicit limitations and a small number of "
+    "high-value next actions. Only fabricated evidence, invalid measurement, a headline "
+    "claim contradicted by the data, or a truly submission-critical defect is a hard "
+    "blocker. Treat negative and mixed results as engineering/debugging signals first: "
+    "actively pursue evidence-based implementation, optimization, data, scale, evaluator, "
+    "and method repairs toward a genuine positive result. Only after independent "
+    "engineering-adequacy review and exhausted credible repairs may the remaining "
+    "boundary, mechanism, scaling, or decision finding become the paper. Metrics, "
+    "seeds, slices, and baselines may evolve for documented scientific reasons; keep "
+    "the final claim scoped to the resulting evidence. "
+)
+
 _REVIEWER_ENGINEERING_AUDIT = (
     "For experiment claims, inspect implementation and raw rows once, then reuse "
     "them until a dependency changes. Separate method results from infrastructure "
     "or evaluator failure. Research-stage smoke probes are short advisory "
     "observations, not miniature benchmarks or idea-kill gates: judge the idea "
-    "primarily from theory, novelty, mechanism, generality, and professional "
-    "plausibility. Weak, null, noisy, underpowered, misconfigured, or inconclusive "
+    "primarily from current-frontier novelty, mechanism, generality, and professional "
+    "plausibility. No-training convenience or local ease confers no scientific credit. "
+    "Weak, null, noisy, underpowered, misconfigured, or inconclusive "
     "smoke results cannot by themselves trigger replan or reject a review-qualified "
-    "idea; record limitations for later iterative engineering. Source-mix imbalance "
-    "between AI-frontier and foundational work is advisory, never a quota.\n"
+    "idea; record limitations for later iterative engineering.\n"
 )
 
 _PLANNER_RESEARCH_ORCHESTRATION = (
+    _PROGRESS_ORIENTED_RESEARCH_POLICY +
     "Research orchestration: run routes and reviews concurrently. At an 80% review "
-    "quorum (10/12 by default), let a fresh selector Agent choose qualitatively by "
-    "theory, novelty, generality, top-conference shape, and evidence path; do not "
-    "wait for the final routes. Probe only that winner with one advisory observation "
-    "normally below ten minutes; never use a full benchmark, training run, broad "
-    "sweep, or publication-scale multi-seed study as a research probe. The smoke "
-    "result cannot kill or block the selected idea. Keep the resulting critical path "
+    "quorum (10/12 by default), let a fresh selector Agent choose a current-frontier "
+    "high-novelty method or publication-scale empirical contribution. Never optimize "
+    "selection for no training, the shortest evidence path, cheapness, or single-GPU "
+    "fit; require a credible staged resource plan instead. Verify latest-12-month "
+    "arXiv and current major-venue coverage before selection; do not "
+    "wait for the final routes. Probe only that winner when a sub-ten-minute observation "
+    "can verify feasibility without pretending to decide the full hypothesis; otherwise "
+    "record it untested and advance. Never use a full benchmark, training run, broad "
+    "sweep, or publication-scale multi-seed study as a research probe. Research-stage "
+    "outcomes cannot kill or block the selected idea. Keep the resulting critical path "
     "below one hour when default resources allow it. A failed hypothesis or rejected "
     "direction is project memory, not automatic completion or a forced next action; "
     "only the independently reviewed research target closes the project.\n"
 )
 
 _ENGINEER_RESEARCH_EXECUTION = (
+    _PROGRESS_ORIENTED_RESEARCH_POLICY +
     "Research execution: keep independent work file-disjoint and parallel. Respect "
     "the route/review/selector/probe time boxes, stop searching once the novelty "
     "boundary is credible, and treat source-balance gaps and smoke outcomes as "

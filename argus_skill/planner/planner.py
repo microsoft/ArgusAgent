@@ -33,6 +33,7 @@ TASK_SCOPE_BOUNDED = "bounded"
 TASK_SCOPE_FINAL_SUBMISSION = "final_submission"
 NO_CONCRETE_TASKS_ERROR = "planner said not done but produced no concrete tasks"
 FORBIDDEN_BARE_VERDICT_ERROR = "planner used a forbidden bare launch verdict"
+INVALID_DEPENDENCY_IDENTIFIER_ERROR = "invalid planner task dependency identifier"
 OPEN_ENDED_PROJECT_DONE_ERROR = (
     "standing continuous objective cannot finish with PROJECT_DONE=true; "
     "delegate the next distinct task or report an explicit wait"
@@ -349,7 +350,7 @@ class Planner:
             rejection = OPEN_ENDED_PROJECT_DONE_ERROR
         repairable_metadata_error = str(rejection or "").startswith(
             ("invalid planner task metadata:", "planner task ")
-        )
+        ) or rejection == INVALID_DEPENDENCY_IDENTIFIER_ERROR
         if (
             rejection == NO_CONCRETE_TASKS_ERROR
             or rejection == FORBIDDEN_BARE_VERDICT_ERROR
@@ -848,7 +849,7 @@ def parse_planner_text(text: str) -> PlannerVerdict:
                 project_done=False,
                 reason="planner emitted an invalid TASK_KEY or TASK_DEPS value",
                 raw_text=text,
-                error="invalid planner task dependency identifier",
+                error=INVALID_DEPENDENCY_IDENTIFIER_ERROR,
             )
         try:
             scope = parse_task_scope(row.get("TASK_SCOPE", ""))
