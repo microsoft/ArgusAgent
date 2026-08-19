@@ -26,11 +26,14 @@ OPERATIONS = frozenset(
 )
 
 
+_PLANNER_DECISION_PAYLOAD_EXAMPLE = (
+    '{"project_done":false,"reason":"why","advance_to_stage":"run",'
+    '"tasks":[{"key":"task-key","deps":[],"title":"title",'
+    '"objective":"work and decisive check","scope":"bounded"}]}'
+)
 _PLANNER_DECISION_EVENT = decision_event_instruction(
     "planner",
-    '{"project_done":false,"reason":"why","advance_to_stage":"run",'
-    '"tasks":[{"key":"task-key",'
-    '"deps":[],"title":"title","objective":"work and decisive check"}]}',
+    _PLANNER_DECISION_PAYLOAD_EXAMPLE,
 )
 
 _PLANNER_CORE_CONTRACT = """
@@ -60,7 +63,9 @@ commands, tests, and iteration.
 - Payload: `project_done`, `reason`, `tasks`, `advance_to_stage`. In staged work,
   `advance_to_stage` is required: current stage to stay, exact later stage to
   advance. Host validates it. Task fields: `key`, `deps`,
-  `title`, `objective`, and optional `acceptance_check`, `parallel_safe`,
+  `title`, `objective`, and `scope`; `scope` must be `bounded` unless the task
+  is the project-final research submission/certification gate, where it must be
+  `final_submission`. Optional task fields: `acceptance_check`, `parallel_safe`,
   `owns_paths`, and `vertical`; omit `vertical` to inherit the campaign route.
 - For a real external blocker, use `waiting` with `blocker_fingerprint`,
   `recheck_condition`, and `recheck_token`; add `operator_action_required=true`
@@ -375,6 +380,22 @@ def build_continuous_prompt(
     if os.environ.get("ARGUS_SKILL_EXTERNAL_COMPLETION_GATE", "").strip():
         external_target_block = _EXTERNAL_TARGET_CONTRACT
 
+    final_submission_scope_block = ""
+    final_submission_scope_applies = (
+        prompt_context.completion_gate == "certified"
+        or _research_target_level is not None
+    )
+    if stage == "submission" and final_submission_scope_applies:
+        final_submission_scope_block = (
+            "## Final-submission task scope\n"
+            "For a research submission or final independent certification task, "
+            "the Planner structured task must emit `scope:\"final_submission\"` "
+            "(legacy key-value: `TASK_SCOPE=final_submission`) so the successful "
+            "Reviewer verdict can satisfy the final gate. Use `scope:\"bounded\"` "
+            "for ordinary prerequisite work, and do not use final_submission for "
+            "verticals without a final-submission or research-target gate."
+        )
+
     planner_hygiene_block = (
         "## Runtime hygiene\n"
         "Use active project files, project-local skills, and "
@@ -397,6 +418,7 @@ def build_continuous_prompt(
         host_policy_block,
         objective_contract_block,
         external_target_block,
+        final_submission_scope_block,
         stage_checklist,
         stage_gate_block,
         matched_planner_skill_block,

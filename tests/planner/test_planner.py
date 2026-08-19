@@ -391,11 +391,13 @@ def test_plan_next_uses_process_decision_without_final_message(monkeypatch) -> N
                             "deps": [],
                             "title": "Repair the parser",
                             "objective": "Fix the parser and run its focused test.",
+                            "scope": "bounded",
                         }, {
                             "key": "verify",
                             "deps": ["repair"],
                             "title": "Verify the repair",
                             "objective": "Run the integration check.",
+                            "scope": "bounded",
                             "vertical": "argus_maintenance",
                         }],
                     },
@@ -418,6 +420,74 @@ def test_plan_next_uses_process_decision_without_final_message(monkeypatch) -> N
     assert verdict.new_tasks[0].key == "repair"
     assert verdict.new_tasks[1].deps == ["repair"]
     assert verdict.new_tasks[1].vertical == "argus_maintenance"
+
+
+def test_planner_decision_event_preserves_task_scope(monkeypatch) -> None:
+    class _MissingScopeRunner:
+        def run_exec(self, **_kwargs):
+            return RunnerResult(
+                exit_code=0,
+                agent_messages=[],
+                role_decisions=[{
+                    "role": "planner",
+                    "payload": {
+                        "project_done": False,
+                        "reason": "final certification remains",
+                        "tasks": [{
+                            "key": "final-certification",
+                            "deps": [],
+                            "title": "Obtain final certification",
+                            "objective": "Run the final independent Reviewer gate.",
+                        }],
+                    },
+                }],
+            )
+
+    class _DecisionRunner:
+        def run_exec(self, **_kwargs):
+            return RunnerResult(
+                exit_code=0,
+                agent_messages=[],
+                role_decisions=[{
+                    "role": "planner",
+                    "payload": {
+                        "project_done": False,
+                        "reason": "final certification remains",
+                        "tasks": [{
+                            "key": "final-certification",
+                            "deps": [],
+                            "title": "Obtain final certification",
+                            "objective": "Run the final independent Reviewer gate.",
+                            "scope": "final_submission",
+                        }],
+                    },
+                }],
+                thread_id="planner-thread",
+            )
+
+    monkeypatch.setattr(
+        Planner,
+        "_build_planner_prompt",
+        staticmethod(lambda **kwargs: "direct execution prompt"),
+    )
+
+    rejected = Planner(_MissingScopeRunner()).plan_next(
+        continuous_objective="certify final submission",
+        config=PlannerConfig(working_dir="/tmp/project"),
+    )
+    assert rejected.new_tasks == []
+    assert rejected.error == (
+        "invalid planner task metadata: "
+        "TASK_SCOPE must be bounded or final_submission"
+    )
+
+    verdict = Planner(_DecisionRunner()).plan_next(
+        continuous_objective="certify final submission",
+        config=PlannerConfig(working_dir="/tmp/project"),
+    )
+
+    assert verdict.error == ""
+    assert verdict.new_tasks[0].scope == "final_submission"
 
 
 def test_parse_planner_task_vertical() -> None:
