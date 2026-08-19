@@ -12,9 +12,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+# A label may be carried by a prefixed name. `\b` does not open after an
+# underscore, so `api_key=` redacted while `OPENAI_API_KEY=` — the form the key
+# actually takes in an environment dump, a shell trace or a provider error —
+# did not. This widens where a known label may start, never which labels count,
+# so `FOO_TOKEN=` is read and `FOOTOKEN=` still is not. Redaction stays keyed to
+# the label; guessing a secret from the shape of its value remains out of scope.
+_LABEL_START = r"(?<![A-Za-z0-9])"
+
 _HIGH_CONFIDENCE_INLINE_SECRET_PATTERN = (
     re.compile(
-        r"(?i)\b((?:x[_-]?)?api[_-]?key|client[_-]?secret|private[_-]?key)\b"
+        r"(?i)" + _LABEL_START
+        + r"((?:x[_-]?)?api[_-]?key|client[_-]?secret|private[_-]?key)\b"
         r"(['\"]?)([^\S\r\n]*[=:])"
         r"(?![^\S\r\n]*['\"]?<REDACTED:)"
         r"[^\S\r\n]*['\"]?([^\s'\",;]{8,})['\"]?"
@@ -23,7 +32,8 @@ _HIGH_CONFIDENCE_INLINE_SECRET_PATTERN = (
 )
 _AMBIGUOUS_INLINE_SECRET_PATTERN = (
     re.compile(
-        r"(?i)\b(secret|token|password|passwd|auth)\b"
+        r"(?i)" + _LABEL_START
+        + r"(secret|token|password|passwd|auth)\b"
         r"(['\"]?)([^\S\r\n]*[=:])"
         r"(?![^\S\r\n]*['\"]?<REDACTED:)"
         r"[^\S\r\n]*['\"]?([^\s'\",;]{8,})['\"]?"

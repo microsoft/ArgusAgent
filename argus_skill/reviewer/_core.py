@@ -23,7 +23,7 @@ from ..core.ports import RunnerBackend
 from ..core.role_decision import latest_role_decision
 from ..core.run_gateway import run_exec as gateway_run_exec
 from ..core.stop_kinds import normalize_stop_kind
-from ._parsing import _find_decision_in_messages
+from ._parsing import _find_decision_in_messages, decision_from_payload
 
 log = logging.getLogger(__name__)
 
@@ -262,6 +262,10 @@ class Reviewer:
                 backend_stop_kind=backend_stop_kind,
             )
         process_decision = latest_role_decision(result, "reviewer")
+        # A recorded decision is already structured; reading it directly keeps
+        # the runtime from serialising its own payload back to JSON text and
+        # re-parsing that. `decision_messages` stays the evidence quoted back to
+        # the operator when nothing parses.
         decision_messages = (
             [json.dumps(process_decision, ensure_ascii=True)]
             if process_decision is not None
@@ -280,7 +284,11 @@ class Reviewer:
                 thread_id=rev_tid,
                 static_fingerprint=new_fp,
             )
-        parsed = _find_decision_in_messages(decision_messages)
+        parsed = (
+            decision_from_payload(process_decision)
+            if process_decision is not None
+            else _find_decision_in_messages(decision_messages)
+        )
         if parsed is None:
             from ._parsing import describe_unparsed_verdict
 

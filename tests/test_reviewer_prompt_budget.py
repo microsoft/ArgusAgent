@@ -6,40 +6,58 @@ review round. Its fixed instruction prose had grown to restate the same ideas
 planner-report / checkpoint / step-back prose roughly in half while preserving
 every consumed named verdict field and every anti-cheat guardrail.
 
-This test pins a CHARACTER BUDGET on the built non-measured prompt so fixed
-policy prose cannot silently regrow. Task-specific checklists remain allowed;
-role/routing and named-verdict explanations must stay compact.
+This test pins a CHARACTER BUDGET on the FIXED POLICY PROSE so it cannot
+silently regrow. It used to pin the whole assembled prompt, which measured the
+wrong thing: on the representative build below the research stage checklist is
+3.8k of the 8.6k total, so 45% of a budget meant for role/routing prose was
+actually being spent by a vertical's checklist. Either side could then exhaust
+the other's headroom, and the cheapest way out of a red build was to raise the
+cap — which is how a guard against growth becomes a record of it.
+
+Task-specific content (stage checklist, matched Skills, Wiki, research target,
+objective and operator text) is subtracted out. Those blocks are owned by a
+vertical or by the round and are meant to vary; what must stay compact is the
+role/routing and named-verdict prose this file was written to protect.
 """
 
 from __future__ import annotations
 
 from argus_skill.reviewer import Reviewer
 
-# Repeated evidence-policy prose was removed; the representative prompt is now
-# about 9.4k chars. Keep headroom for task checklists without permitting the
-# global policy block to return.
-#
-# 9_000 -> 9_500 for two deliberate new blocks, one from each side of the merge,
-# neither of them the prose regrowth this guard exists to catch:
-#   * the RESULT_FIELD_CHOICES enumeration (602 chars) — the legal verbatim
-#     values for each research-result field, replacing prose that named the
-#     fields but not what they accept, which is the mismatch that voided results;
-#   * the root-cause evidence bar (~370 chars) — a threshold miss is not a
-#     diagnosis, so a dominant-stage or replacement-architecture claim needs
-#     profiling or a counterfactual behind it.
-# 9_500 -> 10_050 for the two independent Research ideation gates. The
-# deterministic validator carries the detailed contract; the repeated Reviewer
-# prompt adds only the concise portfolio/adversarial checklist entries.
-NON_MEASURED_BUDGET = 8_000
+#: Blocks that belong to a vertical or to the round, not to the fixed contract.
+_TASK_OWNED_BLOCKS = (
+    "stage_checklist",
+    "matched_skill",
+    "direct_memory",
+    "wiki_curator",
+    "research_target",
+    "objective_context",
+)
+
+# Measured at 4_546 for the representative build. The margin is for one more
+# deliberate contract block, not for a paragraph of restatement: the last
+# addition was the plan-signal vocabulary (~580 chars), which names the two
+# legal `plan_signal` values and the three fields a plan challenge carries.
+# `reconsider` is the only token that opens the Reviewer -> Manager -> Planner
+# channel and it had appeared in no prompt, so deleting that block closes the
+# channel rather than tightening the prose. Re-compress before raising this.
+FIXED_PROSE_BUDGET = 5_000
 
 
-def _build(measured: bool, monkeypatch) -> str:
+def _fixed_prose_chars(reviewer: Reviewer) -> int:
+    """Size of the contract prose alone, after the built prompt is measured."""
+    stats = reviewer.last_prompt_block_stats
+    task_owned = sum(stats[name]["chars"] for name in _TASK_OWNED_BLOCKS)
+    return stats["static_total"]["chars"] - task_owned
+
+
+def _build(measured: bool, monkeypatch) -> tuple[str, Reviewer]:
     if measured:
         monkeypatch.setenv("ARGUS_SKILL_MEASURED_MODE", "1")
     else:
         monkeypatch.delenv("ARGUS_SKILL_MEASURED_MODE", raising=False)
     r = Reviewer(runner=None, skill_store=None)
-    return r._build_prompt(
+    prompt = r._build_prompt(
         objective="minimize cand_ms on the kernel",
         operator_messages=["make the kernel faster"],
         planner_review_instruction="",
@@ -49,23 +67,51 @@ def _build(measured: bool, monkeypatch) -> str:
         main_error=None,
         prior_checkpoint={},
     )
+    return prompt, r
 
 
-def test_non_measured_prompt_within_budget(monkeypatch):
-    p = _build(measured=False, monkeypatch=monkeypatch)
-    assert len(p) < NON_MEASURED_BUDGET, (
-        f"reviewer non-measured prompt is {len(p)} chars, over the "
-        f"{NON_MEASURED_BUDGET} budget. The fixed instruction prose has "
-        "regrown — re-compress (delete repetition/examples) rather than raising "
-        "this cap, unless a genuinely new block was deliberately added."
+def _prompt(measured: bool, monkeypatch) -> str:
+    return _build(measured, monkeypatch)[0]
+
+
+def test_fixed_contract_prose_within_budget(monkeypatch):
+    _prompt_text, reviewer = _build(measured=False, monkeypatch=monkeypatch)
+    fixed = _fixed_prose_chars(reviewer)
+    assert fixed < FIXED_PROSE_BUDGET, (
+        f"reviewer fixed contract prose is {fixed} chars, over the "
+        f"{FIXED_PROSE_BUDGET} budget. Re-compress (delete repetition and "
+        "examples) rather than raising this cap, unless a genuinely new "
+        "contract block was deliberately added — and say which, here."
     )
+
+
+def test_the_budget_ignores_content_a_vertical_owns(monkeypatch):
+    """A longer stage checklist must not spend the contract's headroom.
+
+    This is the failure the whole-prompt cap had: the research checklist is
+    most of the assembled prompt, so a vertical adding one line pushed the
+    role prose over a limit it had not moved.
+    """
+    _prompt_text, reviewer = _build(measured=False, monkeypatch=monkeypatch)
+    before = _fixed_prose_chars(reviewer)
+    stats = dict(reviewer.last_prompt_block_stats)
+    grown = dict(stats["stage_checklist"])
+    grown["chars"] += 4_000
+    stats["stage_checklist"] = grown
+    stats["static_total"] = {
+        **stats["static_total"],
+        "chars": stats["static_total"]["chars"] + 4_000,
+    }
+    reviewer._last_prompt_block_stats = stats
+
+    assert _fixed_prose_chars(reviewer) == before
 
 
 def test_compression_removed_redundant_examples(monkeypatch):
     # Tie the guard to the actual compression, not just a byte count: these
     # verbose snippets were deleted and must not reappear (they are the
     # redundancy the cut targeted).
-    p = _build(measured=False, monkeypatch=monkeypatch)
+    p = _prompt(measured=False, monkeypatch=monkeypatch)
     assert "you are not a JSON robot" not in p
     assert "Anti-pattern: agent shows test_accuracy=0.98" not in p
     assert "expense_tracker/ package using unittest" not in p
@@ -77,7 +123,7 @@ def test_the_verdict_vocabulary_is_stated_once(monkeypatch):
     # once in the role block and again, at greater length, in the handoff
     # policy. Two definitions of the same four words is the redundancy this
     # budget exists to catch, and it cost more than the sentence it funded.
-    p = _build(measured=False, monkeypatch=monkeypatch)
+    p = _prompt(measured=False, monkeypatch=monkeypatch)
     assert p.count("concrete in-scope material gap") == 1
     assert p.count("wrong target or real boundary change") == 1
 
@@ -190,7 +236,7 @@ def test_research_target_context_stays_compact(tmp_path, monkeypatch):
 
 
 def test_reviewer_prompt_records_process_decision_without_final_footer(monkeypatch) -> None:
-    prompt = _build(measured=False, monkeypatch=monkeypatch)
+    prompt = _prompt(measured=False, monkeypatch=monkeypatch)
 
     assert "ARGUS_ROLE_DECISION=" in prompt
     assert '"role":"reviewer"' in prompt
@@ -203,7 +249,7 @@ def test_reviewer_prompt_records_process_decision_without_final_footer(monkeypat
 def test_reviewer_accepts_implementation_grounding_proportionally(
     monkeypatch,
 ) -> None:
-    prompt = _build(measured=False, monkeypatch=monkeypatch)
+    prompt = _prompt(measured=False, monkeypatch=monkeypatch)
 
     assert "primary-source grounding" in prompt
     assert "community implementations may suffice for implementation details" in prompt

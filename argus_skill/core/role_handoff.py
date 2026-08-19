@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Mapping, Sequence
 
-from .operator_decision import parse_agent_operator_options
+from .operator_decision import normalize_agent_options, parse_agent_operator_options
 
 HandoffOwner = Literal["engineer", "reviewer", "operator"]
 
@@ -79,34 +79,72 @@ def _runtime_owned_review_request(question: str, options: list[dict]) -> bool:
     return bool(_REVIEW_ACTION_RE.search(text)) and not _OPERATOR_AUTHORITY_RE.search(text)
 
 
-def parse_engineer_handoff(message: str) -> EngineerHandoff:
-    question = _named_value(message, "OPERATOR_QUESTION")
-    options = parse_agent_operator_options(message)
-    declared_owner = _named_value(message, "NEXT_OWNER", limit=32).casefold()
+def resolve_engineer_handoff(
+    *,
+    next_owner: object,
+    operator_question: object,
+    operator_options: Sequence[dict] = (),
+) -> EngineerHandoff:
+    """Resolve the next role from handoff fields that are already separated.
 
-    if declared_owner == "operator" and question:
-        return EngineerHandoff(
-            "operator",
-            operator_question=question,
-            operator_options=tuple(options),
-            source="structured",
-        )
-    if declared_owner == "reviewer" and (
-        not question or _runtime_owned_review_request(question, options)
+    Both callers below reach this with three values. The difference is only
+    where they came from: the Engineer's decision event states them, and a
+    prose round summary has to be read for them.
+    """
+    owner = str(next_owner or "").strip().casefold()[:32]
+    question = str(operator_question or "").strip()
+    if question.casefold().rstrip(".") in _EMPTY_VALUES:
+        question = ""
+    question = question[:500]
+    options = tuple(operator_options or ())
+
+    if owner == "operator" and question:
+        return EngineerHandoff("operator", question, options, source="structured")
+    if owner == "reviewer" and (
+        not question or _runtime_owned_review_request(question, list(options))
     ):
         return EngineerHandoff("reviewer", source="structured")
-    if declared_owner == "engineer" and not question:
+    if owner == "engineer" and not question:
         return EngineerHandoff("engineer", source="structured")
-    if not declared_owner and question and _runtime_owned_review_request(question, options):
+    if not owner and question and _runtime_owned_review_request(question, list(options)):
         return EngineerHandoff("reviewer", source="legacy_reviewer_request")
     if question:
         return EngineerHandoff(
-            "operator",
-            operator_question=question,
-            operator_options=tuple(options),
-            source="operator_question",
+            "operator", question, options, source="operator_question"
         )
     return EngineerHandoff("reviewer", source="default")
 
 
-__all__ = ["EngineerHandoff", "HandoffOwner", "parse_engineer_handoff"]
+def decision_engineer_handoff(payload: Mapping[str, object]) -> EngineerHandoff:
+    """Read the handoff straight out of the Engineer's decision event.
+
+    The runtime used to render this payload into ``NEXT_OWNER=`` lines and read
+    them back. That put the model's own prose — rendered first — in a position
+    to answer questions the payload had already answered.
+    """
+    raw_options = payload.get("operator_options")
+    return resolve_engineer_handoff(
+        next_owner=payload.get("next_owner"),
+        operator_question=payload.get("operator_question"),
+        operator_options=normalize_agent_options(
+            option for option in (raw_options or ()) if isinstance(option, dict)
+        ),
+    )
+
+
+def parse_engineer_handoff(message: str) -> EngineerHandoff:
+    """Read the handoff out of a prose round summary that carried no decision."""
+    return resolve_engineer_handoff(
+        next_owner=_named_value(message, "NEXT_OWNER", limit=32),
+        operator_question=_named_value(message, "OPERATOR_QUESTION"),
+        operator_options=tuple(parse_agent_operator_options(message)),
+    )
+
+
+__all__ = [
+    "EngineerHandoff",
+    "HandoffOwner",
+    "decision_engineer_handoff",
+    "parse_engineer_handoff",
+    "resolve_engineer_handoff",
+]

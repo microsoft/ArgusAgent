@@ -42,15 +42,14 @@ _MAX_SHARED_CTX_CHARS = 100_000_000
 # locally correct round without anything ever questioning the plan itself.
 # Keep these values in step with ``argus_skill.reviewer._parsing``.
 _PLAN_SIGNAL_VOCABULARY = (
-    "`plan_signal` is `continue` or `reconsider`. Use `reconsider` when the "
-    "evidence says the plan itself — not this round's execution — is what now "
-    "stands between the operator and the objective; rounds that each repair a "
-    "different symptom of one design are evidence for that, not proof. Then "
-    "name the assumption you are challenging in `plan_challenge`, the better "
-    "route in `plan_alternative`, and whose call it is in `authority_impact`: "
-    "`technical` for a working choice the team may replace, `manager_contract` "
-    "or `operator` for a commitment only they can relax. A plan or protocol "
-    "the team authored for itself is a working choice.\n"
+    "`plan_signal` is `continue`, or `reconsider` when the evidence says the "
+    "plan itself — not this round's execution — is what now stands between the "
+    "operator and the objective; rounds that each repair a different symptom of "
+    "one design are evidence for that. Then add `plan_challenge` (the assumption "
+    "you are challenging), `plan_alternative` (the better route), and "
+    "`authority_impact`: `technical` for a working choice the team may replace, "
+    "`manager_contract` or `operator` for a commitment only they can relax. A "
+    "plan the team authored for itself is a working choice.\n"
 )
 
 
@@ -647,9 +646,8 @@ def render_reviewer_prompt(
         + audit_integrity_block
         + "## Decision\n"
         "The payload uses `status`, `reason`, `next_action`, `forward_progress`, "
-        "`plan_signal`, and only when relevant `operator_question`, "
-        "`operator_options`, `plan_challenge`, `plan_alternative`, and "
-        "`authority_impact`."
+        "`plan_signal`, and only when relevant `operator_question` and "
+        "`operator_options`."
         + (
             " Include the inspected `research_result` contract."
             if _research_target_level is not None
@@ -661,10 +659,9 @@ def render_reviewer_prompt(
             '{"status":"done","reason":"requested outcome is materially complete",'
             '"next_action":"","forward_progress":true,"plan_signal":"continue"}',
         )
-        + "\nUse plan fields only when the result changes the plan. Judge "
-        "forward_progress against the operator goal, not activity: a repair can be "
-        "locally correct and still leave the objective exactly where it was, and "
-        "saying so is not a rejection of the work.\n"
+        + "\nJudge forward_progress against the operator goal, not activity: a "
+        "repair can be locally correct and still leave the objective where it "
+        "was, and saying so is not a rejection of the work.\n"
         + _PLAN_SIGNAL_VOCABULARY
         + "Put the next Engineer "
         "instruction only in next_action. Do not inspect or edit "

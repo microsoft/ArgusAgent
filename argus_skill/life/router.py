@@ -42,37 +42,68 @@ def classify_route(
         return "complex"
     if int(getattr(result, "exit_code", 0) or 0) != 0:
         return "complex"
-    return _route_from_token(_first_alpha_token(_extract_answer(result)))
+    return _route_from_token(_one_word_answer(result, "route"))
 
 
+#: The front-door decision fields, in the order the Manager contract lists them.
+_FRONT_DOOR_FIELDS = (
+    "config",
+    "control",
+    "authorization",
+    "steer_directive",
+    "route",
+    "self_mode",
+    "reply",
+    "lifetime",
+    "greeting",
+    "name",
+)
 
 
-def _extract_answer(result: Any) -> str:
+def _answer_text(result: Any) -> str:
+    """The model's last plain message."""
+    message = getattr(result, "last_agent_message", None)
+    if not message:
+        messages = getattr(result, "agent_messages", None) or []
+        message = messages[-1] if messages else ""
+    return str(message or "")
+
+
+def _front_door_fields(result: Any) -> dict[str, str]:
+    """Read the front-door fields, preferring the structured decision.
+
+    A structured decision is used as it stands. This module used to render one
+    back into ``KEY: VALUE`` lines and re-read them, which handed every field
+    the power to forge the fields below it: a two-line ``steer_directive`` could
+    publish its own ``CONTROL: ABORT``, and the reader takes the first match.
+    A model that answered in plain prose is still read line by line, because
+    there the lines are all there is.
+    """
     decision = latest_role_decision(result, "manager")
-    if decision is not None:
-        lines: list[str] = []
-        for key in (
-            "config",
-            "control",
-            "authorization",
-            "steer_directive",
-            "route",
-            "self_mode",
-            "reply",
-            "lifetime",
-            "greeting",
-            "name",
-        ):
-            value = decision.get(key, "NONE")
-            if key == "reply" and value not in (None, "NONE"):
-                value = json.dumps(str(value), ensure_ascii=False)
-            lines.append(f"{key.upper()}: {value}")
-        return "\n".join(lines)
-    msg = getattr(result, "last_agent_message", None)
-    if not msg:
-        msgs = getattr(result, "agent_messages", None) or []
-        msg = msgs[-1] if msgs else ""
-    return str(msg or "")
+    if isinstance(decision, dict):
+        return {
+            name: str(decision.get(name, "") or "").strip()
+            for name in _FRONT_DOOR_FIELDS
+        }
+    text = _answer_text(result)
+    return {
+        name: (_line_after_prefix(text, f"{name.upper()}:") or "").strip()
+        for name in _FRONT_DOOR_FIELDS
+    }
+
+
+def _one_word_answer(result: Any, *names: str) -> str:
+    """Read a one-word verdict from the named fields, else from the message.
+
+    The route and steer gates ask for a bare word and define no decision
+    schema, so the message is the normal channel; the named field is read first
+    for a model that answers those gates structurally anyway.
+    """
+    fields = _front_door_fields(result)
+    for name in names:
+        if token := _first_alpha_token(fields.get(name, "")):
+            return token
+    return _first_alpha_token(_answer_text(result))
 
 
 def _first_alpha_token(text: str) -> str:
@@ -231,6 +262,18 @@ def _line_after_prefix(answer: str, prefix: str) -> "str | None":
     return None
 
 
+def _plain_reply(value: str) -> str:
+    """Unwrap a reply that arrived as the JSON string the old renderer wrote."""
+    if len(value) > 1 and value.startswith('"') and value.endswith('"'):
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError):
+            return value
+        if isinstance(decoded, str):
+            return decoded.strip()
+    return value
+
+
 def _parse_authorization_line(line: str | None) -> tuple[str, ...]:
     value = str(line or "").strip()
     if not value or value.upper() == "NONE":
@@ -280,21 +323,9 @@ def classify_front_door(
         if callable(failure_sink):
             failure_sink("classifier backend failed")
         return None, None, "complex"
-    answer = _extract_answer(result)
-    config_line = _line_after_prefix(answer, "CONFIG:")
-    control_line = _line_after_prefix(answer, "CONTROL:")
-    authorization_line = _line_after_prefix(answer, "AUTHORIZATION:")
-    steering_line = _line_after_prefix(answer, "STEER_DIRECTIVE:")
-    route_line = _line_after_prefix(answer, "ROUTE:")
-    self_mode_line = _line_after_prefix(answer, "SELF_MODE:")
-    reply_line = _line_after_prefix(answer, "REPLY:")
-    lifetime_line = _line_after_prefix(answer, "LIFETIME:")
-    greeting_line = _line_after_prefix(answer, "GREETING:")
-    name_line = _line_after_prefix(answer, "NAME:")
-    intent = _parse_config_decision(config_line)
-    control_token = (
-        str(control_line or "").strip().upper().replace("-", "_")
-    )
+    fields = _front_door_fields(result)
+    intent = _parse_config_decision(fields["config"])
+    control_token = fields["control"].upper().replace("-", "_")
     control: ControlIntent | None
     if control_token.startswith("ABORT"):
         control = "abort"
@@ -321,9 +352,9 @@ def classify_front_door(
         else:
             if int(getattr(confirmation, "exit_code", 0) or 0) != 0:
                 control = None
-            elif _first_alpha_token(_extract_answer(confirmation)).upper() != "STEER":
+            elif _one_word_answer(confirmation, "control").upper() != "STEER":
                 control = None
-    route_token = _first_alpha_token(route_line) if route_line is not None else ""
+    route_token = _first_alpha_token(fields["route"])
     if not route_token or route_token.upper() not in {
         "SELF",
         "SIMPLE",
@@ -336,7 +367,7 @@ def classify_front_door(
     route = _route_from_token(route_token)
     if control in {"abort", "pause", "no_dispatch", "steer"}:
         route = "simple"
-    authorization = _parse_authorization_line(authorization_line)
+    authorization = _parse_authorization_line(fields["authorization"])
     if authorization:
         route = "simple"
         if callable(authorization_sink):
@@ -346,13 +377,14 @@ def classify_front_door(
                 pass
     self_mode: SelfModeIntent | None = None
     if route == "simple":
-        self_mode_token = _first_alpha_token(self_mode_line or "").upper()
+        self_mode_token = _first_alpha_token(fields["self_mode"]).upper()
         self_mode = "reply" if self_mode_token == "REPLY" else "inspect"
     if callable(self_mode_sink) and self_mode is not None:
         try:
             self_mode_sink(self_mode)
         except Exception:  # noqa: BLE001 - advisory metadata never owns routing
             pass
+    reply = _plain_reply(fields["reply"])
     if (
         callable(reply_sink)
         and route == "simple"
@@ -360,20 +392,15 @@ def classify_front_door(
         and intent is None
         and control in {None, "no_dispatch"}
         and not authorization
-        and reply_line
-        and reply_line.strip().upper() != "NONE"
+        and reply.upper() != "NONE"
+        and 0 < len(reply) <= 1600
     ):
         try:
-            parsed_reply = json.loads(reply_line)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            parsed_reply = None
-        if isinstance(parsed_reply, str) and 0 < len(parsed_reply.strip()) <= 1600:
-            try:
-                reply_sink(parsed_reply.strip())
-            except Exception:  # noqa: BLE001 - optional fast reply only
-                pass
+            reply_sink(reply)
+        except Exception:  # noqa: BLE001 - optional fast reply only
+            pass
     lifetime: LifetimeIntent | None = None
-    lifetime_parts = str(lifetime_line or "").strip().split(maxsplit=1)
+    lifetime_parts = fields["lifetime"].split(maxsplit=1)
     lifetime_token = (
         lifetime_parts[0].replace("-", "_").upper()
         if lifetime_parts
@@ -403,7 +430,7 @@ def classify_front_door(
             lifetime_sink(lifetime)
         except Exception:  # noqa: BLE001 - advisory metadata never owns routing
             pass
-    greeting_token = str(greeting_line or "").strip().upper()
+    greeting_token = fields["greeting"].upper()
     if (
         callable(greeting_sink)
         and greeting_token == "GREETING"
@@ -415,7 +442,7 @@ def classify_front_door(
             greeting_sink(_greeting_reply(cleaned))
         except Exception:  # noqa: BLE001 - optional one-call greeting path only
             pass
-    steering = str(steering_line or "").strip()
+    steering = fields["steer_directive"]
     steering_token = steering.rstrip(".。!！").upper()
     if (
         callable(steering_sink)
@@ -428,9 +455,9 @@ def classify_front_door(
             steering_sink(steering)
         except Exception:  # noqa: BLE001 - advisory metadata never owns routing
             pass
-    if callable(name_sink) and name_line:
+    if callable(name_sink) and (name := fields["name"]):
         try:
-            name_sink(name_line)
+            name_sink(name)
         except Exception:  # noqa: BLE001 - cosmetic metadata never owns routing
             pass
     return intent, control, route

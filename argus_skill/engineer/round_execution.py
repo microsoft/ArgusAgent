@@ -270,6 +270,7 @@ class RoundExecutionMixin:
             engineer_message=engineer_message,
             process_ownership_note=process_ownership_note,
             round_started_at=round_started_at,
+            decision=process_decision,
         )
 
     def _handle_stop_kind_shortcircuit(
