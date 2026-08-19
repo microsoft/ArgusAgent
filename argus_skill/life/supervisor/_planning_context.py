@@ -1183,7 +1183,7 @@ class PlanningContextMixin:
         if self._reconcile_open_ended_planner_waiting(verdict):
             return PLAN_RETRY
 
-        sleep_s = self._enter_idle_backoff()
+        sleep_s = self._enter_pause_backoff()
         self._emit(
             {
                 "type": EventType.LIFE_PLANNER_WAITING,
