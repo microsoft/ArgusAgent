@@ -18,14 +18,25 @@ def test_replacement_supersedes_all_pending_work_including_legacy_bootstrap(
             tags=["bootstrap", "project"],
         )
     )
+    paused = backlog.add(BacklogItem.new(title="paused old work", objective="paused"))
+    backlog.update(paused.id, status="paused_daemon_shutdown")
+    running = backlog.add(BacklogItem.new(title="running work", objective="running"))
+    backlog.update(running.id, status="running")
 
     superseded = backlog.supersede_pending_for_replacement(
         reason="operator replaced objective",
         replacement_id="intent-new",
     )
 
-    assert set(superseded) == {old_a.id, old_b.id, legacy_bootstrap.id}
+    assert set(superseded) == {
+        old_a.id,
+        old_b.id,
+        legacy_bootstrap.id,
+        paused.id,
+    }
     rows = {item.id: item for item in backlog.all()}
     assert rows[old_a.id].status == "superseded"
     assert rows[old_b.id].superseded_by_plan_id == "intent-new"
     assert rows[legacy_bootstrap.id].status == "superseded"
+    assert rows[paused.id].status == "superseded"
+    assert rows[running.id].status == "running"

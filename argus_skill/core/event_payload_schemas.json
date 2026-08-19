@@ -184,6 +184,7 @@
         "objective": {"type": "string"},
         "scope": {"type": "string"},
         "status": {"type": "string", "minLength": 1},
+        "summary": {"type": "string"},
         "outcome_class": {
           "type": "string",
           "enum": [
@@ -213,6 +214,10 @@
           }
         },
         "success": {"type": "boolean"},
+        "overall_complete": {"type": "boolean"},
+        "campaign_continues": {"type": "boolean"},
+        "execution_workdir": {"type": "string"},
+        "delivery_candidates": {"type": "array", "items": {"type": "string"}},
         "rounds": {"type": "integer", "minimum": 0},
         "elapsed_seconds": {"type": "number", "minimum": 0},
         "cost_usd": {"type": ["number", "null"], "minimum": 0},
@@ -235,7 +240,25 @@
             null
           ]
         },
-        "recoverable": {"type": "boolean"}
+        "recoverable": {"type": "boolean"},
+        "delivery_id": {"type": "string"},
+        "delivery": {
+          "type": ["object", "null"],
+          "properties": {
+            "schema_version": {"type": "integer", "minimum": 1},
+            "delivery_id": {"type": "string"},
+            "kind": {"type": "string"},
+            "item_id": {"type": "string"},
+            "title": {"type": "string"},
+            "summary": {"type": "string"},
+            "status": {"type": "string"},
+            "review_status": {"type": "string"},
+            "delivered_at": {"type": "number", "minimum": 0},
+            "primary_target": {"type": ["object", "null"]},
+            "targets": {"type": "array", "items": {"type": "object"}}
+          }
+        },
+        "operator_question": {"type": "string"}
       }
     },
     "round.start": {
@@ -314,7 +337,27 @@
         "reason": {"type": "string"},
         "next_action": {"type": "string"},
         "operator_question": {"type": "string"},
+        "operator_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {"type": "string"},
+              "label": {"type": "string"},
+              "description": {"type": "string"},
+              "requires_note": {"type": "boolean"}
+            }
+          }
+        },
         "review_source": {"type": "string"},
+        "forward_progress": {"type": "boolean"},
+        "plan_signal": {"type": "string"},
+        "plan_challenge": {"type": "string"},
+        "plan_alternative": {"type": "string"},
+        "authority_impact": {"type": "string"},
+        "frontier_change": {"type": "string"},
+        "frontier_summary": {"type": "string"},
+        "session_signal": {"type": "object"},
         "text": {"type": "string"},
         "review_skipped": {"type": "boolean"},
         "prompt_block_stats": {"type": "object"},
@@ -409,6 +452,7 @@
         "stop_kind": {"type": ["string", "null"]},
         "completion_kind": {"type": ["string", "null"]},
         "delivery_id": {"type": "string", "minLength": 1},
+        "delivery": {"type": ["object", "null"]},
         "tasks_added": {"type": "integer", "minimum": 0}
       }
     },
@@ -418,6 +462,44 @@
       "properties": {
         "error": {"type": "string", "minLength": 1},
         "reason": {"type": "string"}
+      }
+    },
+    "life.runtime_failure.circuit_opened": {
+      "version": 1,
+      "required": ["fingerprint", "exception_type", "callsite"],
+      "properties": {
+        "item_id": {"type": "string"},
+        "fingerprint": {"type": "string", "minLength": 1},
+        "exception_type": {"type": "string", "minLength": 1},
+        "callsite": {"type": "string", "minLength": 1},
+        "normalized_error": {"type": "string"},
+        "occurrence_count": {"type": "integer", "minimum": 1},
+        "runtime_identity": {"type": "object"},
+        "newly_opened": {"type": "boolean"},
+        "operator_alert": {"type": "boolean"}
+      }
+    },
+    "life.runtime_failure.circuit_blocked": {
+      "version": 1,
+      "required": ["fingerprint", "reason"],
+      "properties": {
+        "item_id": {"type": "string"},
+        "fingerprint": {"type": "string", "minLength": 1},
+        "exception_type": {"type": "string"},
+        "callsite": {"type": "string"},
+        "normalized_error": {"type": "string"},
+        "occurrence_count": {"type": "integer", "minimum": 1},
+        "runtime_identity": {"type": "object"},
+        "operator_alert": {"type": "boolean"},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "life.runtime_failure.canary_passed": {
+      "version": 1,
+      "required": ["item_id", "circuit_cleared"],
+      "properties": {
+        "item_id": {"type": "string", "minLength": 1},
+        "circuit_cleared": {"type": "boolean"}
       }
     },
     "life.planner.task_added": {
@@ -454,7 +536,28 @@
         "vertical": {"type": "string"},
         "kind": {"type": "string"},
         "stages": {"type": "array", "items": {"type": "string"}},
+        "route": {"type": "string"},
+        "workflow_mode": {"type": "string"},
+        "lifetime": {"type": "string"},
+        "continuous": {"type": "boolean"},
+        "open_ended": {"type": "boolean"},
         "reason": {"type": "string"}
+      }
+    },
+    "life.manager.plan_challenge.decided": {
+      "version": 1,
+      "required": ["item_id", "manager_action", "challenge", "adjudicated_at"],
+      "properties": {
+        "item_id": {"type": "string", "minLength": 1},
+        "manager_action": {"type": "string", "enum": ["keep", "revise", "replace", "ask_operator"]},
+        "manager_reason": {"type": "string"},
+        "challenge": {"type": "string"},
+        "alternative": {"type": "string"},
+        "authority_impact": {"type": "string"},
+        "raised_at": {"type": "number"},
+        "adjudicated_at": {"type": "number"},
+        "revision_latency_seconds": {"type": "number", "minimum": 0},
+        "text": {"type": "string"}
       }
     },
     "life.inbox.drained": {
@@ -482,7 +585,35 @@
         "item_id": {"type": "string", "minLength": 1},
         "continuation_item_id": {"type": "string", "minLength": 1},
         "question": {"type": "string", "minLength": 1},
-        "manager_decision": {"type": "string", "minLength": 1}
+        "manager_decision": {"type": "string", "minLength": 1},
+        "decision_id": {"type": "string"},
+        "decision_revision": {"type": ["integer", "null"], "minimum": 1},
+        "campaign_generation": {"type": ["integer", "null"], "minimum": 0},
+        "stopped": {"type": "boolean"}
+      }
+    },
+    "role.session.turn": {
+      "version": 1,
+      "required": ["role", "policy", "action"],
+      "properties": {
+        "role": {"type": "string", "enum": ["planner", "engineer", "reviewer"]},
+        "policy": {"type": "string", "enum": ["fresh", "mission", "rolling"]},
+        "action": {"type": "string", "enum": ["fresh", "resumed", "rotated"]},
+        "rotation_reason": {"type": "string"},
+        "round_index": {"type": "integer", "minimum": 0},
+        "planning_cycle": {"type": "integer", "minimum": 0},
+        "session_id": {"type": "string"},
+        "turns_on_session": {"type": "integer", "minimum": 0},
+        "input_tokens": {"type": "integer", "minimum": 0},
+        "cached_input_tokens": {"type": "integer", "minimum": 0},
+        "duration_ms": {"type": "integer", "minimum": 0},
+        "prompt_chars": {"type": "integer", "minimum": 0},
+        "prompt_estimated_tokens": {"type": "integer", "minimum": 0},
+        "capsule_path": {"type": "string"},
+        "metadata_persisted": {"type": "boolean"},
+        "persistence_warning": {"type": "string"},
+        "signal_kind": {"type": "string", "enum": ["repeated_contradiction", "reviewer_confusion", "quality_degradation"]},
+        "signal_detail": {"type": "string"}
       }
     },
     "engineer.progress": {

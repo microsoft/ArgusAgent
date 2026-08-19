@@ -31,6 +31,7 @@ import json
 import os
 import tempfile
 import threading
+import weakref
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,7 +51,9 @@ except ImportError:  # pragma: no cover
 LIFECYCLE_FILENAME = "lifecycle.json"
 
 _HISTORY_MAX = 200  # cap to keep file size bounded
-_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_THREAD_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = (
+    weakref.WeakValueDictionary()
+)
 _THREAD_LOCKS_GUARD = threading.Lock()
 
 

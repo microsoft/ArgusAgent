@@ -18,7 +18,7 @@ export function ActivityPane({ events, max = 8 }: { events: EventMsg[]; max?: nu
   const rows = activityHistory(events, max);
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1} marginTop={1}>
-      <Text dimColor>activity · Ctrl+O close · observable actions only</Text>
+      <Text dimColor>activity · observable actions only</Text>
       {rows.length === 0 ? (
         <Text dimColor>  waiting for the next agent action…</Text>
       ) : rows.map((row) => {

@@ -44,6 +44,8 @@ from .protocol import SNAPSHOT_SCHEMA_VERSION
 DAEMON_ADMISSION_FILE = "daemon.admission.json"
 _PROJECT_INDEX_LABEL_CHARS = 180
 _PROJECT_INDEX_OBJECTIVE_CHARS = 1_000
+_HOST_CACHE_MAX_ENTRIES = 64
+_PROJECT_CACHE_MAX_ENTRIES = 256
 
 _SPEND_CACHE: dict[str, tuple[tuple[int, int, int] | None, UsageSummary]] = {}
 _SPEND_CACHE_LOCK = threading.Lock()
@@ -57,6 +59,20 @@ _GLOBAL_USAGE_CACHE: dict[str, tuple[float, UsageSummary]] = {}
 _GLOBAL_USAGE_CACHE_LOCK = threading.Lock()
 _HOST_REFRESHING: set[str] = set()
 _HOST_REFRESHING_LOCK = threading.Lock()
+
+
+def _store_bounded_cache_entry(
+    cache: dict[Any, Any],
+    key: Any,
+    value: Any,
+    *,
+    max_entries: int,
+) -> None:
+    """Store one entry while evicting the oldest project/root keys."""
+    cache.pop(key, None)
+    cache[key] = value
+    while len(cache) > max_entries:
+        del cache[next(iter(cache))]
 
 
 def project_usage_summary(project_root: Path | str) -> UsageSummary:
@@ -116,23 +132,38 @@ def _cached_metrics_snapshot(
             return cached[1] if cached is not None else None
     value = metrics_snapshot(root=root, cost_control=cost_control)
     with _METRICS_CACHE_LOCK:
-        _METRICS_CACHE[key] = (now + _METRICS_CACHE_TTL_SECONDS, value)
+        _store_bounded_cache_entry(
+            _METRICS_CACHE,
+            key,
+            (now + _METRICS_CACHE_TTL_SECONDS, value),
+            max_entries=_HOST_CACHE_MAX_ENTRIES,
+        )
     return value
 
 
 def _store_cost_control_cache(key: str, value: dict[str, Any]) -> None:
     with _COST_CONTROL_CACHE_LOCK:
-        _COST_CONTROL_CACHE[key] = (
-            time.monotonic() + _HOST_SNAPSHOT_CACHE_TTL_SECONDS,
-            value,
+        _store_bounded_cache_entry(
+            _COST_CONTROL_CACHE,
+            key,
+            (
+                time.monotonic() + _HOST_SNAPSHOT_CACHE_TTL_SECONDS,
+                value,
+            ),
+            max_entries=_HOST_CACHE_MAX_ENTRIES,
         )
 
 
 def _store_global_usage_cache(key: str, value: UsageSummary) -> None:
     with _GLOBAL_USAGE_CACHE_LOCK:
-        _GLOBAL_USAGE_CACHE[key] = (
-            time.monotonic() + _HOST_SNAPSHOT_CACHE_TTL_SECONDS,
-            value,
+        _store_bounded_cache_entry(
+            _GLOBAL_USAGE_CACHE,
+            key,
+            (
+                time.monotonic() + _HOST_SNAPSHOT_CACHE_TTL_SECONDS,
+                value,
+            ),
+            max_entries=_HOST_CACHE_MAX_ENTRIES,
         )
 
 
@@ -276,6 +307,7 @@ def daemon_dict(status: DaemonStatus, *, life_dir: Path | None = None) -> dict[s
         },
         "backend": status.backend,
         "global_daily_cap_usd": budget.global_daily_cap_usd,
+        "mission_width": status.mission_width,
         "read_status": "error" if status.status_read_error else "ok",
         "read_error": status.status_read_error,
         "protocol": {
@@ -321,6 +353,7 @@ def daemon_error_dict(exc: BaseException) -> dict[str, Any]:
         },
         "backend": None,
         "global_daily_cap_usd": global_daily,
+        "mission_width": None,
         "read_status": "error",
         "read_error": str(exc or type(exc).__name__)[:500],
         "protocol": {"name": "", "major": None, "minor": None},
@@ -378,6 +411,27 @@ def session_dict(meta: SessionMeta | None, sid: str) -> dict[str, Any]:
     }
 
 
+def apply_campaign_workdir(
+    session: dict[str, Any], life_dir: Path,
+) -> dict[str, Any]:
+    """Expose the repository Argus is actually using, not only launch root."""
+    raw_base = str(session.get("workdir") or session.get("cwd") or "").strip()
+    if not raw_base:
+        session["campaign_workdir"] = ""
+        return session
+    try:
+        from ..core.campaign_workdir import active_campaign_workdir
+
+        active = active_campaign_workdir(life_dir, raw_base)
+    except Exception:  # noqa: BLE001 - project picker remains best effort
+        active = None
+    session["session_workdir"] = raw_base
+    session["campaign_workdir"] = str(active or "")
+    if active is not None:
+        session["workdir"] = str(active)
+    return session
+
+
 def compact_backlog_item(item: Any) -> dict[str, Any]:
     objective = str(getattr(item, "objective", "") or "")
     title = str(getattr(item, "title", "") or "").strip()
@@ -409,23 +463,68 @@ def compact_backlog_item(item: Any) -> dict[str, Any]:
     }
 
 
+def _carries_stage_state(root: Path) -> bool:
+    """Does this root's pipeline state actually record a stage?
+
+    ``current_stage`` answers every root that has the file at all, because a
+    fresh project genuinely is at stage one and that fallback is right for it.
+    It is wrong for a root that was never the stage's home. Under the split
+    between a session state root and an execution workdir, the workdir copy of
+    ``PIPELINE_STATE.json`` holds only the adopted objective — no ``vertical``,
+    no ``current_stage``, no ``stages`` — so reading a stage out of it means
+    reading the default vertical's first stage and calling it fact.
+    """
+    from ..core.pipeline_state import read_pipeline_state
+
+    try:
+        payload = read_pipeline_state(root)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return False
+    return bool(
+        str(payload.get("current_stage") or "").strip()
+        or str(payload.get("vertical") or "").strip()
+    )
+
+
 def current_stage_for_session(
     session: dict[str, Any],
     life_dir: Path,
 ) -> str:
+    """The stage this session is actually at, for the operator's cockpit.
+
+    Testbed run 15 (``s-f0dbba19``) finished its math project at stage
+    ``review`` of ``scope -> solve -> review``, with all three stages recorded
+    done. The API served ``research`` — stage one of the eight-stage default
+    pipeline, a vertical that project never ran — for the entire run, because
+    the execution workdir happened to hold a three-key ``PIPELINE_STATE.json``
+    carrying the adopted objective and nothing else, and the old lookup
+    accepted the first root where that file merely *existed*.
+
+    ``_snapshot`` overwrites the event-sourced stage with this value, so the
+    served mission view contradicted the harness's own ``mission-view.json``.
+
+    So: a root that records a stage answers first, and the state root is asked
+    before the workdir. The old existence-only order is kept as a fallback,
+    which is what still answers for a fresh project whose state file is empty.
+    """
+    from ..core.pipeline_state import pipeline_state_exists
     from ..skills.stage_machine import current_stage
 
-    candidates = [session.get("workdir"), session.get("cwd"), life_dir]
-    for raw in candidates:
-        if not raw:
-            continue
-        root = Path(str(raw)).expanduser()
-        if not (root / "research" / "PIPELINE_STATE.json").exists():
-            continue
-        try:
-            return str(current_stage(root) or "")
-        except Exception:  # noqa: BLE001 - snapshot remains available
-            continue
+    authoritative = [life_dir, session.get("workdir"), session.get("cwd")]
+    legacy = [session.get("workdir"), session.get("cwd"), life_dir]
+    for candidates, require_stage_state in ((authoritative, True), (legacy, False)):
+        for raw in candidates:
+            if not raw:
+                continue
+            root = Path(str(raw)).expanduser()
+            if not pipeline_state_exists(root):
+                continue
+            if require_stage_state and not _carries_stage_state(root):
+                continue
+            try:
+                return str(current_stage(root) or "")
+            except Exception:  # noqa: BLE001 - snapshot remains available
+                continue
     return ""
 
 
@@ -471,7 +570,12 @@ def settled_spend(
             diagnostics.append(diagnostic("usage", exc))
         return total
     with _SPEND_CACHE_LOCK:
-        _SPEND_CACHE[key] = (stat_signature(life_dir / "usage.jsonl"), total)
+        _store_bounded_cache_entry(
+            _SPEND_CACHE,
+            key,
+            (stat_signature(life_dir / "usage.jsonl"), total),
+            max_entries=_PROJECT_CACHE_MAX_ENTRIES,
+        )
     return total
 
 
@@ -582,7 +686,9 @@ def build_snapshot(
         diagnostics.append(diagnostic("recent_events", exc))
 
     try:
-        session = session_dict(read_session_meta(root, sid), sid)
+        session = apply_campaign_workdir(
+            session_dict(read_session_meta(root, sid), sid), life_dir
+        )
     except Exception as exc:  # noqa: BLE001
         session = session_dict(None, sid)
         diagnostics.append(diagnostic("session", exc))
@@ -591,12 +697,13 @@ def build_snapshot(
         continuous_state = read_continuous_state(life_dir)
         continuous_payload = {
             "enabled": continuous_state.enabled,
+            "open_ended": continuous_state.open_ended,
             "objective": continuous_state.objective,
             "done_reason": continuous_state.done_reason,
             "done_at": continuous_state.done_at,
         }
     except Exception as exc:  # noqa: BLE001
-        continuous_payload = {"enabled": False, "objective": ""}
+        continuous_payload = {"enabled": False, "open_ended": False, "objective": ""}
         diagnostics.append(diagnostic("continuous", exc))
 
     try:
@@ -701,6 +808,7 @@ def list_projects(
     for meta in list_sessions(root, include_empty=include_empty):
         item = session_dict(meta, meta.id)
         life_dir = core_paths.session_state_root(meta.id, root=root)
+        item = apply_campaign_workdir(item, life_dir)
         try:
             status = read_daemon_status(life_dir)
             daemon = daemon_dict(status, life_dir=life_dir)

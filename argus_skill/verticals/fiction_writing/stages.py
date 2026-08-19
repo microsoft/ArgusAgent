@@ -65,11 +65,11 @@ STAGE_ORDER = ["intake", "plan", "draft", "state_update", "review", "revise"]
 
 #: This vertical's success is reviewer-certified narrative prose + a consistent
 #: story_state, NOT a numeric metric and NOT a paper. ``"none"`` suppresses both
-#: the paper (``full_paper``) and the metric prompt-framing regimes.
+#: final-certification and metric prompt-framing regimes.
 completion_gate = "none"
 
 # Generic across verticals; a private copy (mirrors learning/speedrun).
-_PIPELINE_CHECK = ("Pipeline state present", "test -f research/PIPELINE_STATE.json")
+_PIPELINE_CHECK = ("Pipeline state present", "test -f .argus/PIPELINE_STATE.json")
 
 # Lenient artifact-existence checks. The reviewer is the real gate; these only
 # confirm the stage produced *something* to review.

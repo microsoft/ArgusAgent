@@ -490,17 +490,15 @@ def infer_observable_status(
 
 
 def _read_pipeline_stage(project_root: Path) -> str | None:
-    """Best-effort: read current_stage from research/PIPELINE_STATE.json.
+    """Best-effort: read current_stage from the generic pipeline state.
     Returns None on missing / malformed file."""
-    import json as _json
-    path = project_root / "research" / "PIPELINE_STATE.json"
-    if not path.exists():
-        return None
+    from ..core.pipeline_state import read_pipeline_state
+
     try:
-        data = _json.loads(path.read_text(encoding="utf-8"))
+        data = read_pipeline_state(project_root)
         stage = data.get("current_stage")
         if isinstance(stage, str) and stage.strip():
             return stage.strip().lower()
-    except (OSError, _json.JSONDecodeError):
+    except (OSError, ValueError):
         return None
     return None

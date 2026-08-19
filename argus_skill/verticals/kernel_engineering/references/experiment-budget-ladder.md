@@ -31,22 +31,20 @@ idea to a full correctness suite or an all-section profiler run.
 
 ## Reviewer-controlled exploration budget
 
-The normal bounded Engineer–Reviewer loop exposes three reviewed rounds; the
-prompt's `Round: x/y` value is authoritative when configured differently. For a
-correct, path-covered performance candidate:
+The budget is evidence-based, not a fixed number of rounds. `Round: x/y` is an
+emergency runtime boundary and must not be interpreted as the number of
+candidate Tries. A Try exists only after a candidate is correct, path-covered,
+and validly measured. Environment, dependency, command, toolchain, benchmark,
+or measurement-infrastructure repair rounds consume no Try.
 
-1. Try 1 establishes a functional implementation and valid micro A/B.
-2. Intermediate Tries diagnose prior results and change a material mechanism such as
-   tiling, layout, fusion, launch structure, tensorization, or reuse.
-3. The final Try applies the strongest remaining evidence-backed implementation.
-
-The Reviewer, not a harness counter, judges whether each Try is materially
-distinct and whether the direction is exhausted. A slower/noisy result before
-the final available round must return `continue` with a concrete diagnosis and
-next mechanism; do not certify optimize or advance to validate/report. On the
-final available Try, retain a winner or return `replan_requested` with an evidence-backed
-headroom/exhaustion judgment. Negative evidence remains valuable, but
-validation/report are for a retained candidate, not ceremony around a failed one.
+For each valid Try, the Reviewer judges whether it is materially distinct and
+whether measured headroom supports another mechanism. Distinct means tiling,
+layout, fusion, launch structure, tensorization, reuse, or another physical
+change—not an unchanged rerun or cosmetic knob sweep. Continue the same mission
+while evidence is progressing. Retain a winner, or return `replan_requested`
+when concrete evidence shows the direction cannot clear the end-to-end
+noise/MDE. Negative evidence remains valuable, but validation/report are for a
+retained candidate, not ceremony around a failed one.
 
 The next round receives the compact experiment card and checkpoint, not raw
 profiler output. Raw reports remain on disk as evidence.

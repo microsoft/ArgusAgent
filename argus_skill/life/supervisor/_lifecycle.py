@@ -137,12 +137,12 @@ class LifecycleMixin:
                 if hasattr(self, "_artifact_root")
                 else memory_root
             )
-            uncertified_full_paper = (
-                self._effective_full_paper_gate(artifact_root)
-                and not self._journal_has_full_paper_gate_success()
+            uncertified_final_result = (
+                self._effective_final_certification_gate(artifact_root)
+                and not self._journal_has_final_certification()
             )
             if (
-                uncertified_full_paper
+                uncertified_final_result
                 and status.state == ProjectState.DONE
                 and persisted.get("state") == ProjectState.DONE.value
             ):
@@ -150,7 +150,7 @@ class LifecycleMixin:
                     at=datetime.now(timezone.utc),
                     from_state=ProjectState.DONE,
                     to_state=ProjectState.WRITING,
-                    reason="full_paper_gate_not_certified",
+                    reason="final_certification_gate_not_certified",
                 )
                 status = apply_event(status, repair_event)
                 try:
@@ -170,14 +170,14 @@ class LifecycleMixin:
                     "type": EventType.LIFE_LIFECYCLE_TRANSITION,
                     "from_state": ProjectState.DONE.value,
                     "to_state": ProjectState.WRITING.value,
-                    "reason": "full_paper_gate_not_certified",
+                    "reason": "final_certification_gate_not_certified",
                     "agent_layer": "supervisor",
                 })
 
             event = decide_next_state(status)
             if (
-                self._effective_full_paper_gate(artifact_root)
-                and self._journal_has_full_paper_gate_success()
+                self._effective_final_certification_gate(artifact_root)
+                and self._journal_has_final_certification()
                 and status.state not in (ProjectState.DONE, ProjectState.ARCHIVED)
                 and status.has_submission_artifact
             ):
@@ -187,22 +187,26 @@ class LifecycleMixin:
                 # strength check and the `project.completed` event now happen in
                 # one place instead of being inlined here.
                 from ...core.project_api import (
-                    SOURCE_REVIEWER_FULL_PAPER,
+                    SOURCE_INDEPENDENT_CERTIFICATION,
                     CompletionSource,
                     complete_project,
                 )
+                from ...verticals._base import load_vertical_contract
 
+                vertical = resolved_vertical_or_default(artifact_root)
                 outcome = complete_project(
                     memory_root=memory_root,
-                    project_root=artifact_root,
-                    vertical=resolved_vertical_or_default(artifact_root),
+                    vertical=vertical,
+                    required_gate=load_vertical_contract(
+                        vertical, project_root=artifact_root
+                    ).completion_gate,
                     source=CompletionSource(
-                        kind=SOURCE_REVIEWER_FULL_PAPER,
-                        evidence_refs=("journal:full_paper_gate_success",),
-                        detail="reviewer certified the full paper gate",
+                        kind=SOURCE_INDEPENDENT_CERTIFICATION,
+                        evidence_refs=("journal:final_certification",),
+                        detail="independent Reviewer certified the final result",
                     ),
                     status=status,
-                    reason="reviewer_certified_full_paper",
+                    reason="reviewer_certified_final_result",
                     on_event=self._emit,
                 )
                 if outcome.accepted:
@@ -210,7 +214,7 @@ class LifecycleMixin:
                         at=datetime.now(timezone.utc),
                         from_state=status.state,
                         to_state=ProjectState.DONE,
-                        reason="reviewer_certified_full_paper",
+                        reason="reviewer_certified_final_result",
                     )
                     status = apply_event(status, done_event)
                     self._emit({

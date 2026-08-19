@@ -172,7 +172,7 @@ def _check_rhyme(lines: list[str]) -> tuple[str | None, bool, list[dict[str, Any
 def _pick_qi(lines: list[str], ruyun: bool, yan: int) -> tuple[str, list[str]]:
     n = len(lines)
     key_pos = [1, 3] if yan == 5 else [1, 3, 5]
-    best: tuple[int, str, list[str]] | None = None
+    candidates: list[tuple[int, str, list[str]]] = []
     for qi in ("仄", "平"):
         exp = _build_expected(qi, ruyun, n, yan)
         bad = 0
@@ -181,10 +181,9 @@ def _pick_qi(lines: list[str], ruyun: bool, yan: int) -> tuple[str, list[str]]:
             for p in key_pos:
                 if p < len(at) and _conflict(at[p], exp[li][p]):
                     bad += 1
-        if best is None or bad < best[0]:
-            best = (bad, qi, exp)
-    assert best is not None
-    return best[1], best[2]
+        candidates.append((bad, qi, exp))
+    _, qi, expected = min(candidates, key=lambda candidate: candidate[0])
+    return qi, expected
 
 
 def _check_meter(
@@ -308,7 +307,8 @@ def analyze(text: str) -> dict[str, Any]:
     findings.extend(rhyme_findings)
 
     if is_jinti:
-        assert yan is not None
+        if yan is None:
+            raise ProsodyError("recognized regulated verse has no line length")
         qi, expected = _pick_qi(lines, ruyun, yan)
         _, meter_findings = _check_meter(lines, expected, yan)
         findings.extend(meter_findings)

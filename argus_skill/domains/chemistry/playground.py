@@ -333,7 +333,7 @@ def _result_template(idea_id: str) -> str:
         + "## Reviewer decision basis\n\n- Pending independent Reviewer assessment.\n\n"
         + "## Promotion boundary\n\n"
         + "- Even `promoted` means eligible for formal Research consideration; it does "
-        + "not change `research/PIPELINE_STATE.json` or establish a scientific fact.\n\n"
+        + "not change `.argus/PIPELINE_STATE.json` or establish a scientific fact.\n\n"
         + "## References\n\n- None recorded.\n"
     )
 

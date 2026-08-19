@@ -9,10 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - POSIX production path
-    fcntl = None  # type: ignore[assignment]
+import portalocker
 
 from .event_catalog import EventType, normalize_event_envelope
 from .knob_store import persisted_knob
@@ -87,18 +84,21 @@ def _append_usage(root: Path, row: dict[str, Any]) -> None:
 def _lock(root: Path) -> BinaryIO:
     root.mkdir(parents=True, exist_ok=True)
     fh = (root / _CODEX_LOCK_FILE).open("a+b")
-    if fcntl is not None:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    try:
+        portalocker.lock(fh, portalocker.LOCK_EX)
+    except (OSError, portalocker.exceptions.LockException):
+        fh.close()
+        raise
     return fh
 
 
 def _unlock(fh: BinaryIO) -> None:
-    if fcntl is not None:
-        try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        except OSError:
-            pass
-    fh.close()
+    try:
+        portalocker.unlock(fh)
+    except (OSError, portalocker.exceptions.LockException):
+        pass
+    finally:
+        fh.close()
 
 
 def _guard_enabled() -> bool:
@@ -247,7 +247,7 @@ def codex_quota_snapshot(*, root: Path | None = None) -> dict[str, Any]:
 
 
 def provider_usage_snapshot(*, root: Path | None = None) -> dict[str, Any]:
-    from .copilot_guard import copilot_guard_snapshot
+    from ..provider_integrations.copilot_guard import copilot_guard_snapshot
 
     resolved_root = root or global_root()
     copilot = copilot_guard_snapshot(root=resolved_root)

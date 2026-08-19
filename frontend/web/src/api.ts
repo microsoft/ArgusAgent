@@ -14,6 +14,7 @@ import type {
   ProjectCostRow,
   RequestUsage,
   Role,
+  Snapshot,
 } from '../../core/src/types';
 import { ensureResponseOk } from '../../core/src/http';
 import {
@@ -100,6 +101,13 @@ export interface Turn {
   ts: number;
   role: string; // "operator" | "argus"
   text: string;
+  message_id?: string;
+  mission_result?: boolean;
+  item_id?: string;
+  success?: boolean;
+  summary?: string;
+  delivery_id?: string;
+  delivery?: unknown;
 }
 export interface ProjectIndex {
   projects: ProjectRow[];
@@ -122,6 +130,25 @@ export interface PromptRewrite {
   questions: string[];
   error: string;
 }
+export interface UploadedAttachment {
+  attachment_id: string;
+  relative_path: string;
+  original_name: string;
+  stored_name: string;
+  mime: string;
+  size_bytes: number;
+}
+export interface MessageAttachmentRef {
+  attachment_id: string;
+}
+export interface AttachmentUploadResponse {
+  attachments: UploadedAttachment[];
+  limits: {
+    max_count: number;
+    max_bytes_per_file: number;
+    max_total_bytes: number;
+  };
+}
 export interface TrashEntry {
   trash_id: string;
   sid: string;
@@ -141,19 +168,186 @@ export interface MetricsSnapshot {
   [key: string]: unknown;
 }
 
-const token = (): string | null =>
-  new URLSearchParams(window.location.search).get('token') ||
-  localStorage.getItem('argus_web_token');
+const TOKEN_KEY = 'argus_web_token';
+let inMemoryToken: string | null = null;
 
-function authHeaders(): Record<string, string> {
+/** Persist a token handed over in the URL, then drop it from the address bar.
+ *
+ * Pairing puts the token in a QR code, so the first load carries `?token=...`.
+ * Without this the token would live only as long as that query string: a
+ * reload, or launching the installed PWA from its `start_url`, would land
+ * unauthenticated. Clearing the query afterwards keeps the credential out of
+ * the address bar, screenshots, and the back/forward history entry. */
+export function adoptTokenFromUrl(): void {
+  let params: URLSearchParams;
+  try {
+    params = new URLSearchParams(window.location.search);
+  } catch {
+    return;
+  }
+  const fromUrl = params.get('token');
+  if (!fromUrl) return;
+  inMemoryToken = fromUrl;
+  try {
+    localStorage.setItem(TOKEN_KEY, fromUrl);
+  } catch {
+    // The in-memory copy keeps this page authenticated when storage is
+    // unavailable, including browsers that block storage for LAN origins.
+  }
+  try {
+    params.delete('token');
+    const query = params.toString();
+    window.history.replaceState(
+      null,
+      '',
+      `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`,
+    );
+  } catch {
+    // Failure to scrub the address bar must not stop the app from loading.
+  }
+}
+
+const token = (): string | null => {
+  if (inMemoryToken) return inMemoryToken;
+  try {
+    return new URLSearchParams(window.location.search).get('token') ||
+      localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+};
+
+export function authHeaders(): Record<string, string> {
   const t = token();
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
-async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const r = await fetch(path, { headers: authHeaders(), signal });
-  await ensureResponseOk(r, 'GET', path);
-  return (await r.json()) as T;
+/** Shared bearer value for non-HTTP transports such as project WebSockets. */
+export function authToken(): string {
+  return token() ?? '';
+}
+
+const API_META_TIMEOUT_MS = 8_000;
+const API_LOCAL_READ_TIMEOUT_MS = 12_000;
+
+export class PairingRequiredError extends Error {
+  constructor() {
+    super('This browser is not paired with Argus. Reopen it from Argus Desktop or use a fresh pairing link.');
+    this.name = 'PairingRequiredError';
+  }
+}
+
+export class LocalArgusUnavailableError extends Error {
+  readonly method: string;
+  readonly path: string;
+
+  constructor(method: string, path: string, detail = 'could not reach the local Argus service') {
+    super(`${method.toUpperCase()} ${path} ${detail}. Make sure Argus Desktop is running, then retry.`);
+    this.name = 'LocalArgusUnavailableError';
+    this.method = method.toUpperCase();
+    this.path = path;
+  }
+}
+
+export function isAuthenticationError(error: unknown): boolean {
+  if (error instanceof PairingRequiredError) return true;
+  return Boolean(
+    error
+    && typeof error === 'object'
+    && Number((error as { status?: unknown }).status) === 401,
+  );
+}
+
+export function isConnectionError(error: unknown): boolean {
+  return isAuthenticationError(error) || error instanceof LocalArgusUnavailableError;
+}
+
+async function fetchArgus(path: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(path, init);
+  } catch (error) {
+    // React Query cancellation is normal lifecycle control, not a backend
+    // outage. Preserve it so unmount/navigation cannot raise a false alarm.
+    if (init.signal?.aborted) throw error;
+    throw new LocalArgusUnavailableError(String(init.method ?? 'GET'), path);
+  }
+}
+
+export async function requestWithTimeout<T>(
+  path: string,
+  init: RequestInit,
+  timeoutMs: number,
+  consume: (response: Response) => Promise<T> | T,
+): Promise<T> {
+  const controller = new AbortController();
+  const parentSignal = init.signal ?? undefined;
+  let timedOut = false;
+  let removeParentAbortListener: () => void = () => {};
+
+  if (parentSignal) {
+    const abortFromParent = () => controller.abort(parentSignal.reason);
+    if (parentSignal.aborted) abortFromParent();
+    else {
+      parentSignal.addEventListener('abort', abortFromParent, { once: true });
+      removeParentAbortListener = () => parentSignal.removeEventListener('abort', abortFromParent);
+    }
+  }
+
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const operation = (async () => {
+    const response = await fetchArgus(path, { ...init, signal: controller.signal });
+    return await consume(response);
+  })();
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      timedOut = true;
+      const error = new Error(`request timed out after ${timeoutMs}ms`);
+      controller.abort(error);
+      reject(error);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([operation, deadline]);
+  } catch (error) {
+    if (timedOut) {
+      const seconds = Math.round(timeoutMs / 1_000);
+      throw new LocalArgusUnavailableError(
+        String(init.method ?? 'GET'),
+        path,
+        `timed out after ${seconds}s because the local Argus service did not respond`,
+      );
+    }
+    throw error;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    removeParentAbortListener();
+  }
+}
+
+/** Bound connection establishment for callers that consume the body later. */
+export function fetchWithTimeout(
+  path: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  return requestWithTimeout(path, init, timeoutMs, (response) => response);
+}
+
+async function getJson<T>(
+  path: string,
+  signal?: AbortSignal,
+  timeoutMs?: number,
+): Promise<T> {
+  const init = { headers: authHeaders(), signal };
+  return requestWithTimeout(
+    path,
+    init,
+    timeoutMs ?? API_LOCAL_READ_TIMEOUT_MS,
+    async (response) => {
+      await ensureResponseOk(response, 'GET', path);
+      return (await response.json()) as T;
+    },
+  );
 }
 
 async function postJson<T = Record<string, unknown>>(
@@ -165,6 +359,21 @@ async function postJson<T = Record<string, unknown>>(
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
+  });
+  await ensureResponseOk(r, 'POST', path);
+  return (await r.json()) as T;
+}
+
+async function postMultipart<T>(
+  path: string,
+  body: FormData,
+  signal?: AbortSignal,
+): Promise<T> {
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: authHeaders(),
+    body,
     signal,
   });
   await ensureResponseOk(r, 'POST', path);
@@ -206,23 +415,50 @@ const P = (sid: string, path = '') => `/api/projects/${encodeURIComponent(sid)}$
 const commandId = (): string => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
 let apiMetaPromise: Promise<ApiMeta> | undefined;
 
+function isAbortSignal(value: unknown): value is AbortSignal {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && 'aborted' in value
+    && typeof (value as AbortSignal).aborted === 'boolean',
+  );
+}
+
+function messageBody(text: string, attachments?: MessageAttachmentRef[]): Record<string, unknown> {
+  return attachments?.length ? { text, attachments } : { text };
+}
+
 export function compatibleApiMeta(): Promise<ApiMeta> {
   if (!apiMetaPromise) {
     const request = (async () => {
       const path = '/api/meta';
-      const r = await fetch(path, { headers: authHeaders() });
-      if (r.status === 404) {
-        throw new Error('incompatible Argus API: service does not expose /api/meta');
-      }
-      await ensureResponseOk(r, 'GET', path);
-      return requireCompatibleApiMeta(
-        await r.json(),
-        (warning) => console.warn(`Argus API compatibility warning: ${warning}`),
+      const meta = await requestWithTimeout(
+        path,
+        { headers: authHeaders() },
+        API_META_TIMEOUT_MS,
+        async (response) => {
+          if (response.status === 404) {
+            throw new Error('incompatible Argus API: service does not expose /api/meta');
+          }
+          await ensureResponseOk(response, 'GET', path);
+          return requireCompatibleApiMeta(
+            await response.json(),
+            (warning) => console.warn(`Argus API compatibility warning: ${warning}`),
+          );
+        },
       );
+      if (meta.authentication?.required && !meta.authentication.authenticated) {
+        throw new PairingRequiredError();
+      }
+      return meta;
     })();
     apiMetaPromise = request;
-    void request.catch(() => {
-      if (apiMetaPromise === request) apiMetaPromise = undefined;
+    void request.catch((error) => {
+      // An unpaired page cannot heal by polling: it needs a new token-bearing
+      // navigation. Keep that rejected handshake cached to stop a 401 storm.
+      if (apiMetaPromise === request && !(error instanceof PairingRequiredError)) {
+        apiMetaPromise = undefined;
+      }
     });
   }
   return apiMetaPromise;
@@ -267,15 +503,18 @@ export function parseSSEFrames(buf: string): { frames: SSEFrame[]; rest: string 
   return { frames, rest: buf };
 }
 
+let activeSnapshotPrewarmSid: string | null = null;
+
 export const api = {
   meta: compatibleApiMeta,
   projectIndex: async () => {
     await compatibleApiMeta();
-    return getJson<ProjectIndex>('/api/projects');
+    return getJson<ProjectIndex>('/api/projects', undefined, API_LOCAL_READ_TIMEOUT_MS);
   },
   listProjects: async () => {
     await compatibleApiMeta();
-    return getJson<ProjectIndex>('/api/projects').then((result) => result.projects);
+    return getJson<ProjectIndex>('/api/projects', undefined, API_LOCAL_READ_TIMEOUT_MS)
+      .then((result) => result.projects);
   },
   projectCosts: async (signal?: AbortSignal) => {
     await compatibleApiMeta();
@@ -310,26 +549,48 @@ export const api = {
       response = await send();
     }
     await ensureResponseOk(response, 'POST', path);
-    return (await response.json()) as {
+    const result = (await response.json()) as {
       sid: string;
       rc: number;
       daemon: Daemon;
       objective: string;
       workdir: string;
     };
+    return requireDaemonCommand(result);
   },
   updateProject: (sid: string, name: string) =>
     mutationJson<{ ok: boolean; sid: string; name: string }>('PATCH', P(sid), { name }),
   deleteProject: (sid: string) =>
-    mutationJson<{ ok: boolean; sid: string; trash_path: string }>('DELETE', P(sid)),
-  snapshot: async (sid: string, signal?: AbortSignal) => {
+    mutationJson<{
+      ok: boolean;
+      sid: string;
+      trash_path: string;
+      workdir: string;
+      workdir_preserved: boolean;
+    }>('DELETE', P(sid)),
+  snapshot: async (sid: string, signal?: AbortSignal, prewarm = false) => {
     await compatibleApiMeta();
     const value = await getJson<unknown>(
-      P(sid, '/snapshot?compact=true&events_limit=1'),
+      P(sid, `/snapshot?compact=true&events_limit=1${prewarm ? '&prewarm=true' : ''}`),
       signal,
+      API_LOCAL_READ_TIMEOUT_MS,
     );
     return requireSnapshotContract(value);
   },
+  activeSnapshot: async (sid: string, signal?: AbortSignal): Promise<Snapshot> => {
+    const prewarm = activeSnapshotPrewarmSid !== sid;
+    if (prewarm) activeSnapshotPrewarmSid = sid;
+    try {
+      return await api.snapshot(sid, signal, prewarm);
+    } catch (error) {
+      if (prewarm && activeSnapshotPrewarmSid === sid) {
+        activeSnapshotPrewarmSid = null;
+      }
+      throw error;
+    }
+  },
+  prefetchSnapshot: (sid: string, signal?: AbortSignal) =>
+    api.snapshot(sid, signal, false),
   status: (sid: string, signal?: AbortSignal) =>
     getJson<StatusView>(P(sid, '/status'), signal),
   journal: (sid: string, n = 20, signal?: AbortSignal) =>
@@ -414,7 +675,6 @@ export const api = {
     decisionId: string,
     optionId: string,
     note: string,
-    expectedRevision: number,
   ) => postJson<{
     resolved: boolean;
     stopped?: boolean;
@@ -422,20 +682,40 @@ export const api = {
     daemon?: { rc?: number; error?: string; admission_required?: boolean };
   }>(
     P(sid, `/decisions/${encodeURIComponent(decisionId)}/resolve`),
-    { option_id: optionId, note, expected_revision: expectedRevision },
+    { option_id: optionId, note },
   ),
+  uploadAttachments: async (
+    sid: string,
+    files: File[],
+    signal?: AbortSignal,
+  ) => {
+    await compatibleApiMeta();
+    const form = new FormData();
+    files.forEach((file) => form.append('files', file, file.name));
+    return postMultipart<AttachmentUploadResponse>(P(sid, '/attachments'), form, signal);
+  },
   /** The Manager front-door: NL message → chat reply or an enqueued mission. */
-  message: (sid: string, text: string, signal?: AbortSignal) =>
-    postJson<{ kind: 'chat' | 'task' | 'pending_question' | 'pending_question_choice' | 'error'; reply: string | null; resolved?: boolean; item?: BacklogItem | null; daemon_alive?: boolean }>(
+  message: (
+    sid: string,
+    text: string,
+    signalOrOptions?: AbortSignal | {
+      signal?: AbortSignal;
+      attachments?: MessageAttachmentRef[];
+    },
+  ) => {
+    const signal = isAbortSignal(signalOrOptions) ? signalOrOptions : signalOrOptions?.signal;
+    const attachments = isAbortSignal(signalOrOptions) ? undefined : signalOrOptions?.attachments;
+    return postJson<{ kind: 'chat' | 'task' | 'pending_question' | 'pending_question_choice' | 'error'; reply: string | null; resolved?: boolean; item?: BacklogItem | null; daemon_alive?: boolean }>(
       P(sid, '/message'),
-      { text },
+      messageBody(text, attachments),
       signal,
-    ),
+    );
+  },
   /**
    * Streaming Manager front-door (SSE): ``onPhase`` per real step, ``onDelta``
    * per reply block as it's produced, ``onDone`` with the final classification,
    * ``onError`` on failure. Un-freezes the UI — Argus visibly thinks and the
-   * answer types in. Fall back to blocking ``message()`` at the call site.
+   * answer types in. Callers must not automatically replay a failed POST.
    */
   messageStream: async (
     sid: string,
@@ -450,16 +730,22 @@ export const api = {
       onDone?: (result: StreamDone) => void;
       onError?: (err: Error) => void;
     },
-    signal?: AbortSignal,
+    signalOrOptions?: AbortSignal | {
+      signal?: AbortSignal;
+      attachments?: MessageAttachmentRef[];
+    },
   ): Promise<void> => {
+    const signal = isAbortSignal(signalOrOptions) ? signalOrOptions : signalOrOptions?.signal;
+    const attachments = isAbortSignal(signalOrOptions) ? undefined : signalOrOptions?.attachments;
     const res = await fetch(P(sid, '/message/stream'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(messageBody(text, attachments)),
       signal,
     });
     await ensureResponseOk(res, 'POST', P(sid, '/message/stream'));
     if (!res.body) throw new Error('Manager stream returned no response body');
+    let sawTerminal = false;
     const dispatch = (f: SSEFrame) => {
       if (signal?.aborted) return;
       if (f.type === 'phase') {
@@ -482,8 +768,14 @@ export const api = {
           String(f.fragment_mode ?? 'auto'),
         );
       }
-      else if (f.type === 'done') handlers.onDone?.((f.result ?? {}) as StreamDone);
-      else if (f.type === 'error') handlers.onError?.(new Error(String(f.error ?? 'stream error')));
+      else if (f.type === 'done') {
+        sawTerminal = true;
+        handlers.onDone?.((f.result ?? {}) as StreamDone);
+      }
+      else if (f.type === 'error') {
+        sawTerminal = true;
+        handlers.onError?.(new Error(String(f.error ?? 'stream error')));
+      }
     };
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -496,7 +788,10 @@ export const api = {
       buf = parsed.rest;
       parsed.frames.forEach(dispatch);
     }
-    if (!signal?.aborted) parseSSEFrames(buf + '\n\n').frames.forEach(dispatch);
+    if (!signal?.aborted) {
+      parseSSEFrames(buf + '\n\n').frames.forEach(dispatch);
+      if (!sawTerminal) throw new Error('Manager stream ended before a terminal event');
+    }
   },
   nudge: (sid: string, text: string) => postJson(P(sid, '/nudge'), { text }),
   note: (sid: string, text: string) => postJson(P(sid, '/note'), { text }),
@@ -557,10 +852,22 @@ export const api = {
 };
 
 /** Open the live event stream for a project. Returns a close() fn. */
+export type StreamCloseInfo = {
+  code: number;
+  reason: string;
+  retryable: boolean;
+};
+
+const NON_RETRYABLE_STREAM_CLOSE_CODES = new Set([4401, 4404]);
+
 export function openStream(
   sid: string,
   onEvent: (ev: EventMsg) => void,
-  opts: { replay?: number; onOpen?: () => void; onClose?: () => void } = {},
+  opts: {
+    replay?: number;
+    onOpen?: () => void;
+    onClose?: (info: StreamCloseInfo) => void;
+  } = {},
 ): () => void {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const q = new URLSearchParams();
@@ -584,9 +891,10 @@ export function openStream(
         /* ignore malformed frame */
       }
     };
-    ws.onclose = () => {
-      opts.onClose?.();
-      if (!closed) retry = setTimeout(connect, 1000); // reconnect with backoff
+    ws.onclose = (event) => {
+      const retryable = !NON_RETRYABLE_STREAM_CLOSE_CODES.has(event.code);
+      opts.onClose?.({ code: event.code, reason: event.reason, retryable });
+      if (!closed && retryable) retry = setTimeout(connect, 1000); // reconnect with backoff
     };
     ws.onerror = () => ws?.close();
   };

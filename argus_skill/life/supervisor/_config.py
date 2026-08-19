@@ -151,13 +151,13 @@ class LifeSupervisorConfig:
     continuous_objective: str = ""
     # Explicit mission-type signals (replace the old keyword sniffing of the
     # objective text). ``paper_mission`` toggles the long-horizon paper guidance
-    # the planner hands to bounded items; ``full_paper_gate`` requires the L2
+    # the planner hands to bounded items; ``final_certification_gate`` requires the L2
     # reviewer's full-pipeline checklist to be certified before ``project_done``
     # is honoured (and drives the auto-stop once that gate passes). Both default
     # False: callers enable these only after the Manager has resolved
-    # a vertical whose completion gate is explicitly ``full_paper``.
+    # a vertical whose completion gate is explicitly ``certified``.
     paper_mission: bool = False
-    full_paper_gate: bool = False
+    final_certification_gate: bool = False
     # ``open_ended`` controls what happens when the planner certifies
     # ``project_done`` on a continuous mission: when True the supervisor does
     # NOT hard-stop — it logs a planner retry and keeps the mission alive so the
@@ -166,11 +166,11 @@ class LifeSupervisorConfig:
     # False at this low level (honour project_done); the daemon/cockpit entry paths
     # default it True unless ``--bounded`` is passed.
     open_ended: bool = False
-    # Optional callback returning ``(enabled, objective)`` — the
+    # Optional callback returning ``(enabled, objective, open_ended)`` — the
     # supervisor calls it each iteration to hot-reload from disk or
     # elsewhere. When ``None``, the static ``continuous`` /
     # ``continuous_objective`` fields are used unchanged.
-    continuous_config_provider: Any = None  # Callable[[], tuple[bool, str]] | None
+    continuous_config_provider: Any = None
     # Optional mission-boundary yield signal. A live operator Manager request
     # uses this to make ``run()`` return before the next tick/planner cycle so
     # the host can release its outer pipeline lock and commit configuration.
@@ -190,6 +190,12 @@ class LifeSupervisorConfig:
     # working tree may be a git repo, but harness state must not leak across
     # sessions that share that repo.
     artifact_root: Path | None = None
+    # Auxiliary supervisors only claim explicitly parallel-safe, path-disjoint
+    # backlog items and never write pipeline stage state.
+    parallel_worker: bool = False
+    holds_stage_authority: bool = True
+    worker_id: str = "primary"
+    coordinate_parallel_claims: bool = False
 
 
 class _MissionRunner(Protocol):

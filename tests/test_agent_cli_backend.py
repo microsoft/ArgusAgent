@@ -33,9 +33,67 @@ from argus_skill.adapters.agent_cli_backend import (
     _sum_token_counts,
     build_agent_cli_backend_from_env,
 )
-from argus_skill.core.codex_usage import extract_token_usage
-from argus_skill.core.copilot_usage import CopilotCallUsage, CopilotModelUsage
+from argus_skill.adapters.agent_cli_backend._core import _RepeatedToolCallGuard
 from argus_skill.core.models import RunnerOptions
+from argus_skill.core.token_usage import extract_token_usage
+from argus_skill.provider_integrations.copilot_usage import (
+    CopilotCallUsage,
+    CopilotModelUsage,
+)
+
+
+def test_repeated_tool_guard_only_interrupts_consecutive_identical_calls() -> None:
+    guard = _RepeatedToolCallGuard(limit=3)
+
+    def tool(call_id: str, path: str) -> None:
+        guard.observe(
+            "stdout",
+            json.dumps({
+                "type": "assistant",
+                "message": {
+                    "content": [{
+                        "type": "tool_use",
+                        "id": call_id,
+                        "name": "Read",
+                        "input": {"file_path": path},
+                    }]
+                },
+            }),
+        )
+
+    def result(call_id: str, *, failed: bool) -> None:
+        guard.observe(
+            "stdout",
+            json.dumps({
+                "type": "user",
+                "message": {
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": call_id,
+                        "is_error": failed,
+                    }]
+                },
+            }),
+        )
+
+    tool("one", "/missing-a")
+    result("one", failed=True)
+    tool("two", "/missing-b")
+    result("two", failed=True)
+    tool("three", "/missing-a")
+    result("three", failed=True)
+    assert guard.interrupt_reason() == ""
+
+    for call_id in ("four", "five"):
+        tool(call_id, "/missing-a")
+        result(call_id, failed=True)
+
+    assert "requested 3 consecutive times" in guard.interrupt_reason()
+
+    guard.reset()
+    tool("six", "/missing-a")
+    result("six", failed=False)
+    assert guard.interrupt_reason() == ""
 
 
 @dataclass
@@ -46,6 +104,8 @@ class FakeCliRunnerOptions:
     full_auto: bool = False
     skip_git_repo_check: bool = False
     sandbox_mode: str | None = None
+    force_safe_mode: bool = False
+    disable_tools: bool = False
     extra_args: list[str] | None = None
     working_dir: str | None = None
     external_interrupt_reason_provider: Any | None = None
@@ -103,6 +163,7 @@ def fake_agent_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     backend_mod.__dict__["BACKEND_CLAUDE"] = "claude"
     backend_mod.__dict__["BACKEND_CODEX"] = "codex"
     backend_mod.__dict__["BACKEND_COPILOT"] = "copilot"
+    backend_mod.__dict__["BACKEND_GROK"] = "grok"
     backend_mod.__dict__["BACKEND_OPENCODE"] = "opencode"
     backend_mod.__dict__["BACKEND_PI"] = "pi"
     backend_mod.__dict__["DEFAULT_RUNNER_BACKEND"] = "codex"
@@ -171,6 +232,21 @@ def _make_cli_result(
     )
 
 
+def test_explicit_secret_snapshot_survives_per_call_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-secret-value")
+    backend = AgentCliBackend(
+        backend="codex",
+        known_secret_values_override=("custom-vault-secret",),
+    )
+
+    backend._refresh_known_secret_values()
+
+    assert "custom-vault-secret" in backend._known_secret_values
+    assert "ambient-secret-value" in backend._known_secret_values
+
+
 def test_run_exec_translates_options_and_result(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -219,6 +295,8 @@ def test_run_exec_translates_options_and_result(
         extra_args=["-c", "config_profile=tb"],
         full_auto=True,
         sandbox_mode="read-only",
+        force_safe_mode=True,
+        disable_tools=True,
         skip_git_repo_check=True,
         dangerous_yolo=False,
     )
@@ -237,6 +315,8 @@ def test_run_exec_translates_options_and_result(
     assert forwarded.extra_args == ["-c", "config_profile=tb"]
     assert forwarded.full_auto is True
     assert forwarded.sandbox_mode == "read-only"
+    assert forwarded.force_safe_mode is True
+    assert forwarded.disable_tools is True
     assert forwarded.skip_git_repo_check is True
     assert forwarded.dangerous_yolo is False
     assert captured["resume_thread_id"] == "thr-prev"
@@ -875,7 +955,8 @@ def test_full_io_persists_prompt_once_not_as_user_message_echo(
     raw_start = next(row for row in raw_rows if row["type"] == "agent.io.start")
     streams = [row for row in raw_rows if row["type"] == "agent.io.stream"]
     assert "prompt" not in start
-    assert start["prompt_sha256"] == raw_start["prompt_sha256"]
+    assert "prompt_sha256" not in start
+    assert "prompt_sha256" not in raw_start
     assert raw_start["prompt"] == prompt
     assert len(streams) == 1
     assert "assistant.message_delta" in streams[0]["line"]
@@ -1143,7 +1224,7 @@ def test_default_agent_io_is_bounded_and_drops_duplicate_stream(
         "usage.recorded",
     ]
     assert "prompt" not in rows[0] and rows[0]["prompt_chars"] > 100
-    assert len(rows[0]["prompt_sha256"]) == 64
+    assert "prompt_sha256" not in rows[0]
     assert rows[1]["command"] == ["copilot", "-p", "<prompt>"]
     assert "agent_messages" not in rows[1]
     assert "stdout_lines" not in rows[1]
@@ -1153,7 +1234,7 @@ def test_default_agent_io_is_bounded_and_drops_duplicate_stream(
     assert rows[1]["json_event_count"] == 1
     assert rows[1]["agent_message_count"] == 1
     assert rows[1]["agent_message_chars"] == len("result")
-    assert len(rows[1]["last_agent_message_sha256"]) == 64
+    assert "last_agent_message_sha256" not in rows[1]
     assert len(live) == 1
     assert "assistant.message_delta" in live[0][1]
 
@@ -1286,9 +1367,41 @@ def test_copilot_policy_denial_with_exit_zero_sets_auth_failure(
 
     assert result.fatal_error == "Error: Access denied by policy settings"
     assert backend._auth_failure_detected is True
-    from argus_skill.core.copilot_guard import copilot_guard_snapshot
+    from argus_skill.provider_integrations.copilot_guard import copilot_guard_snapshot
 
     assert copilot_guard_snapshot()["blocked_until"] > 0
+
+
+def test_oauth_refresh_timeout_is_a_permanent_auth_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = AgentCliBackend(backend="pi")
+
+    def fake_run_exec(self: Any, **kwargs: Any) -> AgentRunResult:
+        return AgentRunResult(
+            command=["pi"],
+            exit_code=1,
+            thread_id=None,
+            agent_messages=[],
+            json_events=[],
+            stdout_lines=[],
+            stderr_lines=[],
+            turn_completed=False,
+            turn_failed=True,
+            fatal_error=(
+                "OAuth refresh failed for github-copilot: The operation timed out."
+            ),
+        )
+
+    monkeypatch.setattr(backend._runner.__class__, "run_exec", fake_run_exec, raising=True)
+    result = backend.run_exec(
+        prompt="x",
+        options=RunnerOptions(),
+        run_label="engineer-r1",
+    )
+
+    assert result.stop_kind == "permanent_error"
+    assert backend._auth_failure_detected is True
 
 
 def test_run_exec_normalizes_high_attempt_reconnect_notice(
@@ -1322,6 +1435,35 @@ def test_run_exec_normalizes_high_attempt_reconnect_notice(
 
     assert result.last_agent_message == "continued after high-attempt reconnect"
     assert result.fatal_error is None
+
+
+def test_failed_manager_timeout_preserves_429_as_provider_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = AgentCliBackend(backend="codex")
+
+    def fake_run_exec(self: Any, **kwargs: Any) -> AgentRunResult:
+        return _make_cli_result(
+            exit_code=-15,
+            fatal_error=(
+                "External interrupt: Manager turn wall-clock limit reached "
+                "after 300s; yield for review/steering"
+            ),
+            stderr_lines=[
+                "Reconnecting... 37/100 (429 Too Many Requests; retry after 60s)"
+            ],
+        )
+
+    monkeypatch.setattr(backend._runner.__class__, "run_exec", fake_run_exec, raising=True)
+
+    result = backend.run_exec(
+        prompt="classify",
+        options=RunnerOptions(),
+        run_label="manager-classify-grounded",
+    )
+
+    assert "wall-clock limit reached" in str(result.fatal_error)
+    assert result.stop_kind == "provider_cooldown"
 
 
 def test_run_exec_handles_file_not_found(monkeypatch: pytest.MonkeyPatch) -> None:

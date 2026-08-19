@@ -38,8 +38,6 @@ def cross_sectional_normalize(X: Any, *, method: str = "rank") -> Any:
     if method == "rank":
         return g.rank(pct=True) - 0.5
     if method == "zscore":
-        import pandas as pd  # noqa: F401
-
         mu = g.transform("mean")
         sd = g.transform("std")
         return (X - mu) / sd.replace(0, np.nan)
@@ -114,8 +112,6 @@ def build_feature_matrix(
     ``y`` = Alpha360's ~1-day label, or a ``label_horizon``-day forward return when
     given. Features are float32; NaNs preserved (lightgbm-native).
     """
-    import pandas as pd  # noqa: F401  (kept for parity / future use)
-
     feat, label = load_alpha360(universe, start, end, provider_uri=provider_uri)
     X = feat.copy()
     X.columns = [f"a360_{c}" for c in X.columns]

@@ -1,11 +1,4 @@
-"""argus.manager._maintenance_ops — mixin for self-maintenance and skill injection.
-
-``_MaintenanceMixin`` carries:
-
-* ``decide_self_maintenance`` — Manager's evidence-bound daemon health decision.
-* ``_role_skill_block`` — builds the Manager's fixed role skill + matched adaptive
-  skill block, prepended to stage / SELF decision prompts.
-"""
+"""Manager self-maintenance and on-demand Skill-library context."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,22 +9,11 @@ from ._helpers import (
     _manager_model,
     _manager_reasoning_effort,
     gateway_run_exec,
-    log,
 )
 
 
 class _MaintenanceMixin:
     """Mixin: decide_self_maintenance and _role_skill_block."""
-
-    @staticmethod
-    def role_context() -> str:
-        """Return the Manager's authoritative fixed operating contract."""
-        from ..skills.role_context import format_role_context
-
-        return format_role_context(
-            "Argus manager role skill",
-            "argus-manager-role.md",
-        )
 
     def decide_self_maintenance(
         self,
@@ -131,21 +113,18 @@ class _MaintenanceMixin:
             })
         return decision
 
-    # ---- role context, library discovery, and direct maintenance ----
+    # ---- library discovery and direct maintenance ----
     def _role_skill_block(
         self, objective: str, *, include_libraries: bool = True
     ) -> str:
-        """Return Manager context, optional library paths, and edit rules."""
+        """Return path-only Manager Skill context and edit rules."""
         if self.skill_store is None:
             return ""
-        block = self.role_context()
+        block = ""
         if include_libraries and (objective or "").strip():
-            try:
-                libraries = self.mission.libraries()
-                if libraries.block:
-                    block += libraries.block + "\n\n"
-            except Exception:  # noqa: BLE001 — path discovery is fail-soft
-                log.debug("manager Skill-library discovery failed", exc_info=True)
+            libraries = self.mission.libraries()
+            if libraries.block:
+                block = libraries.block + "\n\n"
         from ..skills.role_memory import role_skill_maintenance_block
 
         return block + role_skill_maintenance_block(

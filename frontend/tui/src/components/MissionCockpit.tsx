@@ -4,6 +4,7 @@ import { Box, Text } from 'ink';
 import {
   displayObjective,
   formatMissionElapsed,
+  formatMissionRouting,
 } from '../../../core/src/missionView.js';
 import { outcomeDimensionSummary } from '../../../core/src/missionOutcome.js';
 import type { MissionTimelineItem, MissionView } from '../../../core/src/types.js';
@@ -82,6 +83,7 @@ export function MissionCockpit({
     ? `${cap(recentRoles[recentRoles.length - 2])} → ${cap(recentRoles[recentRoles.length - 1])}`
     : '';
   const stage = view.stage.label || view.stage.id || '—';
+  const mode = formatMissionRouting(view.routing);
   const round = view.round.max > 0 ? `${view.round.current} / ${view.round.max}` : view.round.current ? String(view.round.current) : '—';
   const outcome = outcomeDimensionSummary(view.outcome);
   const compactHeight = height != null && height < 36;
@@ -107,6 +109,7 @@ export function MissionCockpit({
           <Text dimColor>{` · ROUND ${round} · TEAM `}</Text>
           <Text>{activeRoles.length ? activeRoles.join(', ') : 'Manager'}</Text>
         </Text>
+        {mode ? <Text dimColor>{`MODE ${mode}`}</Text> : null}
       </Box>
     );
   }
@@ -123,6 +126,12 @@ export function MissionCockpit({
           <Text dimColor>{` · ROUND ${round} · ELAPSED `}</Text>
           <Text>{formatMissionElapsed(view.mission.elapsed_seconds)}</Text>
         </Text>
+        {mode ? (
+          <Text wrap="truncate-end">
+            <Text dimColor>MODE </Text>
+            <Text>{compact(mode, Math.max(18, width - 7))}</Text>
+          </Text>
+        ) : null}
         <Text wrap="truncate-end">
           <Text dimColor>MODEL SPEND </Text>
           <Text color={spendStatus === 'partial' || spendStatus === 'unpriced' ? theme.warning : theme.success}>
@@ -134,6 +143,12 @@ export function MissionCockpit({
           <Text wrap="truncate-end">
             <Text dimColor>OUTCOME </Text>
             <Text>{outcome.join(' · ')}</Text>
+          </Text>
+        ) : null}
+        {view.mission.summary ? (
+          <Text wrap="truncate-end">
+            <Text dimColor>SUMMARY </Text>
+            <Text>{compact(view.mission.summary, Math.max(18, width - 10))}</Text>
           </Text>
         ) : null}
         <Box flexDirection="column">
@@ -195,6 +210,12 @@ export function MissionCockpit({
         <Text dimColor>ROUND </Text>
         <Text>{round}</Text>
       </Box>
+      {mode ? (
+        <Box>
+          <Text dimColor>MODE </Text>
+          <Text wrap="wrap">{mode}</Text>
+        </Box>
+      ) : null}
       <Box>
         <Text dimColor>MODEL SPEND </Text>
         <Text color={spendStatus === 'partial' || spendStatus === 'unpriced' ? theme.warning : theme.success}>
@@ -213,6 +234,12 @@ export function MissionCockpit({
         <Box>
           <Text dimColor>OUTCOME </Text>
           <Text wrap="truncate-end">{outcome.join(' · ')}</Text>
+        </Box>
+      ) : null}
+      {view.mission.summary ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text dimColor>MISSION SUMMARY</Text>
+          <Text wrap="wrap">{view.mission.summary}</Text>
         </Box>
       ) : null}
 

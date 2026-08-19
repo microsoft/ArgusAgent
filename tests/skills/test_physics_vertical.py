@@ -54,7 +54,7 @@ def test_physics_uses_reviewer_certified_non_paper_gate() -> None:
 
     gate = vertical_completion_gate(mod)
     assert gate == "none"
-    assert gate not in {"metric", "full_paper"}
+    assert gate not in {"metric", "certified"}
 
 
 def test_physics_runs_in_proportional_workflow_mode() -> None:

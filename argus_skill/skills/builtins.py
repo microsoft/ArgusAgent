@@ -1,13 +1,13 @@
-"""Bundled default skills for new argus-skill homes.
+"""Bundled cross-vertical defaults and vertical-aware Skill seeding.
 
-The files under :mod:`argus_skill.builtin_skills` are argus-native
-research/paper playbooks adapted from ARIS workflow concepts. They are
-seeded into ``~/.argus-skill/skills`` on initialization so the agent can
-start research and paper-writing missions before it has distilled its own
-local skills.
+``argus_skill/builtin_skills`` contains only reusable workflow skills.
+Domain/vertical playbooks live under ``verticals/<name>/skills`` and are
+seeded only for the active context.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import threading
 import uuid
@@ -18,15 +18,48 @@ from typing import Iterable
 
 _BUILTIN_PACKAGE = "argus_skill.builtin_skills"
 DEFAULT_PROJECT_BUILTIN_SKILLS_DIR = "argus_builtin_skills"
+_BUILTIN_SEED_STATE = ".argus-builtin-seeds.json"
+_MOVED_SKILL_MARKER = ".moved-from-global.json"
+_LEGACY_BUILTIN_SEED_HASHES = {
+    "agent-md-optimize-project-template.md": "52fbd7e60f85042624a54b563945b26739a590120d21c830c8f2d4eda0b3db7d",
+    "engineer/agent-team-lead.md": "bdaf7b78b57b3fec45bc9108d0c36f2bd0d07e191657cdffd4299c25f9f98722",
+    "engineer/argus-engineer-role.md": "8823e0c01e377e1be5293d1529344213e0f1326ebe94a6863dc4ee0e2730dadd",
+    "engineer/environment-readiness-gate.md": "f8615f2a465cbe7b2ce838179c24a575baf4fbe6370730035c85cd4dd907de9b",
+    "engineer/mermaid-graphviz-diagrams.md": "d340f45b0aeb7ee5f239aa79f1c8f3ed94be4a56af036dd7b80a60cd72953542",
+    "engineer/training-infrastructure-guide.md": "43d1cbc1017173a5376f2a47642ea3ba5bf007b879ba86737514f8aba28f3f39",
+    "manager/argus-manager-role.md": "dc193f31dca3acd3041544745d97b832725c0e37b55a44bd9a93db5f97a631be",
+    "manager/evidence-based-stage-decision.md": "75347a834448d8abb92ae04ad486ab06c595d1fb53cbe3cd24e70b37368515ed",
+    "planner/argus-planner-role.md": "30d16975503a9b41d97c05d622b4d36117677ff9500e65a4556dd2f8c244fb12",
+    "reviewer/argus-reviewer-role.md": "bc971a888bfcdc3acaca939b643410f509c328376737377ba8e898f1b4dee925",
+}
+_RETIRED_BUILTIN_SEED_HASHES = {
+    "engineer/experiment-audit.md": (
+        "d7fa41bfefaa0aaa8156f5febc8a4c1dc98874f3e7e24e6306f075266c49074e"
+    ),
+    "engineer/paper-claim-audit.md": (
+        "65311eb7bc317e82195f7dcc56abf7fb8caf357f144bdd16fcf7504e48904ad1"
+    ),
+    "engineer/singularity-amlt-gpu-ops.md": (
+        "18f7020894021a6a15a68e54022c3a7758535ce7e501cea4dc408a33f79ef6dc"
+    ),
+    "engineer/nanochat-autoresearch-hands-on-trace.md": (
+        "7df00f9f7e985143e3ca1af53bf8d16eda864b7598ff8446034c27abefce528f"
+    ),
+    "engineer/nanochat-autoresearch-sota-optimization.md": (
+        "ef6acedaa464fb7e9e5bac60a7737ef8590f72f00c7d658f346d3a227a893ba6"
+    ),
+    "engineer/nanochat-pretrain-runner.md": (
+        "5986a1df8ca519f1ad4a20b9c175647922711b1bad0cf1855c0fdfa30a7d3b46"
+    ),
+}
 _VERTICAL_SKILL_INHERITANCE = {
     "digital_circuit_benchmark": ("digital_circuit",),
     "chip_design": ("digital_circuit",),
-    # The three Recursive "First Steps" benchmarks are concrete instances of
-    # the generic speedrun mission shape (a fixed budget, a single scalar to
-    # move), so they inherit its methodology skills. SOL work additionally
-    # needs the general GPU-kernel priors.
-    "kernelbench": ("speedrun", "kernel_engineering"),
-    "nanochat": ("speedrun",),
+    # SOL work additionally needs general GPU-kernel priors. NanoGPT is the
+    # concrete H100 speedrun represented by the speedrun playbooks. NanoChat's
+    # fixed-budget quality objective must not inherit those machine-specific
+    # H100 traces; it follows the current project's frozen harness instead.
+    "kernelbench": ("kernel_engineering",),
     "nanogpt_speedrun": ("speedrun",),
 }
 def builtin_skill_source_path() -> Path:
@@ -149,10 +182,133 @@ def _is_bundled_script(prefix: str, filename: str) -> bool:
     return any(seg.endswith("_scripts") for seg in segments)
 
 
+def _moved_global_skill_names() -> set[str]:
+    moved: set[str] = set()
+    verticals_root = Path(__file__).resolve().parents[1] / "verticals"
+    for marker in verticals_root.glob(f"*/skills/{_MOVED_SKILL_MARKER}"):
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        values = payload.get("paths", ()) if isinstance(payload, dict) else payload
+        if isinstance(values, list):
+            moved.update(
+                str(value)
+                for value in values
+                if isinstance(value, str) and value.strip()
+            )
+    return moved
+
+
 def retire_orphaned_builtin_seeds(skills_dir: Path) -> list[str]:
-    """Leave semantic retirement to an Agent; never infer it from file data."""
-    _ = skills_dir
-    return []
+    """Remove retired seeds from matching, archiving any operator-edited copy."""
+    skills_dir = Path(skills_dir)
+    state = _seed_state(skills_dir)
+    retired = dict(_RETIRED_BUILTIN_SEED_HASHES)
+    retired.update({
+        relative: state.get(relative)
+        or _LEGACY_BUILTIN_SEED_HASHES.get(relative)
+        or ""
+        for relative in _moved_global_skill_names()
+    })
+    removed: list[str] = []
+    for relative_name, expected_digest in sorted(
+        retired.items()
+    ):
+        path = skills_dir / relative_name
+        try:
+            body = path.read_bytes()
+        except (FileNotFoundError, IsADirectoryError, OSError):
+            continue
+        if expected_digest and hashlib.sha256(body).hexdigest() == expected_digest:
+            try:
+                path.unlink()
+            except OSError:
+                continue
+        else:
+            archive = (
+                skills_dir
+                / "_retired_builtin_skills"
+                / f"{relative_name}.retired"
+            )
+            archive.parent.mkdir(parents=True, exist_ok=True)
+            if archive.exists():
+                try:
+                    if archive.read_bytes() == body:
+                        path.unlink()
+                    else:
+                        digest = hashlib.sha256(body).hexdigest()[:12]
+                        path.replace(
+                            archive.with_name(f"{archive.name}.{digest}")
+                        )
+                except OSError:
+                    continue
+            else:
+                try:
+                    path.replace(archive)
+                except OSError:
+                    continue
+        removed.append(relative_name)
+    return removed
+
+
+def _seed_state(skills_dir: Path) -> dict[str, str]:
+    try:
+        payload = json.loads(
+            (skills_dir / _BUILTIN_SEED_STATE).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        str(name): str(digest)
+        for name, digest in payload.items()
+        if isinstance(name, str) and isinstance(digest, str)
+    }
+
+
+def _seed_texts(
+    skills_dir: Path,
+    texts: Iterable[tuple[str, str]],
+    *,
+    overwrite: bool,
+) -> dict[str, bool]:
+    state = _seed_state(skills_dir)
+    created: dict[str, bool] = {}
+    for filename, text in texts:
+        if filename.endswith(".md"):
+            _validate_builtin(filename, text)
+        dest = skills_dir / filename
+        source_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        try:
+            installed_digest = hashlib.sha256(dest.read_bytes()).hexdigest()
+        except (FileNotFoundError, IsADirectoryError):
+            installed_digest = ""
+        except OSError:
+            created[filename] = False
+            continue
+        prior_digest = state.get(filename, "")
+        factory_owned = (
+            not installed_digest
+            or installed_digest == source_digest
+            or (prior_digest and installed_digest == prior_digest)
+            or installed_digest == _LEGACY_BUILTIN_SEED_HASHES.get(filename)
+        )
+        if not overwrite and not factory_owned:
+            created[filename] = False
+            continue
+        changed = installed_digest != source_digest
+        if changed:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write_text(dest, text)
+        state[filename] = source_digest
+        created[filename] = changed
+    _atomic_write_text(
+        skills_dir / _BUILTIN_SEED_STATE,
+        json.dumps(state, indent=2, sort_keys=True) + "\n",
+    )
+    return created
 
 
 def seed_builtin_skills(skills_dir: Path, *, overwrite: bool = False) -> dict[str, bool]:
@@ -164,18 +320,12 @@ def seed_builtin_skills(skills_dir: Path, *, overwrite: bool = False) -> dict[st
     """
     skills_dir = Path(skills_dir)
     skills_dir.mkdir(parents=True, exist_ok=True)
-    created: dict[str, bool] = {}
-    for filename, text in iter_builtin_skill_texts():
-        if filename.endswith(".md"):
-            _validate_builtin(filename, text)
-        dest = skills_dir / filename
-        if dest.exists() and not overwrite:
-            created[filename] = False
-            continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write_text(dest, text)
-        created[filename] = True
-    return created
+    retire_orphaned_builtin_seeds(skills_dir)
+    return _seed_texts(
+        skills_dir,
+        iter_builtin_skill_texts(),
+        overwrite=overwrite,
+    )
 
 
 def seed_builtin_skills_for_vertical(
@@ -219,35 +369,32 @@ def seed_builtin_skills_for_context(
     """
     skills_dir = Path(skills_dir)
     skills_dir.mkdir(parents=True, exist_ok=True)
-    created: dict[str, bool] = {}
-
+    retire_orphaned_builtin_seeds(skills_dir)
     # Workflow/domain Skills (real bodies) always win over a builtin
     # stub of the same relative path.
     vertical_texts = dict(iter_context_skill_texts(vertical, domain))
 
     # 1. Common/bundled builtins, skipping any path the vertical will overwrite
     #    (so a pointer stub is never written into the workspace).
-    for filename, text in iter_builtin_skill_texts():
-        if filename in vertical_texts:
-            continue
-        if filename.endswith(".md"):
-            _validate_builtin(filename, text)
-        dest = skills_dir / filename
-        if dest.exists() and not overwrite:
-            created[filename] = False
-            continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write_text(dest, text)
-        created[filename] = True
+    created = _seed_texts(
+        skills_dir,
+        (
+            (filename, text)
+            for filename, text in iter_builtin_skill_texts()
+            if filename not in vertical_texts
+        ),
+        overwrite=overwrite,
+    )
 
-    # 2. Context-specific real bodies are always written, never pointer stubs.
-    for filename, text in vertical_texts.items():
-        if filename.endswith(".md"):
-            _validate_builtin(filename, text)
-        dest = skills_dir / filename
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write_text(dest, text)
-        created[filename] = True
+    # 2. Context-specific real bodies win when explicitly requested, newly
+    # seeded, or still factory-owned; operator edits remain intact.
+    created.update(
+        _seed_texts(
+            skills_dir,
+            vertical_texts.items(),
+            overwrite=overwrite,
+        )
+    )
 
     return created
 
@@ -279,6 +426,7 @@ def seed_context_skills(
     """Seed only the active workflow/domain context into one runtime layer."""
     skills_dir = Path(skills_dir)
     skills_dir.mkdir(parents=True, exist_ok=True)
+    retire_orphaned_builtin_seeds(skills_dir)
     created: dict[str, bool] = {}
     for filename, text in iter_context_skill_texts(vertical, domain):
         if filename.endswith(".md"):
@@ -310,17 +458,6 @@ def remove_unmodified_vertical_skill_seeds(
         except OSError:
             continue
     return removed
-
-
-def remove_unmodified_inactive_vertical_skill_seeds(
-    skills_dir: Path,
-    active_vertical: str | None,
-) -> list[str]:
-    """Compatibility wrapper for a workflow without a domain overlay."""
-    return remove_unmodified_inactive_context_skill_seeds(
-        skills_dir,
-        active_vertical,
-    )
 
 
 def remove_unmodified_inactive_context_skill_seeds(

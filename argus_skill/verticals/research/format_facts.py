@@ -33,7 +33,9 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import re
 import sys
@@ -304,7 +306,10 @@ def _layout_observations(pdf_path: Path) -> _LayoutObservations | None:
                 blank_pages += 1
             coverages.append(min(1.0, occupied_area / page_area))
             try:
-                detected_tables += len(page.find_tables().tables)
+                # PyMuPDF 1.27 prints an optional-package recommendation to
+                # stdout here, which would corrupt this module's JSON CLI.
+                with contextlib.redirect_stdout(io.StringIO()):
+                    detected_tables += len(page.find_tables().tables)
             except Exception:  # noqa: BLE001
                 warnings.append(
                     f"table detection unavailable on page {page.number + 1}"
@@ -313,7 +318,17 @@ def _layout_observations(pdf_path: Path) -> _LayoutObservations | None:
         document.close()
 
     nonempty_pages = sum(bool(text.strip()) for text in page_texts)
-    reliable = bool(page_texts) and nonempty_pages >= max(1, len(page_texts) // 2)
+    # Prefer the text fallback when layout extraction loses whole pages. Newer
+    # PyMuPDF versions can return a technically non-empty but visibly partial
+    # stream for minimal or unusual PDFs; treating half the pages as sufficient
+    # produced confident zero-section reports. Allow an occasional blank page,
+    # not systematic loss.
+    allowed_blank_pages = max(1, len(page_texts) // 10)
+    reliable = (
+        bool(page_texts)
+        and blank_pages <= allowed_blank_pages
+        and nonempty_pages >= max(1, len(page_texts) - allowed_blank_pages)
+    )
     if not reliable:
         warnings.append("layout text extraction was sparse; verify the PDF visually")
     return _LayoutObservations(

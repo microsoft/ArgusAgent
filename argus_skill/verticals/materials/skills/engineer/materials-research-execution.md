@@ -14,6 +14,9 @@ Inspect project instructions and existing environments before installing or
 choosing tools. Use official APIs and native batch interfaces when available.
 Treat MCP servers and generated Python as execution surfaces, not evidence.
 Evidence begins with a completed solver or instrument run and its native output.
+Index the evidence actually used in `research/MATERIALS_EVIDENCE.json` (version
+1, `evidence` list of project-relative `path` + `kind`). This is a provenance
+index, not a substitute for the native files or a scientific verdict.
 
 Make composition, phase, temperature, pressure, strain rate, texture, defects,
 processing history, geometry, units, model parameters, boundary/initial
@@ -21,7 +24,7 @@ conditions, and validity range explicit where they matter. Preserve exact
 inputs, software versions, seeds, commands, raw outputs, failures, and hardware
 or instrument context.
 
-Treat `research/PIPELINE_STATE.json` and other Manager-owned lifecycle files as
+Treat `.argus/PIPELINE_STATE.json` and other Manager-owned lifecycle files as
 control state, never as scientific model inputs. Do not freeze their whole-file
 hashes in source/model integrity guards: a legitimate Manager stage transition
 changes those bytes between model and execute. Hash immutable data, code, model,

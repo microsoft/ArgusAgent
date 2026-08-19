@@ -1,0 +1,29 @@
+import { describe, expect, test } from 'vitest';
+import { COMMANDS } from '../../../core/src/commands';
+import { translate } from '../i18n';
+import { commandDescription, commandGroup } from '../lib/commandI18n';
+import { renderEvent } from '../lib/eventRender';
+
+describe('web localization', () => {
+  test('translates interface messages with interpolation', () => {
+    expect(translate('sidebar.manage', { name: 'demo' }, 'en')).toBe('Manage demo');
+    expect(translate('sidebar.manage', { name: 'demo' }, 'zh-CN')).toBe('管理 demo');
+  });
+
+  test('localizes shared command presentation without changing command tokens', () => {
+    const status = COMMANDS.find((command) => command.id === 'status')!;
+    expect(status.name).toBe('/status');
+    expect(commandDescription(status, 'zh-CN')).toContain('健康状态');
+    expect(commandGroup(status, 'zh-CN')).toBe('常用');
+  });
+
+  test('localizes generated event status but preserves model text', () => {
+    expect(renderEvent({ type: 'round.start', round: 2 }, 'zh-CN')?.text).toBe('第 2 轮');
+    expect(renderEvent({
+      type: 'engineer.progress',
+      kind: 'assistant_message',
+      text: 'Keep this model response unchanged.',
+      agent_layer: 'engineer',
+    }, 'zh-CN')?.text).toBe('Keep this model response unchanged.');
+  });
+});

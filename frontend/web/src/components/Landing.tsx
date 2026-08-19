@@ -2,6 +2,7 @@ import { BackendHandshake } from './BackendHandshake';
 import { Wordmark } from './Wordmark';
 import { Button } from './primitives';
 import { TAGLINE } from '../lib/soul';
+import { useI18n } from '../i18n';
 
 /** Full-viewport picker/empty landing shown until a daemon is selectable. */
 export function Landing({
@@ -21,6 +22,7 @@ export function Landing({
   onChoose: () => void;
   canCreate: boolean;
 }) {
+  const { t } = useI18n();
   return (
     <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
       {loading ? <BackendHandshake /> : (
@@ -30,20 +32,20 @@ export function Landing({
             {error
               ? error
               : hasProjects
-              ? 'Select a session from the sidebar, or create a new one.'
-              : 'No sessions yet. Create one to begin.'}
+              ? t('landing.selectOrCreate')
+              : t('landing.noSessions')}
           </p>
         </>
       )}
       {!loading && (
         <div className="flex flex-wrap justify-center gap-2">
           {error ? (
-            <Button onClick={onRetry} variant="danger">Retry</Button>
+            <Button onClick={onRetry} variant="danger">{t('common.retry')}</Button>
           ) : null}
           {hasProjects ? (
-            <Button onClick={onChoose}>Select session</Button>
+            <Button onClick={onChoose}>{t('landing.select')}</Button>
           ) : canCreate ? (
-            <Button onClick={onNew} variant="primary">New session</Button>
+            <Button onClick={onNew} variant="primary">{t('landing.new')}</Button>
           ) : null}
         </div>
       )}

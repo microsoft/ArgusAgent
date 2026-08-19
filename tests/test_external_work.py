@@ -106,6 +106,106 @@ def test_legacy_subagents_map_to_generic_states(tmp_path: Path) -> None:
     }
 
 
+def test_direct_subagent_is_waitable_while_its_owner_is_alive(tmp_path: Path) -> None:
+    registry = tmp_path / ".argus_subagents"
+    registry.mkdir()
+    path = registry / "direct-job.json"
+    path.write_text(
+        json.dumps(
+            {
+                "task_id": "direct-job",
+                "run_id": "direct-job-run-1",
+                "mode": "direct",
+                "state": "running",
+                "worker_pid": os.getpid(),
+                "started_at": 123.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = inspect_external_work(tmp_path, "direct-job", now=10_000)
+
+    assert status is not None
+    assert status.state is ExternalWorkState.RUNNING_HEALTHY
+    assert status.waitable is True
+    assert status.run_id == "direct-job-run-1"
+    assert status.started_at == 123.0
+
+
+def test_direct_subagent_with_dead_owner_is_stalled(tmp_path: Path) -> None:
+    registry = tmp_path / ".argus_subagents"
+    registry.mkdir()
+    (registry / "direct-job.json").write_text(
+        json.dumps(
+            {
+                "task_id": "direct-job",
+                "mode": "direct",
+                "state": "running",
+                "worker_pid": 999_999_999,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = inspect_external_work(tmp_path, "direct-job")
+
+    assert status is not None
+    assert status.state is ExternalWorkState.STALLED
+    assert status.waitable is False
+
+
+def test_direct_subagent_stays_waitable_when_launcher_dies_but_child_lives(
+    tmp_path: Path,
+) -> None:
+    registry = tmp_path / ".argus_subagents"
+    registry.mkdir()
+    (registry / "direct-job.json").write_text(
+        json.dumps(
+            {
+                "task_id": "direct-job",
+                "mode": "direct",
+                "state": "running",
+                "worker_pid": 999_999_999,
+                "pid": os.getpid(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = inspect_external_work(tmp_path, "direct-job")
+
+    assert status is not None
+    assert status.state is ExternalWorkState.RUNNING_HEALTHY
+    assert status.waitable is True
+
+
+def test_direct_subagent_exit_receipt_is_terminal(tmp_path: Path) -> None:
+    registry = tmp_path / ".argus_subagents"
+    registry.mkdir()
+    receipt = tmp_path / "exit-code"
+    receipt.write_text("0\n", encoding="utf-8")
+    (registry / "direct-job.json").write_text(
+        json.dumps(
+            {
+                "task_id": "direct-job",
+                "mode": "direct",
+                "state": "running",
+                "worker_pid": os.getpid(),
+                "pid": os.getpid(),
+                "exit_status_path": str(receipt),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = inspect_external_work(tmp_path, "direct-job")
+
+    assert status is not None
+    assert status.state is ExternalWorkState.TERMINAL
+    assert status.waitable is False
+
+
 def test_wait_wakes_on_terminal_without_claiming_success(tmp_path: Path) -> None:
     path = _write_external(tmp_path, "job-1")
     clock = [100.0]

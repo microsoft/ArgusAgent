@@ -1,41 +1,19 @@
-"""Shared vertical loader and optional-hook accessors.
+"""Resolve vertical providers through the framework's narrow contract.
 
-Vertical packages own their stage order, Reviewer checklists, and the optional
-hooks used by ``argus_skill.skills.stage_machine``:
-
-* ``CHECKLIST_STAGE_ORDER: tuple[str, ...]`` — the stage order System (B)
-  iterates (default: research's ``CANONICAL_STAGE_ORDER``).
-* ``CHECKLIST_ITEMS: dict[str, tuple[ChecklistItem, ...]]`` — the per-stage
-  markdown checklist items (default: research's ``STAGE_CHECKLISTS``).
-* ``role_banner(role: str) -> str`` — top-of-prompt framing for
-  planner/reviewer/engineer (default ``""``).
-* ``REQUIRE_INDEPENDENT_REVIEW: bool`` — disable Engineer review waivers for
-  every mission in this vertical (default ``False``).
-* ``completion_gate: str`` — ``"full_paper"`` (research) | ``"metric"``
-  (speedrun) | ``"none"`` (default ``"full_paper"``).
-* ``COMPLETION_CONTRACT_VERSION: int`` — when positive, final-stage completion
-    is valid only while its persisted checklist fingerprint matches this version.
-
-A vertical that does not declare an optional hook gets the safe default, so the
-``research`` vertical (which re-exports its checklist defs) stays byte-identical
-to today and a partially-specified new vertical never crashes prompt building.
-
-``load_vertical(name)`` is the single resolver: it imports
-``argus_skill.verticals.<name>.stages``, strips a trailing ``-needed`` sentinel
-(main wrote a ``"speedrun-needed"`` placeholder before the writer existed). A
-genuinely-missing / typo'd / half-built name falls back to the ``research``
-vertical (resolution must never break the loop on a bad name); but a REAL named
-vertical whose ``stages.py`` exists yet fails to import raises LOUDLY rather than
-silently degrading a metric mission into the paper pipeline.
+Every built-in, data-domain, or entry-point vertical declares stages, checklist
+items, completion strength, and optional role/evidence hooks. Missing or broken
+providers fail visibly; silently substituting another vertical changes the task.
 """
 from __future__ import annotations
 
 import importlib
 import logging
 import os
+from pathlib import Path
 from types import ModuleType
 from typing import TypeAlias
 
+from ..core.vertical_contract import VerticalContract, vertical_contract
 from ._data_domain import DataDomain, load_data_domain
 
 log = logging.getLogger(__name__)
@@ -59,218 +37,225 @@ def _normalize_vertical_name(name: object) -> str:
 
 
 def load_vertical(name: object, project_root: object = None) -> VerticalDefinition:
-    """Return the ``stages`` module (or a ``DataDomain`` shim) for vertical ``name``.
-
-    Resolution order:
-
-    1. A real on-disk Python package ``argus_skill.verticals.<name>.stages`` —
-       imported via importlib (after normalizing the name and stripping a trailing
-       ``-needed`` sentinel). A REAL named vertical whose module exists but fails
-       to import raises LOUDLY (never silently degrades a metric mission into the
-       paper pipeline).
-    2. A valid installed ``argus_skill.verticals`` plugin.
-    3. When ``project_root`` is given and ``name`` is NOT a Python package, a
-       project-local DATA domain (``research/DOMAINS/<name>.json``) — returned as
-       a duck-typed :class:`~argus_skill.verticals._data_domain.DataDomain` shim
-       the optional-hook accessors below consume unchanged.
-    4. The ``research`` vertical's stages module (the safe fallback) — so a typo,
-       a stale ``-needed`` placeholder, or a half-built vertical degrades to the
-       paper pipeline instead of crashing the loop.
-
-    ``project_root=None`` preserves today's behavior exactly (no data-domain
-    branch), so every existing call site stays byte-identical until it opts in.
-    Package import is tried FIRST so that after a data domain is PROMOTED to a
-    real ``verticals/<name>/`` package, resolution converges on the package and
-    the data domain becomes inert.
-    """
+    """Resolve one in-tree, plugin, or project-local vertical provider."""
     cleaned = _normalize_vertical_name(name)
     import_name = _VERTICAL_IMPORT_ALIASES.get(cleaned, cleaned)
-    try:
-        return importlib.import_module(f"argus_skill.verticals.{import_name}.stages")
-    except Exception as exc:  # noqa: BLE001
-        # Distinguish a genuinely-missing / typo'd / half-built vertical (safe
-        # fallback) from a REAL named vertical whose stages module errored. The
-        # latter must NOT be hidden: silently degrading e.g. nanochat → research
-        # turns a metric optimizer into the paper pipeline with only a log line.
-        stages_path = os.path.join(
-            os.path.dirname(__file__),
-            *import_name.split("."),
-            "stages.py",
-        )
-        if cleaned != DEFAULT_VERTICAL and os.path.isfile(stages_path):
+    module_name = f"argus_skill.verticals.{import_name}.stages"
+    stages_path = os.path.join(
+        os.path.dirname(__file__), *import_name.split("."), "stages.py"
+    )
+    if os.path.isfile(stages_path):
+        try:
+            return importlib.import_module(module_name)
+        except Exception as exc:  # noqa: BLE001
             raise RuntimeError(
-                f"load_vertical({name!r}): the vertical exists ({stages_path}) but "
-                f"importing its stages module failed — refusing to silently fall "
-                f"back to {DEFAULT_VERTICAL!r} (that would turn this mission into the "
-                f"paper pipeline). Fix the vertical."
+                f"vertical {cleaned!r} exists but failed to import: {exc}"
             ) from exc
-        # Only after proving no in-tree stages module exists may a plugin own
-        # the name. This keeps built-ins authoritative even when their import is
-        # temporarily broken.
-        if cleaned != DEFAULT_VERTICAL:
-            from ._registry import vertical_plugin
 
-            plugin = vertical_plugin(cleaned)
-            if plugin is not None:
-                return plugin.module
-        # No Python package/plugin: try a project-local DATA domain before falling back.
-        if project_root is not None and cleaned != DEFAULT_VERTICAL:
-            try:
-                domain = load_data_domain(cleaned, project_root)
-                if domain is not None:
-                    return domain
-            except Exception:  # noqa: BLE001 — data-domain load must never break
-                log.debug("load_vertical(%r): data-domain probe failed", name, exc_info=True)
-        if cleaned != DEFAULT_VERTICAL:
-            log.warning(
-                "load_vertical(%r): unknown/half-built vertical (%s), falling back to %r",
-                name,
-                type(exc).__name__,
-                DEFAULT_VERTICAL,
-            )
-        return importlib.import_module(
-            f"argus_skill.verticals.{DEFAULT_VERTICAL}.stages"
-        )
+    from ._registry import vertical_plugin
+
+    plugin = vertical_plugin(cleaned)
+    if plugin is not None:
+        return plugin.module
+    if project_root is not None:
+        domain = load_data_domain(cleaned, project_root)
+        if domain is not None:
+            return domain
+    raise LookupError(f"unknown vertical: {cleaned}")
 
 
-# --- optional-hook accessors (safe defaults) -------------------------------
+def load_vertical_contract(
+    name: object,
+    project_root: object = None,
+) -> VerticalContract:
+    cleaned = _normalize_vertical_name(name)
+    return vertical_contract(cleaned, load_vertical(cleaned, project_root=project_root))
 
 
-def _research_defaults() -> tuple[tuple[str, ...], dict]:
-    """Return research's ``(CANONICAL_STAGE_ORDER, STAGE_CHECKLISTS)`` defaults.
+# --- contract accessors retained for existing callers ---------------------
 
-    Late import to avoid a module-load cycle with ``stage_machine`` (which
-    late-imports this module).
-    """
-    from .research.stages import CANONICAL_STAGE_ORDER, STAGE_CHECKLISTS
 
-    return CANONICAL_STAGE_ORDER, STAGE_CHECKLISTS
+def _contract(mod: VerticalDefinition) -> VerticalContract:
+    name = str(getattr(mod, "__name__", None) or getattr(mod, "name", "vertical"))
+    return vertical_contract(name, mod)
 
 
 def vertical_checklist_stage_order(mod: VerticalDefinition) -> tuple[str, ...]:
-    """Return ``mod.CHECKLIST_STAGE_ORDER`` or research's canonical order."""
-    order = getattr(mod, "CHECKLIST_STAGE_ORDER", None)
-    if order:
-        return tuple(order)
-    return _research_defaults()[0]
+    return _contract(mod).stage_order
 
 
 def vertical_checklist_items(mod: VerticalDefinition) -> dict:
-    """Return ``mod.CHECKLIST_ITEMS`` or research's ``STAGE_CHECKLISTS``."""
-    items = getattr(mod, "CHECKLIST_ITEMS", None)
-    if isinstance(items, dict):
-        return items
-    return _research_defaults()[1]
+    return _contract(mod).checklist_items
 
 
 def vertical_checklist_optional_stages(
     mod: VerticalDefinition,
 ) -> frozenset[str]:
     """Return stages whose checklist is explicitly declared optional."""
-    raw = getattr(mod, "CHECKLIST_OPTIONAL_STAGES", ())
-    if not isinstance(raw, (list, tuple, set, frozenset)):
-        return frozenset()
-    return frozenset(
-        stage
-        for value in raw
-        if (stage := str(value or "").strip().lower())
-    )
+    return _contract(mod).checklist_optional_stages
 
 
 def vertical_stage_aliases(mod: VerticalDefinition) -> dict[str, str]:
     """Return non-canonical stage names mapped to canonical stage names."""
-    raw = getattr(mod, "STAGE_ALIASES", {})
-    if not isinstance(raw, dict):
-        return {}
-    aliases: dict[str, str] = {}
-    for key, value in raw.items():
-        source = str(key or "").strip().lower()
-        target = str(value or "").strip().lower()
-        if source and target and source != target:
-            aliases[source] = target
-    return aliases
+    return dict(_contract(mod).stage_aliases or {})
 
 
 def vertical_role_banner(mod: VerticalDefinition, role: str) -> str:
-    """Return ``mod.role_banner(role)`` or ``""``.
-
-    Fail-open: a vertical with no ``role_banner`` (or one that raises) yields no
-    banner, so prompt building never breaks on a missing/buggy hook.
-    """
-    fn = getattr(mod, "role_banner", None)
-    if not callable(fn):
-        return ""
-    try:
-        result = fn(role)
-    except Exception:  # noqa: BLE001 — banner must never break prompt building
-        return ""
-    return result if isinstance(result, str) else ""
+    return _contract(mod).banner(role)
 
 
 def vertical_requires_independent_review(mod: VerticalDefinition) -> bool:
     """Return whether every mission in this vertical requires a Reviewer."""
-    return bool(getattr(mod, "REQUIRE_INDEPENDENT_REVIEW", False))
+    return _contract(mod).requires_independent_review
 
 
 def vertical_completion_gate(mod: VerticalDefinition) -> str:
-    """Return ``mod.completion_gate`` or the default ``"full_paper"``."""
-    gate = getattr(mod, "completion_gate", None)
-    if isinstance(gate, str) and gate.strip():
-        return gate.strip().lower()
-    return "full_paper"
+    return _contract(mod).completion_gate
+
+
+def vertical_mission_kind(mod: VerticalDefinition) -> str:
+    return _contract(mod).mission_kind
+
+
+def vertical_is_paper_mission(mod: VerticalDefinition) -> bool:
+    return _contract(mod).paper_mission
+
+
+def vertical_verification_stage_profiles(
+    mod: VerticalDefinition,
+) -> dict[str, str]:
+    return dict(_contract(mod).verification_stage_profiles or {})
 
 
 def vertical_completion_contract_version(mod: VerticalDefinition) -> int:
     """Return the optional versioned final-stage completion contract."""
-    raw = getattr(mod, "COMPLETION_CONTRACT_VERSION", 0)
-    try:
-        return max(0, int(raw))
-    except (TypeError, ValueError):
-        return 0
+    return _contract(mod).completion_contract_version
 
 
 def vertical_research_target_levels(mod: VerticalDefinition) -> tuple[str, ...]:
     """Return the research target levels supported by this vertical."""
-    raw = getattr(mod, "RESEARCH_TARGET_LEVELS", ())
-    if not isinstance(raw, (list, tuple)):
-        return ()
-    return tuple(
-        level
-        for value in raw
-        if (level := str(value or "").strip().lower())
-    )
+    return _contract(mod).research_target_levels
 
 
 def vertical_workflow_mode(mod: VerticalDefinition) -> str:
     """Return the vertical's supported workflow mode."""
-    mode = str(getattr(mod, "WORKFLOW_MODE", "") or "").strip().lower()
-    return mode if mode in {"direct", "proportional"} else "staged"
+    return _contract(mod).workflow_mode
 
 
 def vertical_search_altitude(mod: VerticalDefinition, project_root: object) -> str:
-    """Return ``mod.search_altitude_context(project_root)`` or ``""``.
+    return _contract(mod).altitude(project_root)
 
-    Optional hook: a vertical may surface a NO-VERDICT 'where is the search
-    now' fact block (live floor / distance-to-target / consecutive
-    non-improving attempts / recombined levers) so the planner & reviewer can
-    judge saturation instead of re-deriving it each cycle. Fail-open: a vertical
-    with no hook (or one that raises) yields no block, so prompt building never
-    breaks on a missing/buggy hook — same posture as ``vertical_role_banner``.
+
+def vertical_prepare_mission(
+    mod: VerticalDefinition,
+    *,
+    stage: str,
+    project_root: Path,
+    state_root: Path,
+    mission: object,
+) -> str:
+    """``mission`` is the claimed backlog item; see ``VerticalContract``."""
+    return _contract(mod).prepare_mission(
+        stage=stage,
+        project_root=project_root,
+        state_root=state_root,
+        mission=mission,
+    )
+
+
+def vertical_mission_prelude(
+    *,
+    vertical_root: Path,
+    project_root: Path,
+    state_root: Path,
+    stage: str,
+    mission: object,
+) -> str:
+    """Resolve the active vertical and return its block for *this* mission.
+
+    One seam, two callers. The daemon's supervisor builds this for a claimed
+    backlog item; ``team/teammate_entry.py`` builds it for the board task a
+    dispatched teammate owns. Both need the identical three steps — resolve the
+    project's persisted vertical, load its contract, forward the hook by
+    keyword — and computing them twice is how the two drift: a teammate that
+    resolved the vertical differently would be reading a different project than
+    the Engineer that dispatched it.
+
+    ``vertical_root`` is where the Manager's ``PIPELINE_STATE.json`` decision
+    lives; ``project_root`` is the tree this mission actually works in. They are
+    separate parameters because the supervisor already passes two different
+    paths (session artifact root vs. adopted mission workdir), and collapsing
+    them here would silently retarget it.
+
+    Deliberately unguarded, and that is the whole point of the hook's contract
+    (see ``VerticalContract.prepare_mission``): a stale out-of-tree provider
+    halts the run with a ``TypeError`` naming the argument to add, rather than
+    being quietly demoted to mission-blind for the life of the project. A caller
+    that cannot afford to die — a single subordinate teammate, say — owns that
+    decision at its own call site, where the trade is visible.
     """
-    fn = getattr(mod, "search_altitude_context", None)
-    if not callable(fn):
-        return ""
-    try:
-        result = fn(project_root)
-    except Exception:  # noqa: BLE001 — visibility hook must never break prompts
-        return ""
-    return result if isinstance(result, str) else ""
+    from ..skills.vertical_select import resolve_vertical
+
+    contract = load_vertical_contract(
+        resolve_vertical(vertical_root), project_root=vertical_root
+    )
+    return contract.prepare_mission(
+        stage=stage,
+        project_root=project_root,
+        state_root=state_root,
+        mission=mission,
+    )
+
+
+def vertical_planner_task_issues(
+    mod: VerticalDefinition,
+    *,
+    stage: str,
+    project_root: Path,
+    task: object,
+) -> tuple[str, ...]:
+    return _contract(mod).planner_task_issues(stage, project_root, task)
+
+
+def vertical_stage_primary_deliverables(
+    mod: VerticalDefinition,
+    *,
+    stage: str,
+) -> tuple[str, ...]:
+    return _contract(mod).primary_deliverables(stage)
+
+
+def vertical_stage_completion_issues(
+    mod: VerticalDefinition,
+    *,
+    stage: str,
+    project_root: Path,
+) -> tuple[str, ...]:
+    """Run the provider's deterministic pre-completion validator, if any."""
+    return _contract(mod).completion_issues(stage, project_root)
+
+
+def vertical_adopt_operator_objective(
+    mod: VerticalDefinition,
+    *,
+    project_root: Path,
+    request: str,
+) -> bool:
+    """Hand the vertical the operator's request so it can record its objective.
+
+    Returns whether the vertical declares an adopter at all. Verticals that
+    have nothing to choose declare none, and this is a no-op for them.
+    """
+    return _contract(mod).adopt_operator_objective(project_root, request)
 
 
 __all__ = [
     "DEFAULT_VERTICAL",
+    "VerticalContract",
     "VerticalDefinition",
     "load_vertical",
+    "load_vertical_contract",
+    "vertical_adopt_operator_objective",
     "vertical_checklist_stage_order",
     "vertical_checklist_items",
     "vertical_checklist_optional_stages",
@@ -278,7 +263,15 @@ __all__ = [
     "vertical_requires_independent_review",
     "vertical_completion_contract_version",
     "vertical_completion_gate",
+    "vertical_mission_kind",
+    "vertical_is_paper_mission",
+    "vertical_verification_stage_profiles",
+    "vertical_mission_prelude",
     "vertical_research_target_levels",
+    "vertical_prepare_mission",
+    "vertical_planner_task_issues",
     "vertical_workflow_mode",
     "vertical_search_altitude",
+    "vertical_stage_completion_issues",
+    "vertical_stage_primary_deliverables",
 ]

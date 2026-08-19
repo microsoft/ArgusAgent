@@ -1,10 +1,9 @@
 """Regression: ``Manager.classify_front_door`` must run FRESH on the raw backend
-— never resume the persistent Manager session, and with a LOW-effort classify.
+— never resume the persistent Manager session, and with bounded classify effort.
 
-Same discipline as ``classify_config_intent`` (see test_config_intent_fresh):
-the merged front-door classify is a stateless three-axis label call. It must go to
+The merged front-door classify is a stateless label call. It must go to
 ``self.runner`` with ``resume_thread_id=None`` (no giant-session resume, which is
-what made every cockpit message slow), at the cheap ``low`` effort by default.
+what made every cockpit message slow), at ``medium`` effort by default.
 """
 from __future__ import annotations
 
@@ -45,7 +44,7 @@ def test_front_door_runs_fresh_low_effort(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("ARGUS_SKILL_FRONTDOOR_CLASSIFY_EFFORT", raising=False)
     monkeypatch.setattr(
         "argus_skill.core.knobs.resolve_manager_classify_model",
-        lambda: "fast-manager",
+        lambda **_kwargs: "fast-manager",
     )
     mgr, backend = _manager(
         "CONFIG: NONE\nCONTROL: NONE\nROUTE: SELF",
@@ -61,18 +60,18 @@ def test_front_door_runs_fresh_low_effort(tmp_path, monkeypatch) -> None:
     call = backend.calls[0]
     assert call["resume_thread_id"] is None                    # fresh, no session
     assert call["run_label"] == "manager-frontdoor-classify"
-    assert call["options"].reasoning_effort == "low"           # cheap by default
+    assert call["options"].reasoning_effort == "low"
     assert call["options"].model == "fast-manager"
 
 
 def test_front_door_effort_env_override(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("ARGUS_SKILL_FRONTDOOR_CLASSIFY_EFFORT", "medium")
+    monkeypatch.setenv("ARGUS_SKILL_FRONTDOOR_CLASSIFY_EFFORT", "high")
     mgr, backend = _manager(
         "CONFIG: NONE\nCONTROL: NONE\nROUTE: TEAM",
         tmp_path,
     )
     mgr.classify_front_door("optimize as many kernels as possible")
-    assert backend.calls[0]["options"].reasoning_effort == "medium"
+    assert backend.calls[0]["options"].reasoning_effort == "high"
 
 
 def test_front_door_config_axis(tmp_path) -> None:

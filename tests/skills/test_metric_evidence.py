@@ -51,17 +51,33 @@ def test_speedrun_reference_requires_structured_metric(tmp_path):
     assert validate_speedrun_reference(tmp_path) == reference
 
 
-def test_nanogpt_requires_a_non_negative_timing_metric(tmp_path):
+def test_nanogpt_requires_target_loss_and_8xh100_timing(tmp_path):
     result = tmp_path / "attempts" / "a" / "results.csv"
     _csv(result, ["val_bpb"], [{"val_bpb": "3.28"}])
     with pytest.raises(EvidenceError):
         validate_nanogpt_evidence(tmp_path)
 
     _csv(result, ["seconds_to_target"], [{"seconds_to_target": "77.3"}])
+    with pytest.raises(EvidenceError):
+        validate_nanogpt_evidence(tmp_path)
+
+    _csv(
+        result,
+        ["seconds_to_target", "val_loss", "gpu_count", "gpu_model"],
+        [{
+            "seconds_to_target": "77.3",
+            "val_loss": "3.28",
+            "gpu_count": "8",
+            "gpu_model": "NVIDIA H100 80GB HBM3",
+        }],
+    )
     assert validate_nanogpt_evidence(tmp_path) == result
 
 
-def test_metric_evidence_rejects_out_of_project_symlink(tmp_path):
+def test_metric_evidence_rejects_out_of_project_symlink(
+    tmp_path,
+    require_symlink_support,
+):
     outside = tmp_path.parent / "outside-results.csv"
     _csv(outside, ["val_bpb"], [{"val_bpb": "3.28"}])
     link = tmp_path / "attempts" / "a" / "results.csv"

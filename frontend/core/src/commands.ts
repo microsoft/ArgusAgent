@@ -4,7 +4,7 @@ export type CommandKind = 'panel' | 'action' | 'local';
 
 export type CommandId =
   | 'status' | 'roles' | 'journal' | 'backlog' | 'artifacts' | 'artifact'
-  | 'events' | 'find' | 'cancel' | 'task' | 'plan' | 'rewrite' | 'nudge' | 'abort'
+  | 'events' | 'find' | 'cancel' | 'ask' | 'task' | 'plan' | 'rewrite' | 'nudge' | 'abort'
   | 'note' | 'done' | 'skip' | 'stop' | 'item' | 'run' | 'new' | 'daemons'
   | 'resume' | 'attach' | 'rename' | 'doctor' | 'backend' | 'config'
   | 'identity' | 'reset' | 'skills' | 'clear' | 'reconnect' | 'help' | 'quit';
@@ -30,6 +30,7 @@ export const COMMANDS: SlashCommand[] = [
   { id: 'events', name: '/events', arg: '[filter] [query]', argument: 'optional', desc: 'search feed: all / watch / milestones / messages', group: 'Everyday', kind: 'panel' },
   { id: 'find', name: '/find', arg: '<text>', argument: 'required', desc: 'search the current event buffer', group: 'Everyday', kind: 'panel' },
   { id: 'cancel', name: '/cancel', argument: 'none', desc: 'stop waiting for the current Manager reply', group: 'Everyday', kind: 'local' },
+  { id: 'ask', name: '/ask', arg: '<question>', argument: 'required', desc: 'answer inline — no task queued, no Planner/Engineer/Reviewer', aliases: ['/chat'], group: 'Everyday', kind: 'action' },
   { id: 'task', name: '/task', arg: '<text>', argument: 'required', desc: 'queue work directly', aliases: ['/add'], group: 'Task management', kind: 'action' },
   { id: 'plan', name: '/plan', arg: '<objective>', argument: 'required', desc: 'preview a Planner-authored execution plan', group: 'Task management', kind: 'action' },
   { id: 'rewrite', name: '/rewrite', arg: '[text]', argument: 'optional', desc: 'let the Manager rewrite your prompt before sending', aliases: ['/refine'], group: 'Task management', kind: 'action' },
@@ -47,7 +48,7 @@ export const COMMANDS: SlashCommand[] = [
   { id: 'attach', name: '/attach', arg: '<id|prefix>', argument: 'required', desc: 'follow another project (read the stream)', group: 'Sessions & diagnostics', kind: 'action' },
   { id: 'rename', name: '/rename', arg: '<name>', argument: 'required', desc: 'rename the current conversation', group: 'Sessions & diagnostics', kind: 'action' },
   { id: 'doctor', name: '/doctor', argument: 'none', desc: "diagnose 'why isn't anything running'", group: 'Sessions & diagnostics', kind: 'panel' },
-  { id: 'backend', name: '/backend', arg: '[codex|claude|copilot|opencode|pi]', argument: 'optional', desc: 'view or change the shared runner backend', group: 'Configuration', kind: 'action' },
+  { id: 'backend', name: '/backend', arg: '[codex|claude|copilot|opencode|pi|grok]', argument: 'optional', desc: 'view or change the shared runner backend', group: 'Configuration', kind: 'action' },
   { id: 'config', name: '/config', arg: '[key=value …]', argument: 'optional', desc: 'view or change runtime settings', group: 'Configuration', kind: 'panel' },
   { id: 'identity', name: '/identity', arg: '[set <text>]', argument: 'optional', desc: 'view or replace the operator identity card', group: 'Configuration', kind: 'panel' },
   { id: 'reset', name: '/reset', argument: 'none', desc: 'drop the warm Manager conversation context', group: 'Configuration', kind: 'action' },
@@ -77,13 +78,36 @@ export function commandNeedsArgument(command: SlashCommand): boolean {
   return command.argument === 'required';
 }
 
+/** A command token: `/` followed by one word of letters, digits, - or _.
+ *
+ * Paths start with `/` too. Treating `/data/yijia/run.py` as a command means
+ * answering a pasted path with "Unknown command /data", which is both wrong
+ * and unhelpful — the operator wanted to say something, not run something.
+ * Requiring a single bare word keeps real typos (`/statu`) reported while
+ * letting anything path-shaped through as ordinary text.
+ */
+const COMMAND_TOKEN = /^\/[A-Za-z0-9_-]+$/;
+
 export function isSlash(line: string): boolean {
-  return line.startsWith('/');
+  if (!line.startsWith('/')) return false;
+  const sp = line.indexOf(' ');
+  const token = sp === -1 ? line : line.slice(0, sp);
+  return COMMAND_TOKEN.test(token);
+}
+
+/** Whether the operator is still typing a command token.
+ *
+ * Wider than {@link isSlash}: a bare `/` is not yet a command but should open
+ * the menu, while `/data/` has already committed to being a path and should
+ * not. Completion and dispatch answer different questions.
+ */
+export function isTypingCommand(line: string): boolean {
+  return line.startsWith('/') && !line.includes(' ') && !line.slice(1).includes('/');
 }
 
 /** Completions while typing the command TOKEN (before the first space). */
 export function slashCompletions(line: string): SlashCommand[] {
-  if (!isSlash(line) || line.includes(' ')) return [];
+  if (!isTypingCommand(line)) return [];
   const token = line.toLowerCase();
   const seen = new Set<string>();
   const out: SlashCommand[] = [];

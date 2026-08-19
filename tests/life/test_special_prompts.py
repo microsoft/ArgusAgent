@@ -1,7 +1,10 @@
 """Tests for operator special-prompt injection."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+import pytest
 
 from argus_skill.life import special_prompts
 
@@ -71,12 +74,14 @@ def test_explicit_paper_scope_is_omitted_from_bounded_missions(
     assert "Machine rule" in paper_context
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows chmod does not expose POSIX group/world write bits",
+)
 def test_world_writable_directive_is_rejected(
     tmp_path: Path, monkeypatch
 ) -> None:
     """Untrusted (world-writable) directive files are not loaded."""
-    import os
-
     d = tmp_path / "sp"
     d.mkdir()
     trusted = d / "10-ok.md"

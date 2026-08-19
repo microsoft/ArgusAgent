@@ -7,12 +7,13 @@ machine is delegated to :mod:`._exec`.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from ...core.models import RunnerOptions, RunnerResult
 from ...core.secret_guard import known_secret_values
@@ -37,6 +38,63 @@ _RUNNER_DEFAULT_STALLED_IDLE_SECONDS = 30 * 60
 _RUNNER_DEFAULT_HARD_IDLE_SECONDS = 45 * 60
 
 
+class _RepeatedToolCallGuard:
+    """Interrupt a provider turn repeating one identical tool call."""
+
+    def __init__(self, limit: int = 3) -> None:
+        self.limit = limit
+        self._lock = threading.Lock()
+        self.reset()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._last_signature = ""
+            self._repeat_count = 0
+            self._reason = ""
+
+    def observe(self, stream: str, line: str) -> None:
+        if stream != "stdout":
+            return
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return
+        content = message.get("content")
+        if not isinstance(content, list):
+            return
+        with self._lock:
+            if event.get("type") != "assistant":
+                return
+            for item in content:
+                if not isinstance(item, dict) or item.get("type") != "tool_use":
+                    continue
+                signature = json.dumps(
+                    {
+                        "name": item.get("name"),
+                        "input": item.get("input"),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                if signature == self._last_signature:
+                    self._repeat_count += 1
+                else:
+                    self._last_signature = signature
+                    self._repeat_count = 1
+                if self._repeat_count >= self.limit:
+                    self._reason = (
+                        "repeated tool call detected: the same tool and arguments "
+                        f"were requested {self._repeat_count} consecutive times"
+                    )
+
+    def interrupt_reason(self) -> str:
+        with self._lock:
+            return self._reason
+
+
 def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
@@ -52,7 +110,8 @@ class AgentCliBackend:
     """``RunnerBackend`` implementation that shells out to a real CLI.
 
     Construct once with the runner backend choice ("codex" / "claude" /
-    "copilot" / "opencode" / "pi") and any cross-call defaults (e.g. ``default_extra_args``
+    "copilot" / "opencode" / "pi" / "grok" / "qoder" / "dsh") and any cross-call defaults
+    (e.g. ``default_extra_args``
     for ``-c "config_profile=..."``), then pass the same instance to
     every ``SkillLoop`` actor (author / engineer / reviewer). Each
     ``run_exec`` call spawns a fresh subprocess.
@@ -65,10 +124,12 @@ class AgentCliBackend:
     enough).
 
     Args:
-        backend: which CLI to drive ("codex" / "claude" / "copilot" / "opencode" / "pi").
+        backend: which CLI to drive ("codex" / "claude" / "copilot" /
+            "opencode" / "pi" / "grok" / "qoder" / "dsh").
             Defaults to the bundled runner's default (codex).
         runner_bin: explicit path to the CLI binary. Default: resolve
-            from ``$PATH`` (e.g. ``codex`` / ``claude`` / ``copilot`` / ``opencode`` / ``pi``).
+            from ``$PATH`` (e.g. ``codex`` / ``claude`` / ``copilot`` /
+            ``opencode`` / ``pi`` / ``grok`` / ``qodercli`` / ``dsh``).
         default_extra_args: appended to every command (after
             ``options.extra_args``). Useful for global ``-c`` flags.
         before_exec: called before each subprocess spawn — used to reset
@@ -91,6 +152,7 @@ class AgentCliBackend:
         default_watchdog_hard_idle_seconds: int = _RUNNER_DEFAULT_HARD_IDLE_SECONDS,
         before_exec=None,
         event_callback=None,
+        known_secret_values_override: Iterable[str] | None = None,
     ) -> None:
         deps = load_agent_cli_runtime()
         self._deps = deps
@@ -133,11 +195,16 @@ class AgentCliBackend:
         # propagate to the supervisor's stop logic.
         self._auth_failure_detected: bool = False
         self._usage = UsageAccumulator()
+        self._repeated_tool_call_guard = _RepeatedToolCallGuard()
         self._usage_context_lock = threading.Lock()
         self._usage_project_root: Path | None = None
         self._usage_global_root: Path | None = None
         self._usage_mission_id: str | None = None
-        self._known_secret_values = known_secret_values()
+        self._known_secret_values_override = tuple(
+            known_secret_values_override or ()
+        )
+        self._known_secret_values: tuple[str, ...] = ()
+        self._refresh_known_secret_values()
 
     @property
     def backend(self) -> str:
@@ -152,6 +219,7 @@ class AgentCliBackend:
     def prewarm_acp_client(
         self,
         *,
+        run_label: str,
         model: str | None,
         reasoning_effort: str | None,
         lean: bool,
@@ -163,6 +231,7 @@ class AgentCliBackend:
         prewarm = getattr(self._runner, "prewarm_acp_client", None)
         if callable(prewarm):
             prewarm(
+                run_label=run_label,
                 model=model,
                 reasoning_effort=reasoning_effort,
                 lean=lean,
@@ -204,6 +273,12 @@ class AgentCliBackend:
                 self._usage_mission_id,
                 self._usage_global_root,
             )
+
+    def _refresh_known_secret_values(self) -> None:
+        self._known_secret_values = tuple(dict.fromkeys((
+            *self._known_secret_values_override,
+            *known_secret_values(),
+        )))
 
     def _configured_pricing_model(self, *, profile: str = "") -> str:
         """Read the implicit model from Codex's own config, never another route."""
@@ -265,6 +340,7 @@ class AgentCliBackend:
         run_label: str,
         resume_thread_id: str | None = None,
     ) -> RunnerResult:
+        self._repeated_tool_call_guard.reset()
         return _exec.execute(
             self,
             prompt=prompt,
@@ -300,6 +376,7 @@ class AgentCliBackend:
         self._io_logger.close(call_id)
 
     def _stream_event_callback(self, stream: str, line: str) -> None:
+        self._repeated_tool_call_guard.observe(stream, line)
         self._io_logger.stream_event_callback(
             stream,
             line,
@@ -315,10 +392,15 @@ class AgentCliBackend:
         # hooks, add_dirs, plugin_dirs, etc.). Forward the fields
         # argus-skill exposes; the watchdog hooks are propagated when set
         # so an outer supervisor can interrupt the codex subprocess.
-        interrupt_provider = _compose_interrupt_providers(
+        interrupt_providers = [
             self._default_interrupt_reason_provider,
             options.external_interrupt_reason_provider,
-        )
+        ]
+        if self._backend_name == "claude":
+            interrupt_providers.append(
+                self._repeated_tool_call_guard.interrupt_reason
+            )
+        interrupt_provider = _compose_interrupt_providers(*interrupt_providers)
         soft_idle = (
             self._default_watchdog_soft_idle_seconds
             if options.watchdog_soft_idle_seconds is None
@@ -334,6 +416,20 @@ class AgentCliBackend:
             if options.watchdog_hard_idle_seconds is None
             else max(0, int(options.watchdog_hard_idle_seconds))
         )
+        if self._backend_name == "dsh":
+            # dsh's headless runner emits nothing until the final assistant
+            # text, so byte-level inactivity is NOT a health signal: a long
+            # tool-heavy turn looks identical to a hung one. Several callers
+            # pass streaming-assuming thresholds (the SELF reply path uses
+            # 5s/120s for progress display and stuck-turn killing; subagents
+            # pass their own timeout), any of which would kill healthy dsh
+            # turns. The ONLY knob that re-enables the stages for dsh is the
+            # operator's explicit ARGUS_SKILL_RUNNER_*_IDLE_SECONDS; caller
+            # options are ignored, and hung turns are bounded by dsh's own
+            # internal request/tool timeouts instead.
+            soft_idle = _env_int("ARGUS_SKILL_RUNNER_SOFT_IDLE_SECONDS", 0)
+            stalled_idle = _env_int("ARGUS_SKILL_RUNNER_STALLED_IDLE_SECONDS", 0)
+            hard_idle = _env_int("ARGUS_SKILL_RUNNER_HARD_IDLE_SECONDS", 0)
         option_fields = getattr(cli_cls, "__dataclass_fields__", {})
         kwargs = dict(
             model=options.model,
@@ -357,8 +453,16 @@ class AgentCliBackend:
             kwargs["live_search"] = getattr(options, "live_search", False)
         if "add_dirs" in option_fields:
             kwargs["add_dirs"] = list(options.add_dirs) if options.add_dirs else None
+        if "skill_paths" in option_fields:
+            kwargs["skill_paths"] = (
+                list(options.skill_paths) if options.skill_paths else None
+            )
         if "sandbox_mode" in option_fields:
             kwargs["sandbox_mode"] = getattr(options, "sandbox_mode", None)
+        if "force_safe_mode" in option_fields:
+            kwargs["force_safe_mode"] = getattr(options, "force_safe_mode", False)
+        if "disable_tools" in option_fields:
+            kwargs["disable_tools"] = getattr(options, "disable_tools", False)
         if "isolate_workdir" in getattr(cli_cls, "__dataclass_fields__", {}):
             kwargs["isolate_workdir"] = getattr(options, "isolate_workdir", False)
         # Forward the live assistant-block callback the same guarded way — only
@@ -419,7 +523,8 @@ def build_agent_cli_backend_from_env() -> AgentCliBackend:
 
     Honours:
 
-      * ``ARGUS_SKILL_RUNNER_BACKEND`` — "codex" / "claude" / "copilot" / "opencode" / "pi"
+      * ``ARGUS_SKILL_RUNNER_BACKEND`` — "codex" / "claude" / "copilot" /
+        "opencode" / "pi" / "grok" / "qoder" / "dsh"
         (default: codex)
       * ``ARGUS_SKILL_RUNNER_BIN``     — path to the CLI binary
       * ``ARGUS_SKILL_RUNNER_EXTRA_ARGS`` — space-separated default args

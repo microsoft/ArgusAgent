@@ -116,6 +116,11 @@ def test_opencode_backend_also_skips(monkeypatch) -> None:
     assert required_codex_routes() == []
 
 
+def test_grok_backend_also_skips(monkeypatch) -> None:
+    monkeypatch.setenv("ARGUS_SKILL_RUNNER_BACKEND", "grok")
+    assert required_codex_routes() == []
+
+
 def test_unknown_value_fails_closed_to_probe(monkeypatch) -> None:
     # A typo'd backend must NOT silently disable the safety probe.
     monkeypatch.setenv("ARGUS_SKILL_ENGINEER_BACKEND", "coldex")

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from argus_skill.verticals.research.literature_ledger import (
     MATRIX_PATH,
+    literature_coverage_advisories,
     main,
     render_lit_matrix,
     sync_literature_ledger,
@@ -30,6 +31,24 @@ def test_small_claim_complete_ledger_has_no_paper_count_gate() -> None:
     payload = {"recent_high_quality_papers": [_paper("One decisive paper", "2501.00001")]}
 
     assert validate_literature_ledger(payload) == []
+
+
+def test_source_mix_is_advisory_not_validation_gate() -> None:
+    payload = {"recent_high_quality_papers": [_paper("One decisive paper", "2501.00001")]}
+
+    assert validate_literature_ledger(payload) == []
+    assert [item.code for item in literature_coverage_advisories(payload)] == [
+        "foundation_underrepresented"
+    ]
+
+
+def test_balanced_explicit_source_mix_has_no_advisory() -> None:
+    ai = _paper("Recent AI paper", "2501.00001")
+    ai["source_bucket"] = "ai_venue"
+    foundation = _paper("Foundation", "1701.00001")
+    foundation["source_bucket"] = "foundation_theory"
+
+    assert literature_coverage_advisories({"papers": [ai, foundation]}) == []
 
 
 def test_matrix_is_generated_from_recent_and_classic_groups() -> None:
@@ -138,4 +157,5 @@ def test_cli_sync_writes_matrix(tmp_path: Path, capsys) -> None:
     result = json.loads(capsys.readouterr().out)
     assert result["ok"] is True
     assert result["papers"] == 1
+    assert result["advisories"][0]["code"] == "foundation_underrepresented"
     assert (tmp_path / MATRIX_PATH).exists()

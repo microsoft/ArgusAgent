@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Callable
 
 from ..core.event_catalog import EventType
 from ..core.models import LoopStatus, ReviewDecision, RoundRecord
+from .checkpoint import resolve_shared_checkpoint
 from .round_signals import _review_event_payload
 from .round_state import (
     EngineerTurnOutcome,
@@ -31,6 +32,13 @@ def _review_forward_progress(review: ReviewDecision) -> bool | None:
         return None
     value = report.get("forward_progress")
     return value if isinstance(value, bool) else None
+
+
+def _review_plan_signal(review: ReviewDecision) -> str:
+    report = review.planner_report
+    if not isinstance(report, dict):
+        return ""
+    return str(report.get("plan_signal") or "").strip().lower()
 
 
 def _next_semantic_stall_streak(
@@ -67,6 +75,19 @@ class RoundSettlementMixin:
         decision_idle_seconds: float = 0.0,
         decision_timeout_seconds: int = 0,
     ) -> tuple[LoopStatus | None, str]:
+        if _review_plan_signal(review) == "reconsider":
+            report = review.planner_report if isinstance(review.planner_report, dict) else {}
+            challenge = str(report.get("challenge") or review.reason or "").strip()
+            authority = str(report.get("authority_impact") or "technical").strip()
+            if authority == "operator" and review.operator_question:
+                return (
+                    "blocked",
+                    challenge or "The plan challenge requires an operator decision.",
+                )
+            return (
+                "replan_requested",
+                challenge or "Later evidence materially challenged the current plan.",
+            )
         if review.status == "done":
             return "done", review.reason or "Reviewer judged the objective complete."
         if review.status == "blocked":
@@ -107,12 +128,14 @@ class RoundSettlementMixin:
             hard_escalate_rounds > 0
             and round_index >= hard_escalate_rounds
             and review.status == "continue"
+            and _review_forward_progress(review) is None
         ):
             return (
                 "blocked",
-                f"Escalated: ran {round_index} rounds without completing — the "
-                "mission is likely stuck on an external / unresolved constraint. "
-                "Ending so the planner can re-plan or decompose. " + (review.reason or ""),
+                f"Escalated after {round_index} rounds because Reviewer did not "
+                "provide an explicit forward-progress judgment at the continuation "
+                "boundary. Refusing to continue blindly; Planner can re-plan or "
+                "decompose. " + (review.reason or ""),
             )
         return None, ""
 
@@ -161,6 +184,32 @@ class RoundSettlementMixin:
         )
         state.rounds.append(record)
         state.reviewer_next_action = review.next_action if review.status == "continue" else None
+        # Seal the Reviewer half of the round packet, symmetrically with
+        # ``record_engineer_handoff`` in round_execution. Sealed before the
+        # terminal classification below, because the terminal round is exactly
+        # the one whose verdict the campaign-level stage reconciliation needs.
+        #
+        # Only a genuine independent Reviewer verdict is sealed: the packet
+        # declares ``producer_role="reviewer"`` and the supervisor replays it
+        # as independent stage evidence, so sealing a self-review here would
+        # let the Engineer certify its own stage transition.
+        if supervised_config.context_packet_path and str(
+            getattr(review, "review_source", "reviewer") or "reviewer"
+        ) == "reviewer":
+            try:
+                from ..life.context_packet import record_reviewed_handoff
+
+                record_reviewed_handoff(
+                    mission_context_path=supervised_config.context_packet_path,
+                    round_index=round_index,
+                    engineer_summary=engineer_message,
+                    review=review,
+                    checkpoint_path=resolve_shared_checkpoint(
+                        supervised_config.checkpoint_path
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - handoff persistence is fail-soft
+                log.exception("failed to persist Reviewer context packet")
         if review_completed_hook is not None:
             try:
                 review_completed_hook(record)
@@ -190,6 +239,28 @@ class RoundSettlementMixin:
                     ),
                 }
             )
+        if (
+            on_event
+            and supervised_config.hard_escalate_rounds > 0
+            and round_index == supervised_config.hard_escalate_rounds
+            and review.status == "continue"
+            and forward_progress is not None
+        ):
+            on_event({
+                "type": EventType.ROUND_ESCALATED,
+                "round_index": round_index,
+                "hard_escalate_rounds": supervised_config.hard_escalate_rounds,
+                "forward_progress": forward_progress,
+                "continuation_reason": (
+                    "semantic_progress"
+                    if forward_progress
+                    else "bounded_no_progress_observation"
+                ),
+                "text": (
+                    f"round {round_index} crossed the continuation boundary under "
+                    "the Reviewer's explicit progress judgment"
+                ),
+            })
         terminal_status, reason = self._classify(
             review=review,
             no_progress_streak=state.no_progress_streak,

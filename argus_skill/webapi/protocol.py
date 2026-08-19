@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from ..core.runtime_identity import runtime_identity
@@ -9,7 +10,7 @@ from ..core.runtime_identity import runtime_identity
 API_SERVICE = "argus-skill-webapi"
 API_PROTOCOL_NAME = "argus.webapi"
 API_PROTOCOL_MAJOR = 1
-API_PROTOCOL_MINOR = 12
+API_PROTOCOL_MINOR = 13
 SNAPSHOT_SCHEMA_VERSION = 7
 API_CAPABILITIES = (
     "daemon.admission.v1",
@@ -23,6 +24,7 @@ API_CAPABILITIES = (
     "metrics.slo.v2",
     "mission.view.v1",
     "mission.abort.v1",
+    "project.attachments.v1",
     "project.git-diff.v1",
     "project.cost-feed.v1",
     "project.workdir.v1",
@@ -34,6 +36,13 @@ API_CAPABILITIES = (
 )
 
 def build_api_meta() -> dict[str, Any]:
+    runtime = runtime_identity()
+    # The nonce is needed only for the first authenticated Desktop handshake.
+    # Consume it before the WebAPI spawns daemons or model CLIs so the proof is
+    # not inherited by unrelated descendants.
+    desktop_launch_nonce = os.environ.pop("ARGUS_DESKTOP_LAUNCH_NONCE", "").strip()
+    if desktop_launch_nonce:
+        runtime["desktop_launch_nonce"] = desktop_launch_nonce
     return {
         "service": API_SERVICE,
         "protocol": {
@@ -43,7 +52,7 @@ def build_api_meta() -> dict[str, Any]:
         },
         "snapshot_schema_version": SNAPSHOT_SCHEMA_VERSION,
         "capabilities": list(API_CAPABILITIES),
-        "runtime": runtime_identity(),
+        "runtime": runtime,
     }
 
 

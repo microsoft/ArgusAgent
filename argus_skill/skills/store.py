@@ -28,18 +28,20 @@ from typing import Iterable
 # These constants remain as path-scope vocabulary for callers that organise
 # role-specific libraries.  They no longer drive a matcher.
 ROLE_SKILL_POOLS: dict[str, frozenset[str]] = {
+    "self": frozenset({"self", "manager", "engineer", "general"}),
     "engineer": frozenset({"engineer", "general"}),
     "reviewer": frozenset({"reviewer"}),
     "planner": frozenset({"planner"}),
     "manager": frozenset({"manager"}),
 }
 ROLE_CROSS_READ_POOLS: dict[str, frozenset[str]] = {
-    "engineer": frozenset({"reviewer"}),
-    "reviewer": frozenset({"engineer"}),
-    "planner": frozenset({"engineer", "reviewer"}),
-    "manager": frozenset({"engineer", "reviewer", "planner"}),
+    "self": frozenset({"planner", "reviewer"}),
+    "engineer": frozenset({"reviewer", "self"}),
+    "reviewer": frozenset({"engineer", "self"}),
+    "planner": frozenset({"engineer", "reviewer", "self"}),
+    "manager": frozenset({"engineer", "reviewer", "planner", "self"}),
 }
-_ROLE_SUBDIRS = frozenset({"engineer", "reviewer", "planner", "manager"})
+_ROLE_SUBDIRS = frozenset({"self", "engineer", "reviewer", "planner", "manager"})
 
 
 def role_of_path(path: str | os.PathLike[str], skills_dir: Path) -> str:

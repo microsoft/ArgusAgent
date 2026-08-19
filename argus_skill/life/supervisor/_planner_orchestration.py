@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import subprocess
 from typing import Any
 
 from ._helpers import (
@@ -33,7 +35,7 @@ class PlannerOrchestrationMixin:
 
     def _planner_runtime_with_idle_note(self) -> str:
         """Prefix repeated idle cycles with a current-reality check."""
-        base = ""
+        base = self._planner_current_reality_note()
         resolution_note = self._planner_wait_resolution_runtime_note()
         contract_note = self._planner_waiting_contract_runtime_note()
         manager_feedback = self._manager_planner_feedback_runtime_note()
@@ -68,6 +70,101 @@ class PlannerOrchestrationMixin:
                 base,
             )
             if part
+        )
+
+    def _planner_current_reality_note(self) -> str:
+        """Render host-read state so Planner does not rediscover bookkeeping."""
+        from ...core.pipeline_state import read_pipeline_state
+
+        artifact_root = self._artifact_root()
+        project_root = self._project_workdir()
+        try:
+            pipeline = read_pipeline_state(artifact_root)
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+            pipeline = {}
+
+        stage_rows: list[str] = []
+        stages = pipeline.get("stages")
+        if isinstance(stages, dict):
+            for name, value in list(stages.items())[:12]:
+                status = value.get("status") if isinstance(value, dict) else value
+                stage_rows.append(f"{name}:{status or 'unknown'}")
+
+        backlog_rows: list[Any] = []
+        try:
+            backlog_rows = list(self.memory.backlog.all())
+        except Exception:  # noqa: BLE001 - digest is advisory
+            pass
+        backlog_counts: dict[str, int] = {}
+        for item in backlog_rows:
+            status = str(getattr(item, "status", "") or "unknown")
+            backlog_counts[status] = backlog_counts.get(status, 0) + 1
+
+        changed_paths: list[str] = []
+        try:
+            status_result = subprocess.run(
+                ["git", "status", "--porcelain=v1", "--untracked-files=normal"],
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if status_result.returncode == 0:
+                changed_paths = [
+                    line[3:].strip()
+                    for line in status_result.stdout.splitlines()
+                    if len(line) >= 4
+                ]
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+        blockers: list[str] = []
+        checkpoint_paths = list(
+            dict.fromkeys(
+                [
+                    project_root / "CHECKPOINT.md",
+                    artifact_root / "CHECKPOINT.md",
+                ]
+            )
+        )
+        for checkpoint_path in checkpoint_paths:
+            try:
+                lines = checkpoint_path.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeError):
+                continue
+            in_blockers = False
+            for line in lines:
+                if line.startswith("#"):
+                    in_blockers = (
+                        line.lstrip("# ").strip().casefold()
+                        == "open questions / blockers"
+                    )
+                    continue
+                if in_blockers and line.strip():
+                    blockers.append(line.strip())
+                    if len(blockers) >= 8:
+                        break
+            if len(blockers) >= 8:
+                break
+
+        changed_preview = ", ".join(changed_paths[:12]) or "(clean or unavailable)"
+        if len(changed_paths) > 12:
+            changed_preview += f", +{len(changed_paths) - 12} more"
+        return "\n".join(
+            [
+                "## Host current-reality digest",
+                f"- vertical: {pipeline.get('vertical') or '(unresolved)'}",
+                f"- workflow_mode: {pipeline.get('workflow_mode') or '(unset)'}",
+                f"- current_stage: {pipeline.get('current_stage') or self._current_pipeline_stage() or '(unset)'}",
+                f"- stage_statuses: {', '.join(stage_rows) or '(none)'}",
+                f"- backlog_counts: {json.dumps(backlog_counts, sort_keys=True)}",
+                f"- git_changed_paths ({len(changed_paths)}): {changed_preview}",
+                f"- checkpoint_blockers: {'; '.join(blockers) or '(none declared)'}",
+                "The host already read pipeline state, backlog, checkpoint blockers, "
+                "and Git status for this digest. Do not spend tools rereading those "
+                "sources unless a named contradiction requires exact content.",
+            ]
         )
 
     def _recent_no_progress_failures(self) -> dict[tuple[str, str], Any]:

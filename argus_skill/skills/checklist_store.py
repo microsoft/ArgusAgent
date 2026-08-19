@@ -224,7 +224,7 @@ def _protected_floor_ids(project_root: object) -> frozenset[str] | None:
             for item_id in getattr(module, "PROTECTED_ITEM_IDS", ())
             if str(item_id).strip()
         )
-        if vertical_completion_gate(module) == "full_paper":
+        if vertical_completion_gate(module) == "certified":
             return vertical_ids | _SHARED_PROTECTED_ITEM_IDS
         return vertical_ids
     except Exception:  # noqa: BLE001 — unknown protection fails open on read

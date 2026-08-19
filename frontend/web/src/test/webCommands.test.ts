@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { COMMANDS } from '../../../core/src/commands';
+import { COMMANDS, type CommandId } from '../../../core/src/commands';
 import { dispatchWebCommand, type WebCommandHandlers } from '../lib/webCommands';
 
 function handlers() {
@@ -10,7 +10,9 @@ function handlers() {
 
 describe('web slash dispatch', () => {
   it('routes every canonical command to its stable handler id', async () => {
-    for (const command of COMMANDS) {
+    // `/ask` is answered by the Manager, not by a local handler; it has its
+    // own test below.
+    for (const command of COMMANDS.filter((c) => c.id !== 'ask')) {
       const table = handlers();
       const argument = command.argument === 'required' ? 'value' : '';
       const result = await dispatchWebCommand(
@@ -18,8 +20,35 @@ describe('web slash dispatch', () => {
         table,
       );
       expect(result.kind).toBe('handled');
-      expect(table[command.id]).toHaveBeenCalledWith(argument);
+      expect(table[command.id as Exclude<CommandId, 'ask'>]).toHaveBeenCalledWith(
+        argument,
+      );
     }
+  });
+
+  it('passes /ask through as an ordinary message', async () => {
+    // The Manager front door recognises the prefix and answers inline without
+    // queuing anything; handling it here would need a second path to the same
+    // reply.
+    for (const line of ['/ask why is it slow', '/chat hello']) {
+      expect((await dispatchWebCommand(line, handlers())).kind).toBe('not-command');
+    }
+  });
+
+  it('treats a pasted path as text, not a command', async () => {
+    // Answering "Unknown command /data" to a pasted path is both wrong and
+    // unhelpful — the operator meant to say something, not run something.
+    for (const line of ['/data/yijia/run.py', '/tmp/out.log', '/Users/x/notes.md']) {
+      expect((await dispatchWebCommand(line, handlers())).kind).toBe('not-command');
+    }
+  });
+
+  it('still reports a real typo', async () => {
+    // A single bare word that matches nothing is a mistyped command, and
+    // silently sending it as work would be worse than saying so.
+    const result = await dispatchWebCommand('/statu', handlers());
+
+    expect(result.kind).toBe('error');
   });
 
   it('canonicalizes aliases', async () => {

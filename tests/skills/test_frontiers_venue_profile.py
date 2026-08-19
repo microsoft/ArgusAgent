@@ -6,20 +6,20 @@ from pathlib import Path
 import pytest
 
 from argus_skill.skills.stage_machine import format_stage_checklist
-from argus_skill.skills.venue_profiles import (
-    FRONTIERS_SLEEP_PROFILE,
-    get_venue_profile,
-    resolve_venue_profile,
-)
 from argus_skill.verticals.research.academic_language_review import _review_prompt
 from argus_skill.verticals.research.paper_layout_review import (
     _deterministic_assessment,
 )
+from argus_skill.verticals.research.venue_profiles import (
+    FRONTIERS_SLEEP_PROFILE,
+    get_venue_profile,
+    resolve_venue_profile,
+)
 
 
 def _write_state(root: Path, venue: str) -> None:
-    (root / "research").mkdir(parents=True, exist_ok=True)
-    (root / "research" / "PIPELINE_STATE.json").write_text(
+    (root / ".argus").mkdir(parents=True, exist_ok=True)
+    (root / ".argus" / "PIPELINE_STATE.json").write_text(
         json.dumps({"current_stage": "review", "target_venue": venue}),
         encoding="utf-8",
     )

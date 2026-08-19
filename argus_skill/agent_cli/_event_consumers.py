@@ -7,7 +7,13 @@ from __future__ import annotations
 
 import json
 
-from .runner_backend import BACKEND_CLAUDE, BACKEND_COPILOT, BACKEND_OPENCODE, BACKEND_PI
+from .runner_backend import (
+    BACKEND_COPILOT,
+    BACKEND_GROK,
+    BACKEND_OPENCODE,
+    BACKEND_PI,
+    CLAUDE_FAMILY,
+)
 
 
 class EventConsumerMixin:
@@ -41,7 +47,12 @@ class EventConsumerMixin:
         """
 
         event_type = str(event.get("type") or "").strip().casefold()
-        if any(
+        capability_event = (
+            event_type.startswith("session.mcp_")
+            or event_type.startswith("mcp.tools.")
+            or event_type in {"session.tools_updated", "session.skills_loaded"}
+        )
+        if not capability_event and any(
             marker in event_type
             for marker in (
                 "tool",
@@ -109,8 +120,18 @@ class EventConsumerMixin:
         turn_failed: bool,
         fatal_error: str | None,
     ) -> tuple[str | None, bool, bool, str | None]:
-        if self.backend == BACKEND_CLAUDE:
+        if self.backend in CLAUDE_FAMILY:
+            # qoder emits the same stream-json schema as claude.
             return self._consume_claude_event(
+                event=event,
+                thread_id=thread_id,
+                agent_messages=agent_messages,
+                turn_completed=turn_completed,
+                turn_failed=turn_failed,
+                fatal_error=fatal_error,
+            )
+        if self.backend == BACKEND_GROK:
+            return self._consume_grok_event(
                 event=event,
                 thread_id=thread_id,
                 agent_messages=agent_messages,
@@ -239,6 +260,40 @@ class EventConsumerMixin:
             else:
                 fatal_error = f"Claude runner reported {subtype or 'error'}."
         return thread_id, turn_completed, turn_failed, fatal_error
+
+    @staticmethod
+    def _consume_grok_event(
+        *,
+        event: dict,
+        thread_id: str | None,
+        agent_messages: list[str],
+        turn_completed: bool,
+        turn_failed: bool,
+        fatal_error: str | None,
+    ) -> tuple[str | None, bool, bool, str | None]:
+        state = EventConsumerMixin._consume_claude_event(
+            event=event,
+            thread_id=thread_id,
+            agent_messages=agent_messages,
+            turn_completed=turn_completed,
+            turn_failed=turn_failed,
+            fatal_error=fatal_error,
+        )
+        if (
+            str(event.get("type") or "").strip() == "result"
+            and state[1]
+            and str(event.get("stop_reason") or "").strip().lower() != "end_turn"
+        ):
+            stop_reason = str(event.get("stop_reason") or "unknown").strip()
+            state = (
+                state[0],
+                False,
+                True,
+                f"Grok Build stopped with {stop_reason}.",
+            )
+        if state[3] and state[3].startswith("Claude runner reported "):
+            state = (*state[:3], state[3].replace("Claude runner", "Grok Build", 1))
+        return state
 
     @staticmethod
     def _consume_copilot_event(

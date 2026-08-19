@@ -23,7 +23,9 @@ def test_public_help_distinguishes_human_and_automation_surfaces() -> None:
     assert "supervised foreground worker" in help_text
     assert "argus --daemon" in help_text
     assert "persistent unattended background worker" in help_text
-    assert "argus --doctor" in help_text
+    assert "argus doctor" in help_text
+    assert "argus repair --plan" in help_text
+    assert "argus update" in help_text
     assert "--status" not in help_text
     assert "dashboard" not in help_text.lower()
     assert "wiki" not in help_text
@@ -33,8 +35,8 @@ def test_version_reports_release_identity(capsys) -> None:
     with pytest.raises(SystemExit, match="0"):
         build_parser().parse_args(["--version"])
     rendered = capsys.readouterr().out
-    assert "argus-skill 0.1.1" in rendered
-    assert "0.1.1+" in rendered
+    assert "argus-skill 0.1.2" in rendered
+    assert "0.1.2+" in rendered
 
 
 def test_debug_help_still_exposes_internal_flags(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -45,7 +47,64 @@ def test_debug_help_still_exposes_internal_flags(monkeypatch: pytest.MonkeyPatch
     assert "wiki" in help_text
 
 
-def test_parser_has_only_wiki_subcommand():
+def test_parser_exposes_doctor_and_repair_subcommands() -> None:
+    doctor = build_parser().parse_args(
+        ["doctor", "--json", "--deep", "--advisor", "claude"]
+    )
+    assert doctor.command == "doctor"
+    assert doctor.json is True
+    assert doctor.deep is True
+    assert doctor.advisor == "claude"
+    for backend in ("qoder", "dsh"):
+        parsed = build_parser().parse_args(["doctor", "--advisor", backend])
+        assert parsed.advisor == backend
+
+    repair = build_parser().parse_args(["repair", "--safe", "--json"])
+    assert repair.command == "repair"
+    assert repair.safe is True
+    assert repair.json is True
+
+
+def test_parser_accepts_doctor_safe_fix_and_repair_lifecycle() -> None:
+    doctor = build_parser().parse_args(["doctor", "--fix-safe", "--json"])
+    legacy = build_parser().parse_args(["-doctor", "--fix-safe", "--json"])
+    apply = build_parser().parse_args(["repair", "--apply", "rp-20260814T000000Z-abc12345", "--yes"])
+    prepare = build_parser().parse_args(["repair", "--prepare-pr", "rp-20260814T000000Z-abc12345"])
+    submit = build_parser().parse_args(["repair", "--submit-pr", "rp-20260814T000000Z-abc12345", "--yes"])
+
+    assert doctor.command == "doctor" and doctor.fix_safe is True
+    assert legacy.doctor is True and legacy.fix_safe is True and legacy.json is True
+    assert apply.apply == "rp-20260814T000000Z-abc12345" and apply.yes is True
+    assert prepare.prepare_pr == "rp-20260814T000000Z-abc12345"
+    assert submit.submit_pr == "rp-20260814T000000Z-abc12345" and submit.yes is True
+
+
+def test_missing_repair_plan_fails_without_traceback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc = main([
+        "--life-dir", str(tmp_path),
+        "repair", "--apply", "rp-20260814T000000Z-deadbeef", "--yes",
+    ])
+
+    captured = capsys.readouterr()
+    assert rc == 3
+    assert "repair refused" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_parser_exposes_update_subcommand():
+    args = build_parser().parse_args(["update"])
+    assert args.command == "update"
+
+
+def test_parser_exposes_update_flag_alias():
+    args = build_parser().parse_args(["--update"])
+    assert args.update is True
+
+
+def test_parser_has_wiki_subcommand():
     p = build_parser()
     args = p.parse_args(["wiki", "init", "demo"])
     assert args.command == "wiki"
@@ -91,11 +150,26 @@ def test_parser_accepts_pi_backend() -> None:
     assert args.backend == "pi"
 
 
+def test_parser_accepts_grok_backend() -> None:
+    args = build_parser().parse_args(["--doctor", "--backend", "grok"])
+    assert args.backend == "grok"
+
+
+def test_parser_accepts_qoder_backend() -> None:
+    args = build_parser().parse_args(["--doctor", "--backend", "qoder"])
+    assert args.backend == "qoder"
+
+
 def test_parser_exposes_cli_doctor() -> None:
     args = build_parser().parse_args(["--doctor", "--backend", "copilot"])
 
     assert args.doctor is True
     assert args.backend == "copilot"
+
+
+def test_parser_accepts_hidden_single_dash_doctor_alias() -> None:
+    args = build_parser().parse_args(["-doctor"])
+    assert args.doctor is True
 
 
 def test_parser_accepts_wiki_ingest_subcommand(tmp_path: Path):
@@ -238,6 +312,45 @@ def test_parser_no_daemon_default_false():
     assert args.no_daemon is False
 
 
+def test_parser_accepts_documented_web_host_and_port_aliases():
+    args = build_parser().parse_args([
+        "--web",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8800",
+    ])
+    assert args.web_host == "0.0.0.0"
+    assert args.web_port == 8800
+
+
+def test_web_uses_documented_flags_and_explicit_life_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {}
+
+    def fake_serve(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("argus_skill.webapi.server.serve", fake_serve)
+
+    assert main([
+        "--web",
+        "--no-open",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8800",
+        "--life-dir",
+        str(tmp_path),
+    ]) == 0
+    assert captured["host"] == "127.0.0.1"
+    assert captured["port"] == 8800
+    assert captured["global_root"] == tmp_path
+
+
 def test_parser_daemon_flags_present():
     p = build_parser()
     for flag in ("--daemon", "--daemon-fg", "--daemon-stop", "--status", "--daemon-runbook"):
@@ -283,9 +396,11 @@ def test_main_exports_builtin_skills(
     out = capsys.readouterr().out
 
     assert rc == 0
-    assert (target / "engineer/auto-research-pipeline.md").exists()
-    assert (target / "engineer/emnlp-paper-drafting.md").exists()
-    assert (target / "engineer/arxiv-paper-search.md").exists()
+    assert (target / "engineer/argus-engineer-role.md").exists()
+    assert (target / "engineer/semantic-scholar-search.md").exists()
+    assert not (target / "engineer/auto-research-pipeline.md").exists()
+    assert not (target / "engineer/emnlp-paper-drafting.md").exists()
+    assert not (target / "engineer/arxiv-paper-search.md").exists()
     assert not (target / "engineer/research-visualization-router.md").exists()
     assert "exported built-in skills" in out
     assert "vertical: none (common skills only)" in out
@@ -307,6 +422,7 @@ def test_main_exports_decided_vertical_skills(
     assert rc == 0
     assert "vertical: research" in out
     assert (target / "engineer/research-visualization-router.md").exists()
+    assert (target / "engineer/auto-research-pipeline.md").exists()
 
 
 def test_export_target_does_not_inherit_unrelated_cwd_vertical(
@@ -334,7 +450,10 @@ def test_export_prunes_legacy_unmodified_research_fallback(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from argus_skill.skills.builtins import seed_vertical_skills
+    from argus_skill.skills.builtins import (
+        iter_vertical_skill_texts,
+        seed_vertical_skills,
+    )
 
     target = tmp_path / "legacy-project" / "argus_builtin_skills"
     seed_vertical_skills(target, "research")
@@ -348,7 +467,8 @@ def test_export_prunes_legacy_unmodified_research_fallback(
     assert not (
         target / "engineer/research_visual_scripts/browser_render.py"
     ).exists()
-    assert "pruned : 2 inactive unmodified context seed(s)" in out
+    expected = len(dict(iter_vertical_skill_texts("research")))
+    assert f"pruned : {expected} inactive unmodified context seed(s)" in out
 
 
 def test_export_preserves_edited_legacy_research_fallback(
@@ -404,6 +524,31 @@ def test_main_rejects_objective_without_continuous(capsys: pytest.CaptureFixture
     err = capsys.readouterr().err
     assert rc == 2
     assert "--objective requires --continuous" in err
+
+
+def test_main_loads_objective_file_before_continuous_validation(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    objective = tmp_path / "objective.txt"
+    objective.write_text("Fix the Harbor task", encoding="utf-8")
+
+    rc = main(["--objective-file", str(objective)])
+
+    assert rc == 2
+    assert "--objective requires --continuous" in capsys.readouterr().err
+
+
+def test_main_reports_missing_objective_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    missing = tmp_path / "missing.txt"
+
+    rc = main(["--continuous", "--objective-file", str(missing)])
+
+    assert rc == 2
+    assert "could not read --objective-file" in capsys.readouterr().err
 
 
 def test_main_rejects_continuous_without_objective(capsys: pytest.CaptureFixture[str]) -> None:

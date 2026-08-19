@@ -58,6 +58,8 @@ def test_form_status_and_dissolve(tmp_path: Path, capsys) -> None:
         str(root),
         "--team-id",
         "t1",
+        "--mission",
+        "test mission",
         "--tasks",
         str(tasks),
     )
@@ -107,6 +109,8 @@ def test_form_writes_campaign_marker(tmp_path: Path, capsys, monkeypatch) -> Non
         str(root),
         "--team-id",
         "t1",
+        "--mission",
+        "test mission",
         "--cwd",
         str(tmp_path / "ws"),
         "--tasks",

@@ -28,6 +28,59 @@ def test_exists_and_list(tmp_path):
     assert dd.list_data_domains(tmp_path) == ["alpha", "beta"]
 
 
+def test_data_domain_summaries_expose_formal_purpose(tmp_path):
+    path = dd.write_data_domain(
+        tmp_path,
+        "apple_mlx_inference",
+        stages=["profile", "measure"],
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.update({
+        "status": "formal",
+        "purpose": "Apple Silicon MLX/Metal deployment optimization",
+    })
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert dd.data_domain_summaries(tmp_path) == {
+        "apple_mlx_inference": (
+            "status=formal; Apple Silicon MLX/Metal deployment optimization"
+        )
+    }
+
+
+def test_selectable_summaries_include_local_candidate_and_prefer_learned_formal(
+    tmp_path,
+) -> None:
+    project = tmp_path / "project"
+    learned = tmp_path / "learned"
+    dd.write_data_domain(
+        project,
+        "robotics_eval",
+        stages=["integrate", "evaluate"],
+        status="candidate",
+        purpose="project-local embodied evaluation",
+    )
+    assert dd.list_selectable_data_domain_summaries(project) == {
+        "robotics_eval": "status=candidate; project-local embodied evaluation",
+    }
+
+    source = tmp_path / "source"
+    dd.write_data_domain(
+        source,
+        "robotics_eval",
+        stages=["integrate", "evaluate", "report"],
+        status="candidate",
+        purpose="verified embodied evaluation",
+    )
+    assert dd.promote_data_domain(source, learned, "robotics_eval")
+    assert dd.list_selectable_data_domain_summaries(
+        project,
+        learned_root=learned,
+    ) == {
+        "robotics_eval": "status=formal; verified embodied evaluation",
+    }
+
+
 def test_index_is_written(tmp_path):
     dd.write_data_domain(tmp_path, "alpha", stages=["a", "b"])
     index = json.loads((tmp_path / "research" / "DOMAINS" / "INDEX.json").read_text())
@@ -75,3 +128,96 @@ def test_seed_checklist_builds_items(tmp_path):
     }))
     domain = dd.load_data_domain("seeded", tmp_path)
     assert [i.id for i in domain.CHECKLIST_ITEMS["scope"]] == ["scope.obj"]
+
+
+def test_candidate_becomes_reusable_after_first_verified_success(tmp_path):
+    project = tmp_path / "project"
+    learned = tmp_path / "global"
+    dd.write_data_domain(
+        project,
+        "hardware_audit",
+        stages=["inspect", "analyze", "report"],
+        status="candidate",
+        purpose="audit unfamiliar hardware deployments",
+        require_independent_review=True,
+    )
+
+    domain = dd.load_data_domain("hardware_audit", project)
+    assert domain.status == "candidate"
+    assert domain.REQUIRE_INDEPENDENT_REVIEW is True
+    assert dd.list_formal_data_domain_purposes(
+        project,
+        learned_root=learned,
+    ) == {}
+
+    assert dd.record_data_domain_failure(
+        project,
+        "hardware_audit",
+        reason="missing device evidence",
+    )
+    assert dd.promote_data_domain(
+        project,
+        learned,
+        "hardware_audit",
+        review_reason="independent review passed",
+    )
+
+    formal = dd.load_data_domain("hardware_audit", project)
+    assert formal.status == "formal"
+    assert formal.REQUIRE_INDEPENDENT_REVIEW is False
+    assert dd.list_formal_data_domain_purposes(
+        tmp_path / "another-project",
+        learned_root=learned,
+    ) == {
+        "hardware_audit": "audit unfamiliar hardware deployments"
+    }
+    another = tmp_path / "another-project"
+    dd.write_data_domain(
+        another,
+        "hardware_audit",
+        stages=["draft"],
+        status="candidate",
+        purpose="stale local candidate",
+    )
+    assert dd.materialize_learned_data_domain(
+        learned,
+        another,
+        "hardware_audit",
+    )
+    assert dd.load_data_domain("hardware_audit", another).STAGE_ORDER == [
+        "inspect",
+        "analyze",
+        "report",
+    ]
+    assert dd.load_data_domain(
+        "hardware_audit",
+        another,
+    ).REQUIRE_INDEPENDENT_REVIEW is False
+
+
+def test_role_specific_banners_with_default_and_legacy_fallback(tmp_path):
+    dd.write_data_domain(
+        tmp_path,
+        "role_aware",
+        stages=["scope", "deliver"],
+        role_banner={
+            "manager": "manager contract",
+            "engineer": "engineer contract",
+            "default": "shared fallback",
+        },
+    )
+    domain = dd.load_data_domain("role_aware", tmp_path)
+    assert domain is not None
+    assert domain.role_banner("manager") == "manager contract"
+    assert domain.role_banner(" ENGINEER ") == "engineer contract"
+    assert domain.role_banner("reviewer") == "shared fallback"
+
+    dd.write_data_domain(
+        tmp_path,
+        "legacy_banner",
+        stages=["scope", "deliver"],
+        role_banner="legacy only",
+    )
+    legacy = dd.load_data_domain("legacy_banner", tmp_path)
+    assert legacy is not None
+    assert legacy.role_banner("reviewer") == "legacy only"

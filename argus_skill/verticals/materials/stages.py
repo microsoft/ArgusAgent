@@ -25,7 +25,12 @@ completion_gate = "none"
 
 _PIPELINE_CHECK = (
     "Pipeline state present",
-    "test -f research/PIPELINE_STATE.json",
+    "test -f .argus/PIPELINE_STATE.json",
+)
+_EVIDENCE_CHECK = (
+    "Materials evidence index validates",
+    "${ARGUS_SKILL_PYTHON:-python} -m "
+    "argus_skill.verticals.materials.evidence check --project-root .",
 )
 
 # Shell checks stay structural. Scientific correctness, solver convergence, and
@@ -33,6 +38,21 @@ _PIPELINE_CHECK = (
 STAGE_CHECKS: dict[str, list[tuple[str, str]]] = {
     stage: [_PIPELINE_CHECK] for stage in STAGE_ORDER
 }
+for _evidence_stage in ("execute", "validate", "report"):
+    label, command = _EVIDENCE_CHECK
+    STAGE_CHECKS[_evidence_stage].append(
+        (label, f"{command} --stage {_evidence_stage}")
+    )
+
+
+def stage_completion_issues(stage: str, project_root: Path) -> tuple[str, ...]:
+    """Require inspectable evidence for execution, validation, and reporting."""
+    stage_name = (stage or "").strip().lower()
+    if stage_name not in {"execute", "validate", "report"}:
+        return ()
+    from .evidence import validate_evidence
+
+    return tuple(validate_evidence(project_root, stage_name))
 
 REVIEWER_CHECKLISTS: dict[str, tuple[str, str, list[str]]] = {
     "scope": (
@@ -333,4 +353,5 @@ __all__ = [
     "WORKFLOW_MODE",
     "completion_gate",
     "role_banner",
+    "stage_completion_issues",
 ]

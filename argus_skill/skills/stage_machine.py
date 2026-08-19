@@ -14,6 +14,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Iterable
 
+from ..core.pipeline_state import read_pipeline_state, write_pipeline_state
+
 
 @dataclass(frozen=True)
 class ChecklistItem:
@@ -29,6 +31,18 @@ class ChecklistLoadState(str, Enum):
     NOT_LOADED = "not_loaded"
     EMPTY = "empty"
     LOADED = "loaded"
+
+
+class StageCompletionError(ValueError):
+    """A deterministic vertical-owned completion check rejected the stage."""
+
+    def __init__(self, stage: str, issues: Iterable[str]) -> None:
+        self.stage = _normalize_stage(stage)
+        self.issues = tuple(str(issue).strip() for issue in issues if str(issue).strip())
+        preview = "; ".join(self.issues[:3])
+        if len(self.issues) > 3:
+            preview += f"; and {len(self.issues) - 3} more"
+        super().__init__(f"stage {self.stage!r} completion blocked: {preview}")
 
 
 @dataclass(frozen=True)
@@ -123,10 +137,9 @@ def current_stage(project_root: Path | str = ".") -> str:
     """
 
     root = Path(project_root)
-    state_path = root / "research" / "PIPELINE_STATE.json"
     try:
-        payload = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        payload = read_pipeline_state(root)
+    except (OSError, ValueError, json.JSONDecodeError):
         payload = None
     order, items = _active_vertical_checklist_defs(project_root)
     fallback = _normalize_stage(order[0]) if order else "research"
@@ -139,13 +152,41 @@ def current_stage(project_root: Path | str = ".") -> str:
     return fallback
 
 
+def _ensure_stage_completion(
+    project_root: Path | str,
+    stage: str,
+    *,
+    evidence_root: Path | str | None = None,
+) -> None:
+    """Fail closed on the active vertical's deterministic completion hook."""
+    from ..verticals._base import load_vertical, vertical_stage_completion_issues
+    from .vertical_select import resolve_vertical
+
+    try:
+        vertical = resolve_vertical(project_root)
+        issues = vertical_stage_completion_issues(
+            load_vertical(vertical, project_root=project_root),
+            stage=_normalize_stage(stage),
+            project_root=Path(evidence_root or project_root),
+        )
+    except StageCompletionError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — completion authority fails closed
+        raise StageCompletionError(
+            stage,
+            (f"completion validator unavailable: {exc}",),
+        ) from exc
+    if issues:
+        raise StageCompletionError(stage, issues)
+
+
 _STATUS_STAGE_LINE = re.compile(r"(?m)^Current stage:\s*[^\r\n]*$")
 
 
 def _sync_status_stage(project_root: Path | str, stage: str) -> bool:
     """Best-effort projection of authoritative pipeline stage into STATUS.md.
 
-    ``research/PIPELINE_STATE.json`` remains the source of truth. Projects opt
+    ``.argus/PIPELINE_STATE.json`` remains the source of truth. Projects opt
     into this human-readable projection by keeping one canonical
     ``Current stage: ...`` line. Only that line is replaced; missing markers,
     arbitrary status files, and symlinks are left untouched.
@@ -172,6 +213,11 @@ def _sync_status_stage(project_root: Path | str, stage: str) -> bool:
         return False
 
 
+def framework_source_root() -> Path:
+    """The ``argus_skill`` package directory that is actually executing."""
+    return Path(__file__).resolve().parent.parent
+
+
 def _set_stage(
     project_root: Path | str,
     *,
@@ -184,6 +230,7 @@ def _set_stage(
     completion_contract_sha256: str = "",
     downgrade_downstream: bool = False,
     legacy_rollback_history: bool = False,
+    evidence_root: Path | str | None = None,
 ) -> str:
     """Single vertical-aware read-modify-write of the pipeline stage state.
 
@@ -213,7 +260,6 @@ def _set_stage(
     import datetime as _dt
 
     root = Path(project_root)
-    state_path = root / "research" / "PIPELINE_STATE.json"
     raw_order, items = _active_vertical_checklist_defs(project_root)
     order = [_normalize_stage(s) for s in raw_order]
     target = normalize_stage_for_project(project_root, target_stage)
@@ -227,8 +273,8 @@ def _set_stage(
         raise ValueError(f"unknown stage {target_stage!r}")
 
     try:
-        payload = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        payload = read_pipeline_state(root)
+    except (OSError, ValueError, json.JSONDecodeError):
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
@@ -272,6 +318,31 @@ def _set_stage(
         if completion_contract_version > 0 and completion_contract_sha256:
             prev_record["completion_contract_version"] = completion_contract_version
             prev_record["completion_contract_sha256"] = completion_contract_sha256
+            # Which framework computed that hash. When a reader cannot reproduce
+            # it, the first question is always "was this written by the same
+            # code I am running?" — record the answer instead of making the next
+            # operator reconstruct it from process archaeology.
+            prev_record["completion_contract_source"] = str(framework_source_root())
+
+    skipped_stages: list[str] = []
+    if direction in {"advance", "complete"}:
+        skipped = (
+            order[p_idx + 1 : t_idx]
+            if direction == "advance"
+            else order[p_idx + 1 :]
+        )
+        for stage_name in skipped:
+            stage_record = stages.get(stage_name)
+            if not isinstance(stage_record, dict):
+                stage_record = {}
+                stages[stage_name] = stage_record
+            if str(stage_record.get("status") or "").lower() != "done":
+                stage_record.update({
+                    "status": "skipped",
+                    "skip_reason": reason,
+                    "skipped_by": by,
+                })
+                skipped_stages.append(stage_name)
 
     if downgrade_downstream:
         for stage_name in order[t_idx + 1:]:
@@ -280,7 +351,7 @@ def _set_stage(
                 stage_record = {}
                 stages[stage_name] = stage_record
             status = str(stage_record.get("status") or "").lower()
-            if status in {"done", "ready", "in_progress"}:
+            if status in {"done", "ready", "in_progress", "skipped"}:
                 stage_record["status"] = "pending"
 
     # LIVENESS INVARIANT: the stage we just landed on must always be actionable.
@@ -304,7 +375,8 @@ def _set_stage(
             target_record["status"] = "in_progress"
         elif (
             isinstance(target_record, dict)
-            and str(target_record.get("status") or "").lower() == "done"
+            and str(target_record.get("status") or "").lower()
+            in {"done", "skipped"}
         ):
             target_record["status"] = "in_progress"
 
@@ -329,6 +401,8 @@ def _set_stage(
         "reason": reason,
         "by": by,
     }
+    if skipped_stages:
+        history_entry["skipped_stages"] = skipped_stages
     history.append(history_entry)
 
     if legacy_rollback_history:
@@ -344,19 +418,8 @@ def _set_stage(
             "rolled_back_by": by,
         })
 
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    # ATOMIC write: render to a sibling temp file then os.replace() (atomic on
-    # POSIX). A crash mid-write (OOM / pod eviction / mission restart) must never
-    # leave PIPELINE_STATE.json empty or half-written — every reader fail-opens
-    # to the floor stage, silently resetting the whole project back to research.
-    import os as _os
-    _tmp = state_path.with_suffix(state_path.suffix + f".tmp.{_os.getpid()}")
-    _tmp.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    _os.replace(_tmp, state_path)
-    _sync_status_stage(root, target)
+    state_path = write_pipeline_state(root, payload)
+    _sync_status_stage(Path(evidence_root or root), target)
     return str(state_path)
 
 
@@ -366,19 +429,23 @@ def advance_stage(
     target_stage: str,
     reason: str,
     advanced_by: str = "manager",
+    evidence_root: Path | str | None = None,
 ) -> str:
-    """Move the pipeline state machine **forward** to the next stage.
+    """Move the pipeline state machine **forward** to a later stage.
 
-    ``target_stage`` must be the IMMEDIATE next stage in the active vertical's
-    order (no skipping). Stamps the just-completed (previous) stage
-    ``status=done`` and sets ``current_stage=target_stage``. Returns the written
-    state-file path. Raises ``ValueError`` if the target is unknown or is not the
-    immediate next stage.
+    ``target_stage`` must be later in the active vertical's order. Manager may
+    skip stages that do not apply to the operator objective; skipped stages are
+    recorded explicitly. The just-completed stage is stamped ``done``.
 
     After initial state creation, ``advance_stage`` / ``rollback_stage`` are the ONLY mutators
-    of ``current_stage`` — both invoked solely by the Manager, which owns stage
-    authority (reviewer/planner only advise; the engineer never edits stage
-    state).
+    of ``current_stage``. They are *intended* to be Manager-only — reviewer and
+    planner advise, the engineer reports — but nothing here authenticates the
+    caller: ``advanced_by`` is free text, and any role that can import this
+    module can call this function. The real protection is that every transition
+    runs the active vertical's deterministic completion validator against
+    evidence on disk, which a caller cannot satisfy by asserting it. See
+    :func:`complete_final_stage` for what happened when a primitive relied on
+    the intent instead of the check.
     """
     raw_order, _items = _active_vertical_checklist_defs(project_root)
     order = [_normalize_stage(s) for s in raw_order]
@@ -387,12 +454,16 @@ def advance_stage(
         raise ValueError(f"unknown stage {target_stage!r}")
     cur_norm = _normalize_stage(current_stage(project_root))
     if cur_norm in order:
-        nxt_idx = order.index(cur_norm) + 1
-        if nxt_idx >= len(order) or order[nxt_idx] != target:
+        cur_idx = order.index(cur_norm)
+        if order.index(target) <= cur_idx:
             raise ValueError(
-                f"advance target {target!r} must be the immediate next stage "
-                f"after {cur_norm!r}"
+                f"advance target {target!r} must be later than {cur_norm!r}"
             )
+        _ensure_stage_completion(
+            project_root,
+            cur_norm,
+            evidence_root=evidence_root,
+        )
     return _set_stage(
         project_root,
         target_stage=target,
@@ -400,6 +471,7 @@ def advance_stage(
         by=advanced_by,
         direction="advance",
         mark_current_done=True,
+        evidence_root=evidence_root,
     )
 
 
@@ -409,6 +481,7 @@ def rollback_stage(
     target_stage: str,
     reason: str,
     rolled_back_by: str = "reviewer",
+    evidence_root: Path | str | None = None,
 ) -> str:
     """Move the pipeline state machine **backward** to an earlier stage.
 
@@ -444,6 +517,7 @@ def rollback_stage(
         direction="rollback",
         downgrade_downstream=True,
         legacy_rollback_history=True,
+        evidence_root=evidence_root,
     )
 
 
@@ -453,6 +527,7 @@ def reset_stage_for_replacement_intent(
     target_stage: str,
     reason: str,
     reset_by: str = "manager",
+    evidence_root: Path | str | None = None,
 ) -> str:
     """Restart a staged pipeline for a Manager-confirmed replacement objective.
 
@@ -468,6 +543,7 @@ def reset_stage_for_replacement_intent(
         direction="reset",
         downgrade_downstream=True,
         legacy_rollback_history=True,
+        evidence_root=evidence_root,
     )
 
 
@@ -476,28 +552,62 @@ def complete_final_stage(
     *,
     reason: str,
     completed_by: str = "manager",
+    evidence_root: Path | str | None = None,
+    allow_early_completion: bool = False,
 ) -> str:
-    """Mark the FINAL pipeline stage ``done`` without moving ``current_stage``.
+    """Mark the current pipeline stage ``done`` without moving ``current_stage``.
 
-    Used by the Manager when the reviewer certifies the final-submission stage:
-    the project stays on its last stage (e.g. ``submission``) but that stage's
-    ``status`` is stamped ``done`` so the project reads as complete. This is the
-    terminal counterpart to :func:`advance_stage` / :func:`rollback_stage` and,
-    like them, is a Manager-owned mutation (gated by the stage-transition
-    authority context).
+    Used when the Manager determines that the certified current stage satisfies
+    the operator objective. The stage's ``status`` is stamped ``done`` so the
+    project reads as complete. This is the terminal counterpart to
+    :func:`advance_stage` / :func:`rollback_stage`.
 
-    Raises ``ValueError`` if ``current_stage`` is not the last stage in the
-    active vertical's order (it is illegal to "complete" a non-final stage —
-    advance to it first).
+    The name is now enforced. Until testbed run 14 this function completed
+    *whichever* stage happened to be current, and the word "final" lived only in
+    :func:`argus_skill.manager.stage_decider.final_stage_completion_decision` —
+    a decision-layer check a caller reaches this primitive without passing
+    through. Run 13 (``s-d9ea298f``) is what that costs. Its Engineer, blocked
+    on ``staged_goal_gate_incomplete``, imported this module and called this
+    function at ``scope``, stage 1 of math's ``scope -> solve -> review``. The
+    primitive did exactly as asked: ran only ``scope``'s validator, stamped a
+    valid contract fingerprint, and — via ``_set_stage(direction="complete")`` —
+    marked ``solve`` and ``review`` ``skipped``. The result passes
+    ``_vertical_completion_record``'s structural audit *perfectly*, because it
+    was not hand-forged; it was minted by this function. Reviewing the math was
+    never required. ``completed_by`` was ``"manager-repair"``, a string that
+    appears nowhere in this codebase.
+
+    So: completion is refused off the final stage unless the caller says, in
+    this argument, that it has the standing to complete early. The Manager
+    passes it when ``direct`` workflow mode is resolved, which is the one
+    legitimate early-completion path and matches the flag
+    ``final_stage_completion_decision`` already takes. Everyone else — every
+    agent that can ``import argus_skill`` — now gets a ``ValueError``.
+
+    This is a lock, not a signature. ``completed_by`` remains free text and the
+    contract fingerprint remains recomputable by anyone who can read the
+    framework source, so a determined caller can still pass the argument. What
+    it stops is the *accident-shaped* forgery: reaching for a function whose
+    name promised a check it did not perform.
     """
     raw_order, _items = _active_vertical_checklist_defs(project_root)
     order = [_normalize_stage(s) for s in raw_order]
     cur = _normalize_stage(current_stage(project_root))
-    if not order or cur != order[-1]:
+    if cur not in order:
+        raise ValueError(f"current stage {cur!r} is not in the active vertical")
+    if cur != order[-1] and not allow_early_completion:
         raise ValueError(
-            f"complete target must be the final stage {order[-1] if order else '?'!r}; "
-            f"current stage is {cur!r}"
+            f"cannot complete at {cur!r}: it is not the final stage of the "
+            f"active vertical ({order[-1]!r}), and early completion was not "
+            f"authorized. Remaining: {', '.join(order[order.index(cur) + 1:])}. "
+            "Advance through them, or pass allow_early_completion=True if the "
+            "workflow mode genuinely permits stopping here."
         )
+    _ensure_stage_completion(
+        project_root,
+        cur,
+        evidence_root=evidence_root,
+    )
     from ..verticals._base import (
         load_vertical,
         vertical_completion_contract_version,
@@ -530,6 +640,7 @@ def complete_final_stage(
         mark_current_done=True,
         completion_contract_version=completion_contract_version,
         completion_contract_sha256=completion_contract_sha256,
+        evidence_root=evidence_root,
     )
 
 
@@ -565,12 +676,18 @@ def _augment(body: str, role: str, project_root, *, overlay_present: bool = Fals
 
 
 def _research_checklist_defs():
-    from ..verticals.research.stages import (
-        CANONICAL_STAGE_ORDER,
-        STAGE_CHECKLISTS,
+    from ..verticals._base import (
+        DEFAULT_VERTICAL,
+        load_vertical,
+        vertical_checklist_items,
+        vertical_checklist_stage_order,
     )
 
-    return CANONICAL_STAGE_ORDER, STAGE_CHECKLISTS
+    provider = load_vertical(DEFAULT_VERTICAL)
+    return (
+        vertical_checklist_stage_order(provider),
+        vertical_checklist_items(provider),
+    )
 
 
 def _active_vertical_checklist_defs(project_root):
@@ -757,14 +874,14 @@ def _apply_vertical_rendering(
     if project_root is None:
         project_root = os.environ.get("ARGUS_SKILL_PROJECT_ROOT") or "."
     try:
-        from ..verticals._base import load_vertical
+        from ..verticals._base import DEFAULT_VERTICAL, load_vertical
         from .vertical_select import resolve_checklist_vertical
 
         vertical = resolve_checklist_vertical(project_root)
-        if vertical is None:
-            from ..verticals.research import stages as module
-        else:
-            module = load_vertical(vertical, project_root=project_root)
+        module = load_vertical(
+            vertical or DEFAULT_VERTICAL,
+            project_root=project_root,
+        )
         hook_name = (
             "render_stage_checklist_body"
             if stage is not None
@@ -906,7 +1023,7 @@ def _full_pipeline_title(project_root) -> str:
             return "## Full pipeline checklist (final submission gate)\n"
         if vertical_completion_gate(
             load_vertical(vertical, project_root=project_root)
-        ) != "full_paper":
+        ) != "certified":
             return f"## Full pipeline checklist ({vertical})\n"
     except Exception:  # noqa: BLE001 — title must never break prompt building
         pass

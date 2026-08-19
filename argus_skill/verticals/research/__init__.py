@@ -136,6 +136,7 @@ from .stages import (
     CHECKLIST_ITEMS,
     STAGE_ORDER,
     WORKFLOW_MODE,
+    stage_completion_issues,
 )
 
 __all__ = [
@@ -213,4 +214,5 @@ __all__ = [
     "CHECKLIST_ITEMS",
     "STAGE_ORDER",
     "WORKFLOW_MODE",
+    "stage_completion_issues",
 ]

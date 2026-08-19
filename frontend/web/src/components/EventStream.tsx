@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useGsapMotion } from '../lib/motion';
 import type { EventMsg } from '../api';
+import type { DeliveryReceipt } from '../../../core/src/types';
 import { renderEvent, toneColor, isReasoning, eventKey, mergeFragment, type Rendered } from '../lib/eventRender';
 import { eventMatchesView, fragmentMode, type EventViewFilter } from '../../../core/src/events';
 import { theme } from '../lib/theme';
@@ -9,6 +10,8 @@ import { rotate, IDLE_LINES } from '../lib/soul';
 import { PanelHeader, EmptyHint } from './primitives';
 import { MarkdownContent } from './MarkdownContent';
 import { ArgusMark } from './Wordmark';
+import { useI18n } from '../i18n';
+import { CopyButton } from './CopyButton';
 
 type ActivityRow = { ev: EventMsg; r: Rendered; key: string };
 type ConversationGroup = { key: string; operator: ActivityRow; rows: ActivityRow[] };
@@ -19,6 +22,10 @@ export function activeProviderRequest(events: EventMsg[]): EventMsg | null {
   const active = new Map<string, EventMsg>();
   events.forEach((event) => {
     const type = String(event.type ?? '');
+    if (type === 'life.mission.completed' || type === 'mission.completed') {
+      active.clear();
+      return;
+    }
     const callId = String(event.call_id ?? '');
     if (!callId) return;
     if (type === 'provider.request.started') active.set(callId, event);
@@ -66,6 +73,7 @@ function EventRow({ ev, r, first, last }: { ev: EventMsg; r: Rendered; first: bo
 }
 
 function ConversationRow({ ev, r }: { ev: EventMsg; r: Rendered }) {
+  const { t } = useI18n();
   const operator = String(ev.type) === 'ui.operator';
   const responseLatencyMs = Number(ev.response_latency_ms ?? 0);
   const responseLatency = !operator && responseLatencyMs >= 100
@@ -92,6 +100,12 @@ function ConversationRow({ ev, r }: { ev: EventMsg; r: Rendered }) {
     <article ref={rowRef} className="group mx-auto w-full max-w-full px-4 py-3 sm:px-6 lg:max-w-[61.8vw]">
       {operator ? (
         <div className="flex items-end justify-end gap-2">
+          <CopyButton
+            text={r.text}
+            label={t('copy.message')}
+            copiedLabel={t('copy.copied')}
+            className="opacity-60 sm:opacity-0 sm:group-hover:opacity-100"
+          />
           <time className="shrink-0 pb-1 font-mono text-[10px] tabular-nums text-ink-faint">{clockOf(ev)}</time>
           <div className="max-w-[calc(100%_-_3rem)] rounded-[18px] bg-conversation-user px-4 py-2.5 text-[15px] leading-relaxed text-ink ring-1 ring-line/35 sm:max-w-[82%]">
             <MarkdownContent>{r.text}</MarkdownContent>
@@ -103,10 +117,16 @@ function ConversationRow({ ev, r }: { ev: EventMsg; r: Rendered }) {
             <ArgusMark size={26} className="text-blue" />
           </span>
           <div className="relative min-w-0 flex-1 text-[15px] leading-relaxed text-ink">
-            <div className="mb-1 flex items-center">
+            <div className="mb-1 flex items-center gap-2">
               <span className="text-xs font-semibold text-blue">Argus</span>
+              <CopyButton
+                text={r.text}
+                label={t('copy.message')}
+                copiedLabel={t('copy.copied')}
+                className="ml-auto opacity-60 sm:opacity-0 sm:group-hover:opacity-100"
+              />
+              <time className="font-mono text-[10px] tabular-nums text-ink-faint">{clockOf(ev)}{responseLatency}</time>
             </div>
-            <time className="absolute right-0 top-0 font-mono text-[10px] tabular-nums text-ink-faint">{clockOf(ev)}{responseLatency}</time>
             <MarkdownContent>{r.text}</MarkdownContent>
           </div>
         </div>
@@ -246,7 +266,56 @@ function RoleLogCollection({ rows, live }: { rows: ActivityRow[]; live: boolean 
   );
 }
 
-function ConversationThread({ group, latest }: { group: ConversationGroup; latest: boolean }) {
+function deliveryFromEvent(event: EventMsg): DeliveryReceipt | null {
+  const delivery = event.delivery;
+  if (!delivery || typeof delivery !== 'object' || Array.isArray(delivery)) return null;
+  const candidate = delivery as Partial<DeliveryReceipt>;
+  if (typeof candidate.delivery_id !== 'string' || !candidate.delivery_id.trim()) return null;
+  return candidate as DeliveryReceipt;
+}
+
+function DeliveryCard({
+  delivery,
+  onOpen,
+}: {
+  delivery: DeliveryReceipt;
+  onOpen?: (delivery: DeliveryReceipt) => void;
+}) {
+  const { locale } = useI18n();
+  const zh = locale === 'zh-CN';
+  const certified = delivery.kind === 'submission_certified';
+  return (
+    <aside className="mx-auto my-3 flex w-full max-w-full gap-3 rounded-lg border border-ok/35 bg-ok/5 px-4 py-3 lg:max-w-[61.8vw]">
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-ok/15 font-semibold text-ok">✓</span>
+      <div className="min-w-0 flex-1">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-ok">
+          {certified ? (zh ? '交付已认证' : 'Delivery certified') : (zh ? '任务已完成' : 'Task completed')}
+        </div>
+        <div className="mt-1 truncate text-sm font-semibold text-ink" title={delivery.title}>{delivery.title}</div>
+        {delivery.summary ? <p className="mt-1 text-xs leading-5 text-ink-dim">{delivery.summary}</p> : null}
+        {onOpen ? (
+          <button
+            type="button"
+            onClick={() => onOpen(delivery)}
+            className="mt-2 rounded border border-ok/40 px-2 py-1 font-mono text-[10px] text-ok hover:border-ok hover:bg-ok/10"
+          >
+            {delivery.primary_target ? (zh ? '打开成果' : 'Open result') : (zh ? '查看任务' : 'View task')}
+          </button>
+        ) : null}
+      </div>
+    </aside>
+  );
+}
+
+function ConversationThread({
+  group,
+  latest,
+  onOpenDelivery,
+}: {
+  group: ConversationGroup;
+  latest: boolean;
+  onOpenDelivery?: (delivery: DeliveryReceipt) => void;
+}) {
   const isSystemMessage = (row: ActivityRow) =>
     row.ev.type === 'ui.argus' && /^(info:|operation cancelled|cancelled\b)/i.test(row.r.text.trim());
   const replyParts = group.rows
@@ -262,6 +331,15 @@ function ConversationThread({ group, latest }: { group: ConversationGroup; lates
   const replies = replyParts.flatMap((part) => part.reply ? [part.reply] : []);
   const systemMessages = replyParts.flatMap((part) => part.messages);
   const operational = group.rows.filter(({ ev }) => ev.type !== 'ui.argus');
+  const deliveries = (() => {
+    const seen = new Set<string>();
+    return group.rows.flatMap((row) => {
+      const delivery = deliveryFromEvent(row.ev);
+      if (!delivery || seen.has(delivery.delivery_id)) return [];
+      seen.add(delivery.delivery_id);
+      return [delivery];
+    });
+  })();
 
   return (
     <section className="border-b border-line/60">
@@ -271,6 +349,9 @@ function ConversationThread({ group, latest }: { group: ConversationGroup; lates
         <div key={`${group.key}-system-${index}`} className="mx-auto w-full max-w-full px-6 py-1.5 text-center text-xs text-ink-faint lg:max-w-[61.8vw]">
           {message}
         </div>
+      ))}
+      {deliveries.map((delivery) => (
+        <DeliveryCard key={delivery.delivery_id} delivery={delivery} onOpen={onOpenDelivery} />
       ))}
       {operational.length > 0 ? (
         <div className="mx-auto w-full max-w-full border-t border-line/40 lg:max-w-[61.8vw]">
@@ -297,6 +378,7 @@ export function EventStream({
   filter = 'all',
   query = '',
   skipFirst = 0,
+  onOpenDelivery,
 }: {
   events: EventMsg[];
   connected: boolean;
@@ -306,7 +388,9 @@ export function EventStream({
   filter?: EventViewFilter;
   query?: string;
   skipFirst?: number;
+  onOpenDelivery?: (delivery: DeliveryReceipt) => void;
 }) {
+  const { locale, t } = useI18n();
   const [following, setFollowing] = useState(true);
   const [activityTick, setActivityTick] = useState(() => Date.now());
   const scroller = useRef<HTMLDivElement>(null);
@@ -332,7 +416,7 @@ export function EventStream({
     let hiddenReasoning = 0;
     const displayEvents = skipFirst > 0 ? events.slice(skipFirst) : events;
     displayEvents.forEach((ev, i) => {
-      const r = renderEvent(ev);
+      const r = renderEvent(ev, locale);
       if (!r) return; // non-whitelisted → hidden
       if (r.reasoning && !showReasoning) {
         hiddenReasoning++;
@@ -365,7 +449,7 @@ export function EventStream({
       out.push(entry);
     });
     return { list: out, hiddenReasoning };
-  }, [events, showReasoning, filter, query, skipFirst]);
+  }, [events, showReasoning, filter, query, skipFirst, locale]);
 
   const rows = baseRows;
   const conversations = useMemo(() => {
@@ -413,7 +497,7 @@ export function EventStream({
       embedded ? '' : 'rounded-lg border border-line/80'
     }`}>
       <PanelHeader
-        title="Activity"
+        title={t('panel.activity')}
         right={
           <div className="flex items-center gap-3">
             <button
@@ -460,7 +544,12 @@ export function EventStream({
               </section>
             ) : null}
             {conversations.groups.map((group, index) => (
-              <ConversationThread key={group.key} group={group} latest={index === conversations.groups.length - 1} />
+              <ConversationThread
+                key={group.key}
+                group={group}
+                latest={index === conversations.groups.length - 1}
+                onOpenDelivery={onOpenDelivery}
+              />
             ))}
           </>
         )}
@@ -468,8 +557,8 @@ export function EventStream({
       {!following && (
         <button
           onClick={jump}
-          aria-label="Jump to latest"
-          title="Jump to latest"
+          aria-label={t('stream.jumpToLatest')}
+          title={t('stream.jumpToLatest')}
           className="absolute bottom-4 left-1/2 flex h-8 w-8 -translate-x-1/2 items-center justify-center rounded-full border border-line/60 bg-panel text-sm text-ink-dim shadow-glow transition-all duration-200 hover:border-ink-faint hover:text-ink"
         >
           ↓

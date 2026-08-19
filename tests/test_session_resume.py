@@ -1,4 +1,4 @@
-"""Fresh-per-round Engineer session contract."""
+"""Role-session defaults and fresh-only fallback contract."""
 from __future__ import annotations
 
 import json
@@ -45,12 +45,8 @@ def _loop(backend: MemoryBackend, skills: Path, checkpoint: Path | None = None) 
     )
 
 
-def test_compatibility_session_knobs_reflect_fresh_policy(monkeypatch) -> None:
-    monkeypatch.delenv("ARGUS_SKILL_SHIFT_ROUND_LIMIT", raising=False)
-    monkeypatch.delenv("ARGUS_SKILL_THREAD_TOKEN_LIMIT", raising=False)
-    config = SupervisedConfig()
-    assert config.shift_round_limit == 1
-    assert config.thread_token_limit == 0
+def test_role_session_policy_defaults_to_backend_aware_auto() -> None:
+    assert SupervisedConfig().role_session_policy == "auto"
 
 
 def test_engineer_and_reviewer_never_resume_across_rounds_or_missions(

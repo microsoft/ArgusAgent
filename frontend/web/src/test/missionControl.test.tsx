@@ -14,6 +14,10 @@ describe('MissionControl', () => {
       id: 'task-1', title: 'Profile kernel v7', objective: 'Measure fused memory traffic', status: 'running',
       deps: [], branch_id: 'branch-1', parent_branch_id: null,
       acceptance_check: 'Official scorer passes.',
+      plan_hypothesis: 'Fused traffic is the remaining bottleneck.',
+      goal_contribution: 'Move the official score toward the user target.',
+      expected_regressions: 'Local latency may rise before fusion is tuned.',
+      decision_rule: 'Replace the route if memory traffic is not causal.',
       non_goals: ['Do not change the benchmark.'],
     }];
     view.learned_skills = [{
@@ -86,12 +90,18 @@ describe('MissionControl', () => {
       />,
     );
     expect(markup).toContain('Optimize FlashAttention on B200');
+    expect(markup).toContain('Total elapsed');
     expect(markup).toContain('Research DAG');
     expect(markup).toContain('Official scorer passed');
     expect(markup).toContain('Capabilities unlocked');
     expect(markup).toContain('Role work');
     expect(markup).toContain('Profile kernel v7');
     expect(markup).toContain('Measure fused memory traffic');
+    expect(markup).toContain('Working hypothesis · revisable');
+    expect(markup).toContain('Fused traffic is the remaining bottleneck.');
+    expect(markup).toContain('Move the official score toward the user target.');
+    expect(markup).toContain('Local latency may rise before fusion is tuned.');
+    expect(markup).toContain('Replace the route if memory traffic is not causal.');
     expect(markup).toContain('Official scorer passes.');
     expect(markup).toContain('Do not change the benchmark.');
     expect(markup).toContain('evolved during · Profile kernel v7');

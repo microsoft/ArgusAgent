@@ -1,4 +1,11 @@
-"""Validate the separation between execution failures and idea evidence."""
+"""Validate the separation between execution failures and idea evidence.
+
+The four-state model and its invariants live in
+:mod:`argus_skill.core.evidence_status`; this module supplies the GPU-kernel
+vocabulary — profiler and benchmark-infrastructure failures, and the
+commit/diff/dispatch identity a performance claim needs before anyone can
+check it. Behaviour is unchanged: the rules moved, they did not loosen.
+"""
 
 from __future__ import annotations
 
@@ -8,83 +15,100 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ...core.evidence_status import (
+    BASE_FAILURE_CLASSES,
+    BASE_NON_IDEA_FAILURES,
+    EXECUTION_STATUSES,
+    IDEA_STATUSES,
+    EvidenceContract,
+    is_placeholder_text,
+    validate_evidence,
+)
+
 SCHEMA_VERSION = 1
-EXECUTION_STATUSES = frozenset({"completed", "blocked", "failed"})
-IDEA_STATUSES = frozenset({"untested", "inconclusive", "supported", "refuted"})
-FAILURE_CLASSES = frozenset(
+
+# Kernel work fails in ways generic domains do not: a profiler the host
+# refuses to run, a benchmark harness that never dispatched into the changed
+# kernel. None of them say anything about the optimization idea.
+_KERNEL_ONLY_FAILURES = frozenset(
     {
-        "none",
-        "environment",
-        "dependency",
-        "toolchain",
-        "build_configuration",
-        "hardware_access",
         "profiler_permission",
         "benchmark_infrastructure",
         "measurement_infrastructure",
-        "implementation",
         "numerical",
         "performance",
     }
 )
-NON_IDEA_FAILURES = frozenset(
+FAILURE_CLASSES = BASE_FAILURE_CLASSES | _KERNEL_ONLY_FAILURES
+NON_IDEA_FAILURES = BASE_NON_IDEA_FAILURES | frozenset(
     {
-        "environment",
-        "dependency",
-        "toolchain",
-        "build_configuration",
-        "hardware_access",
         "profiler_permission",
         "benchmark_infrastructure",
         "measurement_infrastructure",
     }
 )
 
+KERNEL_EVIDENCE = EvidenceContract(
+    domain="kernel",
+    failure_classes=FAILURE_CLASSES,
+    non_idea_failures=NON_IDEA_FAILURES,
+    # A speedup claim is unfalsifiable without knowing what was compared and
+    # whether the benchmark reached the code that changed.
+    grounding_fields=("baseline_identity", "candidate_identity", "path_coverage"),
+    # Only a real measurement can refute a kernel idea; a build error cannot.
+    refuting_failures=frozenset({"numerical", "performance"}),
+)
 
-def _text(value: object) -> bool:
-    return isinstance(value, str) and bool(value.strip()) and "REPLACE" not in value
+__all__ = [
+    "EXECUTION_STATUSES",
+    "FAILURE_CLASSES",
+    "IDEA_STATUSES",
+    "KERNEL_EVIDENCE",
+    "NON_IDEA_FAILURES",
+    "SCHEMA_VERSION",
+    "main",
+    "outcome_files",
+    "template",
+    "validate_outcome",
+]
 
 
 def validate_outcome(record: dict[str, Any]) -> list[str]:
+    """Kernel-specific checks, then the shared four-state invariants."""
     errors: list[str] = []
     if record.get("schema_version") != SCHEMA_VERSION:
         errors.append(f"unsupported schema_version: {record.get('schema_version')!r}")
-    if not _text(record.get("attempt_id")):
+    if is_placeholder_text(record.get("attempt_id")):
         errors.append("attempt_id is empty or templated")
-    execution = str(record.get("execution_status") or "")
-    failure = str(record.get("failure_class") or "")
-    idea = str(record.get("idea_status") or "")
-    if execution not in EXECUTION_STATUSES:
-        errors.append(f"invalid execution_status: {execution!r}")
-    if failure not in FAILURE_CLASSES:
-        errors.append(f"invalid failure_class: {failure!r}")
-    if idea not in IDEA_STATUSES:
-        errors.append(f"invalid idea_status: {idea!r}")
-    for key in ("summary", "evidence"):
-        if not _text(record.get(key)):
-            errors.append(f"{key} is empty or templated")
+    shapes = record.get("benchmark_shapes")
+    if shapes is not None:
+        if not isinstance(shapes, dict):
+            errors.append("benchmark_shapes must map shape ids to dimension objects")
+        else:
+            from .benchmark_preflight import preflight_shape
 
-    if failure in NON_IDEA_FAILURES and idea not in {"untested", "inconclusive"}:
-        errors.append(
-            f"{failure} is an execution/environment failure; idea_status must be "
-            "untested or inconclusive"
-        )
-    if execution != "completed" and idea in {"supported", "refuted"}:
-        errors.append(f"execution_status={execution} cannot support or refute the idea")
-    if idea == "refuted" and failure not in {"numerical", "performance"}:
-        errors.append(
-            "idea_status=refuted requires a completed valid numerical or performance result"
-        )
-    if idea in {"supported", "refuted"}:
-        for key in ("baseline_identity", "candidate_identity", "path_coverage"):
-            if not _text(record.get(key)):
-                errors.append(
-                    f"{key} is required before an idea can be {idea}; include commit/"
-                    "diff identity and evidence that the measured case exercised the "
-                    "changed path"
+            for shape_id, shape in shapes.items():
+                if not isinstance(shape, dict):
+                    errors.append(f"benchmark shape {shape_id!r} is not an object")
+                    continue
+                try:
+                    result = preflight_shape(
+                        str(shape_id),
+                        shape,
+                        dtype=str(record.get("benchmark_dtype") or "bf16"),
+                    )
+                except (TypeError, ValueError) as exc:
+                    errors.append(f"benchmark shape {shape_id!r}: {exc}")
+                    continue
+                if not result.declared:
+                    errors.append(
+                        f"benchmark shape {shape_id!r}: id has no parseable dimensions"
+                    )
+                errors.extend(
+                    f"benchmark shape {shape_id!r}: {mismatch}"
+                    for mismatch in result.mismatches
                 )
-    if failure == "none" and execution != "completed":
-        errors.append("failure_class=none requires execution_status=completed")
+    errors.extend(validate_evidence(record, KERNEL_EVIDENCE))
     return list(dict.fromkeys(errors))
 
 

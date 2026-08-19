@@ -59,6 +59,17 @@ def reduce_manager_event(
             "objective": objective,
             "status": "framed",
         })
+        routing = dict(view.get("routing") or {})
+        for key in ("route", "vertical", "workflow_mode", "lifetime"):
+            value = _text(event, key)
+            if value:
+                routing[key] = value
+        if not routing.get("route"):
+            routing["route"] = "team"
+        for key in ("continuous", "open_ended"):
+            if key in event:
+                routing[key] = event.get(key) is True
+        view["routing"] = routing
         current_stage = _text(event, "current_stage")
         stages = event.get("stages")
         if current_stage:
@@ -88,12 +99,13 @@ def reduce_manager_event(
 
     elif event_type == EventType.LIFE_MANAGER_INTENT_FAILED:
         mission["status"] = "failed"
-        _set_role(view, "manager", "error", "Grounding failed", ts)
+        title = "Manager routing failed"
+        _set_role(view, "manager", "error", title, ts)
         _timeline(
             view,
             event,
             role="manager",
-            title="Project grounding failed",
+            title=title,
             detail=_text(event, "error") or _text(event, "reason"),
             tone="error",
         )
@@ -102,7 +114,7 @@ def reduce_manager_event(
             event,
             role="manager",
             kind="grounding",
-            title="Project grounding failed",
+            title=title,
             detail=_text(event, "error", 4000)
             or _text(event, "reason", 4000),
             status="error",
@@ -172,7 +184,25 @@ def reduce_planner_event(
 
     elif event_type == EventType.LIFE_PLANNER_VERDICT:
         project_done = bool(event.get("project_done"))
-        label = "Project reviewed" if project_done else "Planning complete"
+        raw_delivery = event.get("delivery")
+        delivery = (
+            dict(raw_delivery)
+            if project_done and isinstance(raw_delivery, dict)
+            else None
+        )
+        label = (
+            "Task completed"
+            if delivery is not None
+            else "Project reviewed"
+            if project_done
+            else "Planning complete"
+        )
+        if delivery is not None:
+            view["delivery"] = delivery
+            mission = view.setdefault("mission", {})
+            mission["status"] = "complete"
+            mission["summary"] = str(delivery.get("summary") or "")[:1200]
+            mission["completed_at"] = ts
         _set_role(view, "planner", "done", label, ts)
         _timeline(
             view,

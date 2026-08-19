@@ -8,7 +8,6 @@ from io import StringIO
 from pathlib import Path
 
 from argus_skill.verticals.kernel_engineering.frontier_watch import (
-    STAGES,
     canonicalize,
     ledger_path,
     main,
@@ -224,14 +223,10 @@ def test_record_cli_accepts_stdin(tmp_path: Path, monkeypatch) -> None:
     assert snapshot_path(tmp_path, "scope").is_file()
 
 
-def test_frontier_gate_is_event_driven_not_required_at_every_stage() -> None:
-    for stage in ("scope", "report"):
-        commands = "\n".join(command for _label, command in STAGE_CHECKS[stage])
-        assert "frontier_watch check" in commands
-        ids = {item.id for item in CHECKLIST_ITEMS[stage]}
-        assert f"{stage}.frontier_current" in ids
-    for stage in set(STAGES) - {"scope", "report"}:
-        commands = "\n".join(command for _label, command in STAGE_CHECKS[stage])
-        assert "frontier_watch check" not in commands
-        ids = {item.id for item in CHECKLIST_ITEMS[stage]}
-        assert f"{stage}.frontier_current" not in ids
+def test_frontier_utility_is_not_a_kernel_workflow_gate() -> None:
+    assert STAGE_CHECKS == {"optimize": []}
+    assert {
+        item.id
+        for items in CHECKLIST_ITEMS.values()
+        for item in items
+    } == {"optimize.measured_change"}

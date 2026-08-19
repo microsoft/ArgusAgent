@@ -102,8 +102,8 @@ def release_match_preflight_error() -> str:
     identity = runtime_identity()
     if identity.get("release_matches_source") is False:
         return (
-            "loaded source does not match the release manifest; run "
-            "`python scripts/build_release.py` before starting Argus"
+            "loaded source does not match the prebuilt release artifacts; "
+            "pull a complete published revision and reinstall with `pip install -e .`"
         )
     return ""
 

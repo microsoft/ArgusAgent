@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useI18n } from '../i18n';
 import type { ProjectRow } from '../api';
 import { filterProjects } from '../../../core/src/projects';
 import { ago, uptime } from '../lib/format';
@@ -19,6 +20,7 @@ export function SessionSwitcher({
   onSelect: (id: string) => void;
   onNew: () => void;
 }) {
+  const { t } = useI18n();
   const [query, setQuery] = useState('');
   const visible = useMemo(
     () => query.trim() ? filterProjects(projects, query) : projects,
@@ -32,7 +34,7 @@ export function SessionSwitcher({
             data-autofocus
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Find a session"
+            placeholder={t('sidebar.find')}
             className="h-9 min-w-0 flex-1 rounded-md border border-line/80 bg-bg/60 px-3 text-[13px] text-ink outline-none placeholder:text-ink-faint focus:border-blue-deep"
           />
           <button type="button" onClick={onNew} className="h-9 rounded-md bg-blue-deep px-3 text-xs font-medium text-white hover:bg-blue-deep/85">

@@ -1,13 +1,14 @@
 """Vertical-agnostic research target and reviewer-assessment contract."""
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
+from .pipeline_state import read_pipeline_state
+
 RESEARCH_TARGET_LEVELS = ("exploratory", "publishable", "doctoral")
+RESEARCH_DIRECTION_MODES = ("broad", "locked")
 RESULT_CLASSES = (
     "known_result",
     "finite_verification",
@@ -39,6 +40,20 @@ SIGNIFICANCE_STATUSES = (
 )
 STATEMENT_FIDELITY_STATUSES = ("verified", "failed", "uncertain", "not_applicable")
 
+#: Every enum-valued field of a research result, paired with its legal set.
+#:
+#: One table, read by the validator, by the diagnostic that explains a
+#: rejection, and by the Reviewer prompt that asks for the block in the first
+#: place — so the three cannot describe three different contracts. The prompt
+#: renders this; it does not restate it.
+RESULT_FIELD_CHOICES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("result_class", RESULT_CLASSES),
+    ("correctness_status", CORRECTNESS_STATUSES),
+    ("novelty_status", NOVELTY_STATUSES),
+    ("significance_status", SIGNIFICANCE_STATUSES),
+    ("statement_fidelity_status", STATEMENT_FIDELITY_STATUSES),
+)
+
 _BREAKTHROUGH_CLASSES = frozenset({
     "verified_new_result",
     "complete_solution",
@@ -61,9 +76,6 @@ _EXPLORATORY_TERMINAL_CLASSES = frozenset({
     "exact_counterexample",
     "lean_local_verification",
 })
-_STATE_RELPATH = ("research", "PIPELINE_STATE.json")
-
-
 @dataclass(frozen=True)
 class ResearchTargetContract:
     supported_levels: tuple[str, ...]
@@ -80,40 +92,39 @@ def normalize_research_target_level(value: Any) -> str | None:
 
 
 def resolve_research_target_level(project_root: object) -> str | None:
-    path = Path(str(project_root)).joinpath(*_STATE_RELPATH)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
+        payload = read_pipeline_state(project_root)
+    except (OSError, ValueError):
         return None
     return normalize_research_target_level(payload.get("research_target_level"))
 
 
-def resolve_research_target_contract(
-    project_root: object,
-) -> ResearchTargetContract:
-    selected = resolve_research_target_level(project_root)
-    try:
-        from ..skills.vertical_select import resolve_checklist_vertical
-        from ..verticals._base import (
-            load_vertical,
-            vertical_research_target_levels,
-        )
+def normalize_research_direction_mode(value: Any) -> str | None:
+    mode = str(value or "").strip().lower()
+    return mode if mode in RESEARCH_DIRECTION_MODES else None
 
-        vertical = resolve_checklist_vertical(project_root)
-        supported = (
-            tuple(vertical_research_target_levels(
-                load_vertical(vertical, project_root=project_root)
-            ))
-            if vertical is not None
-            else ()
-        )
-    except Exception:  # noqa: BLE001
-        supported = RESEARCH_TARGET_LEVELS if selected is not None else ()
+
+def resolve_research_direction_mode(project_root: object) -> str | None:
+    try:
+        payload = read_pipeline_state(project_root)
+    except (OSError, ValueError):
+        return None
+    return normalize_research_direction_mode(payload.get("research_direction_mode"))
+
+
+def research_target_contract(
+    *,
+    supported_levels: tuple[str, ...],
+    selected_level: str | None,
+) -> ResearchTargetContract:
+    """Build the generic target contract from a vertical-owned declaration."""
     return ResearchTargetContract(
-        supported_levels=supported,
-        selected_level=selected,
+        supported_levels=tuple(
+            level
+            for value in supported_levels
+            if (level := normalize_research_target_level(value)) is not None
+        ),
+        selected_level=normalize_research_target_level(selected_level),
     )
 
 
@@ -133,12 +144,9 @@ def research_target_env_override() -> str | None:
 
 
 def resolve_research_target_set_at(project_root: object) -> float | None:
-    path = Path(str(project_root)).joinpath(*_STATE_RELPATH)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
+        payload = read_pipeline_state(project_root)
+    except (OSError, ValueError):
         return None
     raw_value = payload.get("research_target_set_at")
     if raw_value is None:
@@ -150,10 +158,13 @@ def resolve_research_target_set_at(project_root: object) -> float | None:
     return value if value > 0 else None
 
 
-def normalize_research_result(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    result_class = str(value.get("result_class") or "").strip()
+def _resolve_research_result_fields(value: dict[str, Any]) -> dict[str, str]:
+    """Read the five enum fields, honouring the historical field names.
+
+    Split out so the validator and the diagnostic that explains its refusal
+    read the payload exactly once, the same way. A diagnostic that re-derives
+    the fields is a diagnostic that can disagree with the check it explains.
+    """
     correctness = str(
         value.get("correctness_status") or value.get("correctness") or ""
     ).strip()
@@ -173,13 +184,55 @@ def normalize_research_result(value: Any) -> dict[str, Any] | None:
         or value.get("statement_fidelity")
         or "not_applicable"
     ).strip()
-    if (
-        result_class not in RESULT_CLASSES
-        or correctness not in CORRECTNESS_STATUSES
-        or novelty not in NOVELTY_STATUSES
-        or significance not in SIGNIFICANCE_STATUSES
-        or fidelity not in STATEMENT_FIDELITY_STATUSES
-    ):
+    return {
+        "result_class": str(value.get("result_class") or "").strip(),
+        "correctness_status": correctness,
+        "novelty_status": novelty,
+        "significance_status": significance,
+        "statement_fidelity_status": fidelity,
+    }
+
+
+def research_result_rejection(value: Any) -> str:
+    """Name the fields that make a research result unreadable, or ``""``.
+
+    ``research_completion_issue`` answered every unreadable result with a flat
+    ``missing_or_invalid_research_result`` while every check *after* it named
+    its offender (``significance_below_publishable:exploratory``). The one
+    that fires most often was the one that said least.
+
+    Testbed run 15 (``s-f0dbba19``) is what that costs. Six Reviewer rounds
+    each emitted a ``RESEARCH_RESULT`` block and all six were discarded whole:
+    the prompt listed the five field *names* and never their legal values, so
+    the model supplied fluent inventions — ``result_class=proof``,
+    ``correctness_status=proved``, ``significance_status=bounded_complete``,
+    ``statement_fidelity_status=supported``. The operator was then told the
+    research result was missing, against a reviewer message that visibly
+    contained one, and the project could not close at its final stage.
+
+    The prompt now renders ``RESULT_FIELD_CHOICES``, which is the actual fix.
+    This is the second line: when a value still misses, the trace says which
+    field and which value rather than leaving an operator to diff two enums by
+    eye.
+    """
+    if not isinstance(value, dict):
+        return "missing_or_invalid_research_result"
+    fields = _resolve_research_result_fields(value)
+    offenders = [
+        f"{name}={fields[name] or '(empty)'}"
+        for name, choices in RESULT_FIELD_CHOICES
+        if fields[name] not in choices
+    ]
+    if not offenders:
+        return ""
+    return "invalid_research_result_fields:" + ",".join(offenders)
+
+
+def normalize_research_result(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    fields = _resolve_research_result_fields(value)
+    if any(fields[name] not in choices for name, choices in RESULT_FIELD_CHOICES):
         return None
     evidence = (
         [
@@ -199,15 +252,29 @@ def normalize_research_result(value: Any) -> dict[str, Any] | None:
         if isinstance(value.get("limitations"), list)
         else []
     )
-    return {
-        "result_class": result_class,
-        "correctness_status": correctness,
-        "novelty_status": novelty,
-        "significance_status": significance,
-        "statement_fidelity_status": fidelity,
-        "evidence": evidence,
-        "limitations": limitations,
-    }
+    return {**fields, "evidence": evidence, "limitations": limitations}
+
+
+#: Which significance ratings clear each research target.
+#:
+#: A target level is a bar, and two bars that accept the same set are one bar
+#: with two names. That is what ``publishable`` and ``doctoral`` were for every
+#: result class except surveys: the survey branch below has always indexed the
+#: accepted set by target, while the original-result branch asked only for
+#: ``significance in {publishable, doctoral}`` regardless of which of the two
+#: was requested — so an operator who asked for doctoral work and received a
+#: result its own author graded ``publishable`` got a completion. The distinction
+#: survived in the vocabulary, in the prompts that ask a Reviewer to grade
+#: against it, and in the operator's expectation; it did not survive in the
+#: check. One table, read by both branches, is the whole fix.
+#:
+#: Monotone by construction: a higher rating always clears a lower target, so
+#: nothing is refused for being too good.
+ACCEPTED_SIGNIFICANCE: dict[str, frozenset[str]] = {
+    "exploratory": frozenset({"exploratory", "publishable", "doctoral"}),
+    "publishable": frozenset({"publishable", "doctoral"}),
+    "doctoral": frozenset({"doctoral"}),
+}
 
 
 def adapt_legacy_research_result_payload(
@@ -233,7 +300,7 @@ def research_completion_issue(
         return ""
     result = normalize_research_result(value)
     if result is None:
-        return "missing_or_invalid_research_result"
+        return research_result_rejection(value)
     result_class = result["result_class"]
     correctness = result["correctness_status"]
     novelty = result["novelty_status"]
@@ -251,6 +318,12 @@ def research_completion_issue(
         # result and evidence checks above, but leave terminal novelty and
         # significance to final-submission missions.
         return ""
+    if result_class == "literature_review":
+        if novelty not in {"known", "not_applicable"}:
+            return "survey_novelty_must_be_not_applicable"
+        if significance in ACCEPTED_SIGNIFICANCE[target]:
+            return ""
+        return f"survey_significance_below_{target}:{significance}"
     if target == "exploratory":
         if result_class not in _EXPLORATORY_TERMINAL_CLASSES:
             return f"result_class_not_exploratory_terminal:{result_class}"
@@ -261,7 +334,7 @@ def research_completion_issue(
         return f"result_class_below_{target}:{result_class}"
     if novelty != "verified_new":
         return "novelty_not_verified_new"
-    if significance not in {"publishable", "doctoral"}:
+    if significance not in ACCEPTED_SIGNIFICANCE[target]:
         return f"significance_below_{target}:{significance}"
     return ""
 
@@ -281,20 +354,26 @@ def research_pause_status(value: Any) -> str:
 
 
 __all__ = [
+    "ACCEPTED_SIGNIFICANCE",
     "CORRECTNESS_STATUSES",
     "NOVELTY_STATUSES",
+    "RESEARCH_DIRECTION_MODES",
     "RESEARCH_TARGET_LEVELS",
     "RESULT_CLASSES",
+    "RESULT_FIELD_CHOICES",
     "SIGNIFICANCE_STATUSES",
     "STATEMENT_FIDELITY_STATUSES",
     "ResearchTargetContract",
     "adapt_legacy_research_result_payload",
     "normalize_research_result",
+    "normalize_research_direction_mode",
     "normalize_research_target_level",
     "research_completion_issue",
     "research_pause_status",
+    "research_result_rejection",
+    "research_target_contract",
     "research_target_env_override",
-    "resolve_research_target_contract",
     "resolve_research_target_level",
+    "resolve_research_direction_mode",
     "resolve_research_target_set_at",
 ]

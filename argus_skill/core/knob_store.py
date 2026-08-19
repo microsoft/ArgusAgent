@@ -37,16 +37,14 @@ import logging
 import os
 import tempfile
 import threading
+import weakref
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Mapping
 
-from .paths import config_path
+import portalocker
 
-try:  # pragma: no cover - production daemons are POSIX
-    import fcntl
-except ImportError:  # pragma: no cover
-    fcntl = None  # type: ignore[assignment]
+from .paths import config_path
 
 log = logging.getLogger(__name__)
 
@@ -57,7 +55,9 @@ __all__ = [
     "persisted_knob",
 ]
 
-_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_THREAD_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = (
+    weakref.WeakValueDictionary()
+)
 _THREAD_LOCKS_GUARD = threading.Lock()
 
 
@@ -71,15 +71,13 @@ def _write_lock(path: Path):
     with thread_lock:
         fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            if fcntl is not None:
-                fcntl.flock(fd, fcntl.LOCK_EX)
+            portalocker.lock(fd, portalocker.LOCK_EX)
             yield
         finally:
-            if fcntl is not None:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-                except OSError:
-                    pass
+            try:
+                portalocker.unlock(fd)
+            except (OSError, portalocker.exceptions.LockException):
+                pass
             os.close(fd)
 
 

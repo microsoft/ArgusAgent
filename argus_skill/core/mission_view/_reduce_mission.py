@@ -24,10 +24,10 @@ from ._reduce_helpers import (
 
 _MISSION_OUTCOME_PRESENTATIONS = {
     "completed": ("complete", "done", "Task completed", "success"),
-    "incomplete": ("incomplete", "done", "Mission incomplete", "info"),
-    "stalled": ("stalled", "done", "Mission stalled", "info"),
-    "blocked": ("blocked", "error", "Mission blocked", "error"),
-    "failed": ("failed", "error", "Mission failed", "error"),
+    "incomplete": ("incomplete", "done", "Work remains", "info"),
+    "stalled": ("stalled", "done", "No useful progress", "info"),
+    "blocked": ("blocked", "error", "Cannot continue yet", "error"),
+    "failed": ("failed", "error", "Task failed", "error"),
     "ended": ("ended", "done", "Mission ended", "info"),
 }
 
@@ -51,6 +51,8 @@ def _mission_outcome_presentation(
     mission_status, role_status, label, tone = _MISSION_OUTCOME_PRESENTATIONS[
         outcome_class
     ]
+    if outcome_class == "completed" and event.get("campaign_continues") is True:
+        return "continued", "done", "Task continued", "info"
     if (
         outcome_class == "completed"
         and event.get("final_submission_certified") is True
@@ -78,6 +80,7 @@ def reduce_mission_lifecycle_event(
             "id": _text(event, "item_id"),
             "title": _text(event, "title", 240),
             "objective": _text(event, "objective", 2000),
+            "summary": "",
             "status": "working",
             "started_at": ts,
             "completed_at": None,
@@ -89,6 +92,7 @@ def reduce_mission_lifecycle_event(
         # but operators and supervision tooling must not mistake it for current
         # evidence.
         view["review"] = {"status": "", "reason": "", "rejected_attempts": 0}
+        view["delivery"] = None
         view["outcome"] = {}
         _set_role(view, "reviewer", "waiting", "Awaiting engineer handoff", ts)
         _set_role(view, "engineer", "active", "Starting mission", ts)
@@ -112,9 +116,15 @@ def reduce_mission_lifecycle_event(
             "id": _text(event, "item_id") or mission.get("id", ""),
             "title": _text(event, "title", 240) or mission.get("title", ""),
             "objective": _text(event, "objective", 2000) or mission.get("objective", ""),
+            "summary": _text(event, "summary", 1200),
             "status": mission_status,
             "completed_at": ts,
         })
+        raw_delivery = event.get("delivery")
+        if bool(event.get("success")) and isinstance(raw_delivery, dict):
+            view["delivery"] = dict(raw_delivery)
+        elif not bool(event.get("success")):
+            view["delivery"] = None
         raw_outcome = event.get("outcome")
         if isinstance(raw_outcome, dict):
             view["outcome"] = dict(raw_outcome)
@@ -126,12 +136,19 @@ def reduce_mission_lifecycle_event(
                 resumable=bool(event.get("resumable")),
             )
         _set_role(view, "engineer", role_status, label, ts)
+        detail = (
+            _text(event, "summary", 1200)
+            or _text(event, "stop_reason", 2000)
+            or _text(event, "failure_reason", 2000)
+            or _text(event, "title", 500)
+            or _text(event, "status", 500)
+        )
         _timeline(
             view,
             event,
             role="engineer",
             title=label,
-            detail=_text(event, "title") or _text(event, "status"),
+            detail=detail,
             tone=tone,
         )
         _role_work(
@@ -140,8 +157,7 @@ def reduce_mission_lifecycle_event(
             role="engineer",
             kind="completion",
             title=label,
-            detail=_text(event, "title", 500)
-            or _text(event, "status", 500),
+            detail=detail,
             status=mission_status,
         )
 
@@ -290,21 +306,42 @@ def reduce_round_event(
     elif event_type == EventType.ROUND_REVIEW_COMPLETED:
         status = _text(event, "status")
         reason = _text(event, "reason")
+        review_source = _text(event, "review_source") or "reviewer"
         view["review"] = {
             "status": status,
             "reason": reason,
+            "source": review_source,
             "rejected_attempts": int(view.get("review", {}).get("rejected_attempts") or 0)
             + (1 if status in {"continue", "blocked"} else 0),
         }
-        _set_role(view, "reviewer", "done" if status == "done" else "rejected", "Accepted evidence" if status == "done" else "Requested another attempt", ts)
-        _timeline(
-            view,
-            event,
-            role="reviewer",
-            title="Evidence accepted" if status == "done" else "Attempt rejected",
-            detail=reason,
-            tone="success" if status == "done" else "error",
-        )
+        frontier_change = _text(event, "frontier_change")
+        if frontier_change:
+            view["frontier"] = {
+                "change": frontier_change,
+                "summary": _text(event, "frontier_summary", 2000),
+                "updated_at": ts,
+            }
+        if review_source == "engineer_self_review" and status == "done":
+            _set_role(view, "engineer", "done", "Self-verified", ts)
+            _set_role(view, "reviewer", "done", "Independent review not required", ts)
+            _timeline(
+                view,
+                event,
+                role="engineer",
+                title="Engineer self-review accepted",
+                detail=reason,
+                tone="success",
+            )
+        else:
+            _set_role(view, "reviewer", "done" if status == "done" else "rejected", "Accepted evidence" if status == "done" else "Requested another attempt", ts)
+            _timeline(
+                view,
+                event,
+                role="reviewer",
+                title="Evidence accepted" if status == "done" else "Attempt rejected",
+                detail=reason,
+                tone="success" if status == "done" else "error",
+            )
         detail = reason
         next_action = _text(event, "next_action", 2000)
         if next_action:

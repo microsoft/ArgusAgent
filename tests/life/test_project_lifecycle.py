@@ -405,8 +405,8 @@ def test_filesystem_evidence_still_wins_over_pipeline_state(tmp_path) -> None:
 
 
 def test_malformed_pipeline_state_falls_back_to_fs_only(tmp_path) -> None:
-    (tmp_path / "research").mkdir()
-    (tmp_path / "research" / "PIPELINE_STATE.json").write_text(
+    (tmp_path / ".argus").mkdir()
+    (tmp_path / ".argus" / "PIPELINE_STATE.json").write_text(
         "{not valid", encoding="utf-8"
     )
     status = infer_observable_status(tmp_path)

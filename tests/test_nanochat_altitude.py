@@ -2,17 +2,17 @@
 
 The block is PURE VISIBILITY (no verdict): it re-surfaces the agent's own
 recorded per-attempt ``mean_val_bpb`` so the planner/reviewer can judge
-saturation. These tests pin the facts it computes (floor / distance /
+saturation. These tests pin the facts it computes (floor /
 consecutive-non-improving / recombined-token hint) and the fail-soft contract.
 """
 from __future__ import annotations
 
 import json
 
+import pytest
+
 from argus_skill.verticals._base import load_vertical, vertical_search_altitude
 from argus_skill.verticals.nanochat.stages import (
-    _REF_BEST,
-    _REF_OPTIMIZED_FROM_VANILLA,
     _no_score_facts,
     search_altitude_context,
 )
@@ -38,7 +38,7 @@ def test_empty_or_missing_attempts_dir_is_failsoft(tmp_path):
     assert search_altitude_context(tmp_path) == ""  # dir exists but no scored attempts
 
 
-def test_floor_distance_and_streak(tmp_path):
+def test_floor_and_streak_without_imported_score_anchors(tmp_path):
     # Floor improves at a002, then three non-improving attempts.
     _write_attempt(tmp_path, "a001_seed", 1.00)
     _write_attempt(tmp_path, "a002_win", 0.95)  # best (lowest)
@@ -50,9 +50,10 @@ def test_floor_distance_and_streak(tmp_path):
     assert "Attempts scored so far: 5" in block
     assert "0.950000" in block  # the floor
     assert "a002_win" in block  # floor provenance
-    # distance to the two reference targets, computed live (not a stale literal)
-    assert f"{0.95 - _REF_OPTIMIZED_FROM_VANILLA:+.4f}" in block
-    assert f"{0.95 - _REF_BEST:+.4f}" in block
+    # Historical scores from a different run/protocol must not become targets.
+    assert "Distance to go" not in block
+    assert "Recursive best" not in block
+    assert "B200" not in block
     # three attempts since the floor last improved (a003,a004,a005)
     assert "Consecutive attempts since the FLOOR last improved: 3" in block
 
@@ -95,7 +96,7 @@ def test_uppercase_mean_val_bpb_key_is_read(tmp_path):
 
 def test_score_valid_false_excluded_from_floor(tmp_path):
     # An attempt the agent flagged score_valid=False must NOT seed the floor,
-    # even if it carries a (bogus) numeric mean — else distance goes negative.
+    # even if it carries a bogus numeric mean.
     d = tmp_path / "attempts" / "a002_invalid"
     d.mkdir(parents=True)
     (d / "summary.json").write_text(
@@ -107,7 +108,6 @@ def test_score_valid_false_excluded_from_floor(tmp_path):
     block = search_altitude_context(tmp_path)
     assert "0.950000" in block       # the valid attempt is the floor
     assert "0.400000" not in block   # the invalid bogus score is excluded
-    assert "= -0." not in block      # no negative distance-to-target
 
 
 def test_non_annn_dir_sorts_as_newest_not_oldest(tmp_path):
@@ -165,13 +165,22 @@ def test_vertical_hook_failopen_for_vertical_without_hook(tmp_path):
     assert vertical_search_altitude(mod, tmp_path) == ""
 
 
-def test_vertical_hook_failopen_on_raising_hook():
+def test_vertical_hook_failure_is_visible():
+    from argus_skill.skills.stage_machine import ChecklistItem
+
     class _Boom:
+        CHECKLIST_STAGE_ORDER = ("work",)
+        CHECKLIST_ITEMS = {
+            "work": (ChecklistItem("work.output", "Output exists", "output"),)
+        }
+        completion_gate = "none"
+
         @staticmethod
         def search_altitude_context(_root):
             raise RuntimeError("boom")
 
-    assert vertical_search_altitude(_Boom(), "/nonexistent") == ""
+    with pytest.raises(RuntimeError, match="boom"):
+        vertical_search_altitude(_Boom(), "/nonexistent")
 
 
 def _write_profiled_attempt(

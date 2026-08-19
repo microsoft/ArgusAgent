@@ -22,6 +22,7 @@ class _FakeResult:
         self.last_agent_message = msg
         self.agent_messages = [msg]
         self.thread_id = "t1"
+        self.tool_activity_observed = True
 
 
 class _FakeRunner:

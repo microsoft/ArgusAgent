@@ -8,20 +8,18 @@ or a vertical; only TEAM/complex work is enqueued as a mission.
 The classify/control/config/SELF/TEAM phase helpers, the pending-question
 resolver, and the per-project chat-state/lock bookkeeping live in
 ``manager_dispatch.py`` / ``manager_pending_question.py`` / ``manager_state.py``
-respectively (extracted as part of a behavior-preserving decomposition); this
-module keeps only the top-level ``manager_message`` / ``manager_plan`` request
-pipeline. The re-exports below keep every previously-importable
-``manager_bridge.*`` name (including ones exercised via ``monkeypatch``)
-resolvable exactly as before.
+respectively; this module keeps only the top-level ``manager_message``,
+``manager_plan``, and prompt-rewrite request pipeline. Callers import state,
+dispatch, and pending-question operations from their owning modules.
 """
 
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 from typing import Any
 
-from . import manager_dispatch, manager_pending_question, manager_state
 from .manager_dispatch import (
     _build_handoff,
     _cancelled_result,
@@ -29,6 +27,7 @@ from .manager_dispatch import (
     _dispatch_team_mission,
     _handle_abort_control,
     _handle_authorization_control,
+    _handle_pause_control,
     _handle_pending_question_turn,
     _handle_steer_control,
     _item_to_dict,
@@ -38,9 +37,98 @@ from .manager_dispatch import (
     _TurnEmitter,
 )
 from .manager_pending_question import _emit_ui_turn
-from .manager_state import _chat_state_for, _lock_for
+from .manager_session_intent import contextualize_operator_turn
+from .manager_state import (
+    _chat_state_for,
+    _lock_for,
+    interrupt_manager_turns,
+    manager_control_generation,
+)
+
+log = logging.getLogger(__name__)
 
 _PLAN_PREVIEW_CACHE_TTL_S = 60.0
+_TEAM_REPLAY_WINDOW_S = 90.0
+
+
+def _recent_team_replay(
+    mem: Any,
+    body: str,
+    prior_turns: list[dict[str, Any]],
+) -> Any | None:
+    request = " ".join(str(body or "").split())
+    eligible_statuses = {"pending", "running", "done", "paused_operator"}
+    recent_items = []
+    now = time.time()
+    for item in sorted(mem.backlog.all(), key=lambda row: float(row.ts), reverse=True):
+        if now - float(item.ts) > _TEAM_REPLAY_WINDOW_S:
+            break
+        if str(item.status) not in eligible_statuses:
+            continue
+        recent_items.append(item)
+        prior = " ".join(
+            str(item.original_objective or item.objective or "").split()
+        )
+        if prior == request:
+            return item
+
+    previous_operator = next(
+        (
+            turn
+            for turn in reversed(prior_turns)
+            if str(turn.get("role") or "") == "operator"
+        ),
+        None,
+    )
+    if previous_operator is None:
+        return None
+    previous_request = " ".join(str(previous_operator.get("text") or "").split())
+    previous_ts = float(previous_operator.get("ts") or 0.0)
+    if previous_request != request or previous_ts <= 0:
+        return None
+    for item in recent_items:
+        if float(item.ts) >= previous_ts:
+            return item
+    return None
+
+
+def _answer_inline(sid: str, life_dir: Any, question: str) -> str:
+    """Answer *question* with the Manager alone — no classify, no backlog.
+
+    Uses the same front-door runner the classifier would have used, which
+    exists precisely to "reply in-band BEFORE anything reaches the backlog".
+    Any failure returns a plain message rather than falling through to task
+    dispatch: the operator said this was a question, and quietly turning it
+    into queued work is the behaviour `/ask` exists to prevent.
+    """
+    from ..core.models import RunnerOptions
+    from ..core.run_gateway import run_exec as gateway_run_exec
+    from ..life.memory import LifeMemory
+    from ..manager.front_door import _ensure_manager_runner
+    from ..roles.prompts.manager import build_quick_reply_prompt
+
+    try:
+        mem = LifeMemory.open(Path(str(life_dir)))
+        chat_state = _chat_state_for(sid)
+        runner = _ensure_manager_runner(chat_state, mem)
+        if runner is None:
+            return (
+                "No conversational backend is available for this project, so "
+                "`/ask` cannot answer inline. Send the message without `/ask` "
+                "to queue it as work instead."
+            )
+        result = gateway_run_exec(
+            chat_state.get("manager_session") or runner,
+            prompt=build_quick_reply_prompt(objective=question),
+            options=RunnerOptions(skip_git_repo_check=True),
+            run_label="manager-ask",
+        )
+    except Exception:  # noqa: BLE001 - never turn a question into a task
+        log.exception("ask: inline reply failed")
+        return "Could not answer inline just now; nothing was queued."
+
+    reply = str(getattr(result, "stdout", "") or "").strip()
+    return reply or "The Manager returned an empty reply; nothing was queued."
 
 
 def manager_message(
@@ -48,6 +136,7 @@ def manager_message(
     text: str,
     *,
     global_root: Path | str | None = None,
+    attachments: list[dict[str, Any]] | None = None,
     on_fragment: Any = None,
     cancelled: Any = None,
     source_channel: str = "web",
@@ -67,7 +156,7 @@ def manager_message(
     ``/message``) keeps the whole exchange synchronous.
 
     The pipeline below is a sequence of typed phase helpers (pending-question,
-    classify, greeting shortcut, authorization/steer/abort control, config
+    classify, greeting shortcut, authorization/steer/pause/abort control, config
     intent, triage+fallbacks, TEAM dispatch) — each either returns a terminal
     result or ``None``/a small typed result to let the next phase run. This
     mirrors the original single-function control flow exactly; only the
@@ -77,12 +166,21 @@ def manager_message(
     from ..core.transcript import append_turn
     from ..life.memory import MemoryBundle
     from ..manager.front_door import mission_is_running
+    from .attachments import attachment_context_refs, compose_message_body
 
-    body = (text or "").strip()
+    resolved_attachments = list(attachments or [])
+    operator_text = str(text or "").strip()
+    body = compose_message_body(operator_text, resolved_attachments).strip()
     if not body:
         return {"kind": "error", "reply": "empty message"}
+    message_attachment_refs = attachment_context_refs(resolved_attachments)
+
+    control_generation = manager_control_generation(sid)
+    turn_id = f"web-{time.time_ns()}"
 
     def _cancelled() -> bool:
+        if manager_control_generation(sid) != control_generation:
+            return True
         if not callable(cancelled):
             return False
         try:
@@ -109,6 +207,54 @@ def manager_message(
     )
     life_dir = mem.project_root
 
+    def _after_reply(reply: str) -> None:
+        runner = _chat_state_for(sid).get("manager_runner")
+        schedule = getattr(runner, "_schedule_self_learning_review", None)
+        if not callable(schedule):
+            return
+        try:
+            schedule(objective=operator_text, reply=reply)
+        except Exception as exc:  # noqa: BLE001 - learning never owns the answer
+            from ..life.event_log import JsonlEventSink
+
+            JsonlEventSink(None, life_dir=life_dir).append({
+                "type": "self.learning.review.failed",
+                "agent_layer": "self",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+
+    emitter = _TurnEmitter(
+        life_dir=life_dir,
+        turn_id=turn_id,
+        fragment=_fragment,
+        after_reply=_after_reply,
+    )
+    if not life_dir.is_dir():
+        return {
+            "kind": "error",
+            "reply": "project no longer exists; the message was not processed",
+        }
+
+    from ..manager.ask_intent import strip_ask_prefix
+
+    # `/ask` states outright that this is a question. Skip classification —
+    # the guess is what we are removing — queue nothing, and involve no role
+    # beyond the Manager. This is what lets the automatic classifier stay
+    # biased toward "task": anyone who wants a plain answer can say so.
+    _question = strip_ask_prefix(operator_text)
+    if _question is not None:
+        try:
+            append_turn(life_dir, "operator", body)
+        except Exception:  # noqa: BLE001
+            pass
+        _emit_ui_turn(life_dir, "operator", body, message_id=f"{turn_id}-operator")
+        reply = _answer_inline(
+            sid,
+            life_dir,
+            compose_message_body(_question, resolved_attachments),
+        )
+        return emitter.respond(reply, {"kind": "chat"})
+
     lock = _lock_for(sid)
     with lock:
         if _cancelled():
@@ -121,10 +267,14 @@ def manager_message(
         chat_state = _chat_state_for(sid)
         chat_state["session_id"] = sid
         chat_state["global_root"] = str(mem.global_root)
-        turn_id = f"web-{time.time_ns()}"
-        emitter = _TurnEmitter(life_dir=life_dir, turn_id=turn_id, fragment=_fragment)
-
         active_mission = mission_is_running(mem)
+        prior_turns: list[dict[str, Any]] = []
+        try:
+            from ..core.transcript import read_turns
+
+            prior_turns = read_turns(life_dir, limit=6)
+        except Exception:  # noqa: BLE001 - bounded context is an optimization
+            pass
 
         # Build the restart handoff before journaling this turn so the current
         # message appears exactly once. Do not consume it until a model-backed
@@ -147,6 +297,32 @@ def manager_message(
             pass
         _emit_ui_turn(life_dir, "operator", body, message_id=f"{turn_id}-operator")
 
+        duplicate_item = _recent_team_replay(mem, body, prior_turns)
+        if duplicate_item is not None:
+            from ..manager.dispatch import _daemon_status
+
+            daemon_alive, daemon_pid = _daemon_status(life_dir)
+            item_payload = _item_to_dict(duplicate_item, operator_text or body)
+            title = str(
+                (item_payload or {}).get("title")
+                or (item_payload or {}).get("objective")
+                or operator_text
+                or body
+            )
+            emitter.emit_only(f"Already queued · {title}")
+            return {
+                "kind": "task",
+                "reply": None,
+                "item": item_payload,
+                "daemon_alive": daemon_alive,
+                "daemon_pid": daemon_pid,
+                "continuous": bool(
+                    chat_state.get("config", {}).get("continuous")
+                ),
+                "dispatch_state": "already_queued",
+                "duplicate": True,
+            }
+
         pending_questions = [
             item
             for item in mem.backlog.all()
@@ -155,18 +331,28 @@ def manager_message(
         pending_result = _handle_pending_question_turn(
             mem, pending_questions, body, chat_state, emitter
         )
+        if _cancelled():
+            return _cancelled_result()
         if pending_result is not None:
             return pending_result
 
-        from ..apps._self_reply import (
-            build_status_snapshot_reply,
-            looks_like_status_query,
-        )
-
-        if looks_like_status_query(body):
-            reply = build_status_snapshot_reply(life_dir, body)
-            if reply:
-                return emitter.respond(reply, {"kind": "chat"})
+        previous_items = mem.backlog.all()
+        last_team_task = ""
+        if previous_items:
+            previous = max(previous_items, key=lambda item: float(item.ts))
+            last_team_task = str(
+                previous.original_objective or previous.objective or ""
+            )
+        routing_body = compose_message_body(
+            contextualize_operator_turn(
+                operator_text,
+                prior_turns,
+                last_team_task=last_team_task,
+            ),
+            resolved_attachments,
+        ).strip()
+        chat_state["_frontdoor_contextual_text"] = body
+        chat_state["_frontdoor_dispatch_body"] = routing_body
 
         # A web-process restart necessarily loses the live ACP process. Resume
         # seamlessly by opening one new warm conversation session with a
@@ -221,13 +407,19 @@ def manager_message(
                 return _cancelled_result()
             return _handle_steer_control(chat_state, life_dir, emitter)
 
+        if control == "pause":
+            if _cancelled():
+                return _cancelled_result()
+            interrupt_manager_turns(sid)
+            return _handle_pause_control(operator_text, chat_state, life_dir, emitter)
+
         if control == "no_dispatch":
             route = "simple"
 
         if control == "abort":
             if _cancelled():
                 return _cancelled_result()
-            return _handle_abort_control(body, life_dir, emitter)
+            return _handle_abort_control(operator_text, life_dir, emitter)
 
         config_result = _maybe_apply_config_intent(
             mem,
@@ -240,6 +432,8 @@ def manager_message(
             _cancelled,
         )
         if config_result is not None:
+            if _cancelled():
+                return _cancelled_result()
             return config_result
 
         triage_result = _run_triage_and_fallbacks(
@@ -254,6 +448,8 @@ def manager_message(
             emitter,
         )
         if triage_result is not None:
+            if _cancelled():
+                return _cancelled_result()
             return triage_result
 
         # 2) TEAM/complex — apply the BOUNDED/STANDING lifetime selected by the
@@ -267,15 +463,28 @@ def manager_message(
             return _cancelled_result()
         try:
             item, daemon_alive, daemon_pid = _dispatch_team_mission(
-                mem, body, chat_state, root_task_id, _cancelled, emitter
+                mem,
+                routing_body,
+                chat_state,
+                root_task_id,
+                _cancelled,
+                emitter,
+                attachment_context_refs=message_attachment_refs,
             )
         except Exception as exc:  # noqa: BLE001
             if _cancelled():
                 return _cancelled_result()
-            error_reply = f"could not enqueue: {exc}"
+            log.warning("Manager could not safely prepare operator work: %s", exc)
+            error_reply = (
+                "I couldn't safely prepare that request, so nothing was queued "
+                "or executed. Clarify the target and allowed scope, or retry later."
+            )
             return emitter.respond(error_reply, {"kind": "error"})
 
-    item_payload = _item_to_dict(item, body)
+    if _cancelled():
+        return _cancelled_result()
+
+    item_payload = _item_to_dict(item, operator_text or body)
     result = {
         "kind": "task",
         "reply": None,
@@ -284,13 +493,38 @@ def manager_message(
         "daemon_pid": daemon_pid,
         "continuous": bool(chat_state.get("config", {}).get("continuous")),
     }
+    if item_payload is None and result["continuous"]:
+        result["dispatch_state"] = "planner_pending"
+    elif item_payload is not None and daemon_alive:
+        running_id = next(
+            (
+                str(row.id)
+                for row in mem.backlog.all()
+                if str(row.status) == "running"
+            ),
+            "",
+        )
+        if running_id == str(item_payload.get("id") or ""):
+            result["dispatch_state"] = "running"
+        elif running_id:
+            result["dispatch_state"] = "queued_after_current"
+        else:
+            result["dispatch_state"] = "queued"
     title = str(
         (item_payload or {}).get("title")
         or (item_payload or {}).get("objective")
+        or operator_text
         or body
     )
-    emitter.emit_only(f"Queued · {title}")
+    if result.get("dispatch_state") == "planner_pending":
+        emitter.emit_only(
+            "Campaign updated · Planner will sequence this objective after "
+            f"current work · {title}"
+        )
+    else:
+        emitter.emit_only(f"Queued · {title}")
     return result
+
 
 def manager_plan(
     sid: str,
@@ -299,13 +533,7 @@ def manager_plan(
     global_root: Path | str | None = None,
 ) -> dict[str, Any]:
     """Draft one bounded execution plan through the configured Planner role."""
-    from ..agent_cli.runner_backend import normalize_runner_backend
-    from ..core.knobs import (
-        resolve_knob,
-        resolve_role_backend,
-        resolve_role_model,
-        resolve_role_reasoning_effort,
-    )
+    from ..core.knobs import resolve_role_reasoning_effort
     from ..life.memory import MemoryBundle
     from ..manager.front_door import _ensure_manager_runner
     from ..manager.plan_mode import draft_plan
@@ -326,25 +554,7 @@ def manager_plan(
         state = _chat_state_for(sid)
         runner = _ensure_manager_runner(state, mem)
         backend = getattr(runner, "planner_backend", None) if runner is not None else None
-        planner_model = resolve_role_model(
-            "planner",
-            role_env="ARGUS_SKILL_PLAN_MODEL",
-        )
-        preview_model = resolve_knob(
-            "ARGUS_SKILL_PLAN_PREVIEW_MODEL",
-            "auto",
-        ).value.strip()
-        if preview_model.lower() in {"", "auto", "inherit", "default"}:
-            planner_backend = normalize_runner_backend(
-                resolve_role_backend("planner")
-            )
-            model = (
-                "gpt-5.4-mini"
-                if planner_backend in {"codex", "copilot", "pi"}
-                else planner_model
-            )
-        else:
-            model = preview_model
+        model = _plan_preview_model()
         effort = resolve_role_reasoning_effort(
             "ARGUS_SKILL_PLAN_PREVIEW_REASONING_EFFORT",
             default="low",
@@ -398,7 +608,15 @@ def _rewrite_project_context(mem: Any, sid: str) -> str:
         if meta is not None:
             workdir = (meta.workdir or meta.cwd or "").strip()
             if workdir:
-                lines.append(f"- working directory: {workdir}")
+                try:
+                    from ..core.campaign_workdir import active_campaign_workdir
+
+                    active = active_campaign_workdir(mem.root, workdir)
+                except Exception:  # noqa: BLE001 - advisory context only
+                    active = None
+                lines.append(f"- working directory: {active or workdir}")
+                if active is not None:
+                    lines.append(f"- session workspace: {workdir}")
             if (meta.display_name or "").strip():
                 lines.append(f"- session: {meta.display_name.strip()}")
             if (meta.objective or "").strip():
@@ -416,33 +634,40 @@ def _rewrite_project_context(mem: Any, sid: str) -> str:
     return "\n".join(lines)
 
 
+def _plan_preview_model() -> str:
+    """Resolve the interactive ``/plan`` preview route.
+
+    The preview is a fast sketch shown while the operator is still typing, so
+    it wants a compact model — but only a backend that actually serves the
+    OpenAI catalog can be handed an OpenAI id. See
+    ``core.knobs.resolve_cheap_route_model``.
+    """
+    from ..core.knobs import resolve_cheap_route_model
+
+    return resolve_cheap_route_model(
+        knob="ARGUS_SKILL_PLAN_PREVIEW_MODEL",
+        catalog_default="gpt-5.4-mini",
+        role="planner",
+        role_env="ARGUS_SKILL_PLAN_MODEL",
+    )
+
+
 def _rewrite_model_and_effort() -> tuple[str, str]:
     """Resolve the interactive prompt-rewrite route independently of Manager chat."""
-    from ..agent_cli.runner_backend import normalize_runner_backend
     from ..core.knobs import (
-        resolve_knob,
-        resolve_role_backend,
-        resolve_role_model,
+        resolve_cheap_route_model,
         resolve_role_reasoning_effort,
     )
 
-    manager_model = resolve_role_model(
-        "manager",
+    model = resolve_cheap_route_model(
+        knob="ARGUS_SKILL_REWRITE_MODEL",
+        # Rewrite has always used the full mid-tier id here rather than the
+        # mini the other three cheap routes take; keep that on the backends
+        # where it resolves, and fall back to the Manager model elsewhere.
+        catalog_default="gpt-5.5",
+        role="manager",
         role_env="ARGUS_SKILL_MANAGER_MODEL",
     )
-    preview_model = resolve_knob(
-        "ARGUS_SKILL_REWRITE_MODEL",
-        "gpt-5.5",
-    ).value.strip()
-    if preview_model.lower() in {"", "auto", "inherit", "default"}:
-        manager_backend = normalize_runner_backend(resolve_role_backend("manager"))
-        model = (
-            "gpt-5.4-mini"
-            if manager_backend in {"codex", "copilot", "pi"}
-            else manager_model
-        )
-    else:
-        model = preview_model
     effort = resolve_role_reasoning_effort(
         "ARGUS_SKILL_REWRITE_REASONING_EFFORT",
         default="high",
@@ -506,53 +731,3 @@ def manager_rewrite(
         "questions": list(rewrite.questions),
         "error": rewrite.error,
     }
-
-
-# --- Re-exports -------------------------------------------------------------
-# Everything below moved out of this module into manager_state.py /
-# manager_pending_question.py / manager_dispatch.py as part of a
-# behavior-preserving decomposition. These plain attribute assignments keep
-# every previously-importable ``manager_bridge.X`` name (including names
-# exercised via ``monkeypatch.setattr(manager_bridge, "X", ...)`` in tests)
-# resolvable exactly as before.
-
-# manager_state.py
-_STATES = manager_state._STATES
-_LOCKS = manager_state._LOCKS
-_REGISTRY_LOCK = manager_state._REGISTRY_LOCK
-_MANAGER_PREWARMING = manager_state._MANAGER_PREWARMING
-_MANAGER_PREWARMING_LOCK = manager_state._MANAGER_PREWARMING_LOCK
-manager_context_lock = manager_state.manager_context_lock
-_release_manager_state = manager_state._release_manager_state
-release_manager_context = manager_state.release_manager_context
-_prewarm_manager_context = manager_state._prewarm_manager_context
-schedule_manager_prewarm = manager_state.schedule_manager_prewarm
-_rotate_after = manager_state._rotate_after
-reset_manager_context = manager_state.reset_manager_context
-shutdown_manager_bridge = manager_state.shutdown_manager_bridge
-
-# manager_pending_question.py
-_parse_pending_question_decision = (
-    manager_pending_question._parse_pending_question_decision
-)
-_resolve_pending_question_with_manager = (
-    manager_pending_question._resolve_pending_question_with_manager
-)
-manager_answer_pending_question = (
-    manager_pending_question.manager_answer_pending_question
-)
-manager_resolve_operator_decision = (
-    manager_pending_question.manager_resolve_operator_decision
-)
-record_task_dispatch_ack = manager_pending_question.record_task_dispatch_ack
-
-# manager_dispatch.py
-_NO_DISPATCH_FALLBACK = manager_dispatch._NO_DISPATCH_FALLBACK
-_authorization_workdir = manager_dispatch._authorization_workdir
-_project_paths_overlap = manager_dispatch._project_paths_overlap
-manager_execution_handoff = manager_dispatch.manager_execution_handoff
-manager_continuous_handoff = manager_dispatch.manager_continuous_handoff
-disable_manager_continuous = manager_dispatch.disable_manager_continuous
-manager_bounded_handoff = manager_dispatch.manager_bounded_handoff
-_journal_argus_reply = manager_dispatch._journal_argus_reply
-_ClassifyResult = manager_dispatch._ClassifyResult

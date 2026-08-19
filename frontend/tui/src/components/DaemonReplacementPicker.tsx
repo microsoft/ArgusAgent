@@ -14,6 +14,37 @@ export interface DaemonReplacementState {
   error: string;
 }
 
+export interface DaemonReplacementKey {
+  ctrl?: boolean;
+  escape?: boolean;
+  downArrow?: boolean;
+  upArrow?: boolean;
+  return?: boolean;
+}
+
+export type DaemonReplacementInputIntent =
+  | 'exit'
+  | 'dismiss'
+  | 'next'
+  | 'previous'
+  | 'replace'
+  | null;
+
+/** Resolve modal input before dispatching any asynchronous replacement action. */
+export function daemonReplacementInputIntent(
+  state: DaemonReplacementState,
+  input: string,
+  key: DaemonReplacementKey,
+): DaemonReplacementInputIntent {
+  if (key.ctrl && (input === 'c' || input === 'd')) return 'exit';
+  if (key.escape) return 'dismiss';
+  if (state.busy) return null;
+  if (key.downArrow || input === 'j') return 'next';
+  if (key.upArrow || input === 'k') return 'previous';
+  if (key.return) return 'replace';
+  return null;
+}
+
 const clip = (value: string, max: number): string =>
   value.length <= max ? value : `${value.slice(0, Math.max(1, max - 1))}…`;
 

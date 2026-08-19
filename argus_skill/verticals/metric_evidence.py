@@ -23,6 +23,7 @@ _SPEEDRUN_METRICS = {
     "metric_value",
 }
 _NANOGPT_TIMING_METRICS = {"seconds_to_target", "wall_seconds"}
+_NANOGPT_LOSS_FIELDS = {"val_loss", "final_val_loss"}
 _CORRECT_FIELDS = ("correct", "is_correct")
 _SOL_FIELDS = ("sol_pct", "sol", "sol_score")
 _MATH_SYNTH_METRICS = {"score", "pass_gap", "mean_pass_gap"}
@@ -115,20 +116,36 @@ def validate_speedrun_evidence(project_root: Path) -> Path:
 
 
 def validate_nanogpt_evidence(project_root: Path) -> Path:
-    """Return a results CSV containing a finite non-negative timing metric."""
+    """Return a real 8xH100 result that reached the fixed 3.28 loss target."""
     for path in _candidate_csvs(project_root, "results.csv"):
         fields, rows = _csv_rows(path)
         timing_fields = fields & _NANOGPT_TIMING_METRICS
-        if any(
-            number >= 0
-            for row in rows
-            for field in timing_fields
-            if (number := _finite_number(row.get(field))) is not None
-        ):
-            return path
+        loss_fields = fields & _NANOGPT_LOSS_FIELDS
+        for row in rows:
+            timings = [
+                number
+                for field in timing_fields
+                if (number := _finite_number(row.get(field))) is not None
+            ]
+            losses = [
+                number
+                for field in loss_fields
+                if (number := _finite_number(row.get(field))) is not None
+            ]
+            gpu_count = _finite_number(row.get("gpu_count"))
+            gpu_model = str(row.get("gpu_model") or "").strip().lower()
+            if (
+                timings
+                and all(number >= 0 for number in timings)
+                and losses
+                and min(losses) <= 3.28
+                and gpu_count == 8
+                and "h100" in gpu_model
+            ):
+                return path
     raise EvidenceError(
-        "no attempts/**/results.csv or experiments/**/results.csv contains a "
-        "finite non-negative seconds_to_target or wall_seconds"
+        "no results row proves a finite non-negative seconds_to_target, "
+        "val_loss<=3.28, gpu_count=8, and gpu_model=H100"
     )
 
 

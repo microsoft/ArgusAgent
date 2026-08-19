@@ -254,10 +254,10 @@ def _resume_matches_manager_handoff(
         return False
     from ..skills.vertical_select import _persisted_domain, _persisted_vertical
 
-    vertical = _persisted_vertical(cfg.project_workdir or runtime_root)
+    vertical = _persisted_vertical(runtime_root)
     if not vertical:
         return False
-    domain = _persisted_domain(cfg.project_workdir or runtime_root) or ""
+    domain = _persisted_domain(runtime_root) or ""
     identity = _read_manager_handoff_identity(runtime_root)
     if not _manager_handoff_identity_matches(
         identity,
@@ -333,6 +333,9 @@ def _preflight_route_on_codex(route: str) -> bool:
         "claude",
         "opencode",
         "pi",
+        "grok",
+        "qoder",
+        "dsh",
     }:
         return True
     role_bin = (

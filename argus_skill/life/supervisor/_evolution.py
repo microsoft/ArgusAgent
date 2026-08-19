@@ -48,9 +48,13 @@ class EvolutionMixin:
         *,
         success: bool,
         usage_mission_id: str,
+        mission_objective: str = "",
+        mission_result: str = "",
     ) -> dict[str, int]:
         """Propagate reviewed project Skills into shared runtime layers."""
-        if not success:
+        if not bool(
+            getattr(self.config, "role_skill_maintenance_enabled", True)
+        ):
             return {"to_shared": 0, "to_vertical_shared": 0, "errors": 0}
 
         set_usage = getattr(self.runner, "_set_usage_context", None)
@@ -67,15 +71,19 @@ class EvolutionMixin:
                     self.runner,
                     project_state_dir=_project_state_root(self.memory),
                     shared_root=_shared_skills_root(self.runner, self.memory),
+                    mission_objective=mission_objective,
+                    mission_success=success,
+                    mission_result=mission_result,
                     on_event=self._emit,
                 ))
-            from ...manager.domain_tidy import tidy_domains_after_mission
+            if success:
+                from ...manager.domain_tidy import tidy_domains_after_mission
 
-            tidy_domains_after_mission(
-                self._project_workdir(),
-                approve=None,
-                on_event=self._emit,
-            )
+                tidy_domains_after_mission(
+                    self._project_workdir(),
+                    approve=None,
+                    on_event=self._emit,
+                )
             if any(counts.values()):
                 log.info("manager skill propagation after mission: %s", counts)
             return counts

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 _ROLE_LABELS = {
+    "self": "SELF",
     "engineer": "Engineer",
     "reviewer": "Reviewer",
     "planner": "Planner",
@@ -32,6 +33,21 @@ def project_role_skill_dir(skill_store: Any, role: str) -> Path | None:
     return Path(root).expanduser().resolve() / normalized
 
 
+def profile_role_skill_dir(skill_store: Any, role: str) -> Path | None:
+    """Return the cross-session profile directory owned by ``role``."""
+    global_store = getattr(skill_store, "global_", None)
+    root = getattr(global_store, "skills_dir", None)
+    normalized = (role or "").strip().lower()
+    if root is None or normalized not in _ROLE_LABELS:
+        return None
+    return Path(root).expanduser().resolve() / normalized
+
+
+def profile_self_skill_dir(skill_store: Any) -> Path | None:
+    """Return the cross-session SELF Skill directory."""
+    return profile_role_skill_dir(skill_store, "self")
+
+
 def role_skill_edit_rules(role: str, skill_dir: Path | str) -> str:
     """Render the shared agent-native edit rules for one role."""
     label = _ROLE_LABELS[(role or "").strip().lower()]
@@ -40,7 +56,10 @@ def role_skill_edit_rules(role: str, skill_dir: Path | str) -> str:
         "Inspect existing Markdown first. Each Skill has exactly `name` and "
         "`description` frontmatter followed by Markdown. Use an explicit semantic "
         "path, update a related Skill instead of duplicating it, and never write "
-        "shared/global layers."
+        "shared/global layers. Keep only reusable procedures and checklists here; "
+        "when a shared project Wiki is listed in the prompt, route durable project "
+        "facts, contracts, support limits, environment constraints, and scoped "
+        "measurements to that Wiki instead."
     )
 
 
@@ -68,6 +87,8 @@ def role_skill_maintenance_block(
 
 
 __all__ = [
+    "profile_role_skill_dir",
+    "profile_self_skill_dir",
     "project_role_skill_dir",
     "role_skill_edit_rules",
     "role_skill_maintenance_enabled",

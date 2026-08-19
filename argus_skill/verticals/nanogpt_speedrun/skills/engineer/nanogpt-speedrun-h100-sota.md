@@ -16,7 +16,7 @@ Optimize `solution/train.py` and `solution/triton_kernels.py` for Recursive "Fir
 
 ## When NOT to use
 - The task is KernelBench/SOL GPU kernel optimization; use `SOL Kernel SOTA Optimization` or `SOL Kernel Hands-on Trace`.
-- The task is NanoChat/BPB pretraining on one GPU; use `NanoChat Pretrain Runner`.
+- The task is NanoChat/BPB pretraining; follow that project's frozen harness and NanoChat vertical instead.
 - The frozen Task 2 environment is missing and cannot be restored; write a blocker report instead of changing comparability.
 
 ## Non-negotiable contract
@@ -30,7 +30,8 @@ Optimize `solution/train.py` and `solution/triton_kernels.py` for Recursive "Fir
 
 - Validity requires `p(mean val_loss < 3.28) < 0.01`.
 - Score is mean `train_time` among valid candidates.
-- Use `ssh h100`; the real scoring interpreter is `/scratch/nano/envs/sr210/bin/python`.
+- Use the remote command and frozen scoring interpreter declared by the mission
+  manifest; do not assume a host alias or filesystem path.
 - Do not alter val data, val loss, target, t-test, scorer, FA3 environment, or timing protocol.
 - Do not search for leaked "best"/"optimized"/answer recipes. Discover your own speedups.
 
@@ -73,14 +74,23 @@ Use these as **priors**, not as eternal truth. Re-open `experiments/*/RESULT.md`
 Before launching a new candidate:
 
 1. Read `TASK.md`, `AGENTS.md`, `research/GROUND_TRUTH.md`, `research/PROFILE.md`, `research/TECHNIQUE_NOTES.md`, and `experiments/OPTIMIZATION_LEDGER.md`.
-2. Check whether a run is already active:
+2. Initialize the runtime values from the mission manifest:
 
 ```bash
-ssh h100 'ps -eo pid,etime,cmd | grep -E "torchrun|train.py|run_sweep|eval_solution" | grep -v grep || true'
+export NANOGPT_REMOTE='<remote from mission manifest>'
+export NANOGPT_BENCH_ROOT='<benchmark root from mission manifest>'
+export NANOGPT_PYTHON='<frozen Python interpreter from mission manifest>'
+test -n "$NANOGPT_REMOTE" -a -n "$NANOGPT_BENCH_ROOT" -a -n "$NANOGPT_PYTHON"
 ```
 
-3. If a prior run is complete but uncollected, collect it first. Do not start another run over uncollected evidence.
-4. Confirm current `solution/` hashes and identify which previous candidate it corresponds to.
+3. Check whether a run is already active:
+
+```bash
+ssh "$NANOGPT_REMOTE" 'ps -eo pid,etime,cmd | grep -E "torchrun|train.py|run_sweep|eval_solution" | grep -v grep || true'
+```
+
+4. If a prior run is complete but uncollected, collect it first. Do not start another run over uncollected evidence.
+5. Confirm current `solution/` hashes and identify which previous candidate it corresponds to.
 
 ### 2. Maintain two lines of state
 - **GLOBAL BEST/FLOOR**: lowest valid scorer-certified time. Never overwrite it with an invalid or merely faster run.
@@ -153,22 +163,20 @@ n=10 val_loss=3.2776±0.0022 p=0.004007 train_time=79.77±0.06s
 Lesson: this breaks the local 80.16s N=3 floor and is near the public record, but still does not beat the 77.3s frontier. Treat it as the current certified baseline unless a fresher valid N≥10 result exists.
 
 ## H100 connection instructions
-- `ssh h100` reaches the 8×H100 Singularity pod via local port 2210.
-- Verify the exact stack:
+- Read `$NANOGPT_REMOTE`, `$NANOGPT_BENCH_ROOT`, and `$NANOGPT_PYTHON`
+  from the mission manifest. Verify the exact stack instead of assuming access:
 
 ```bash
-ssh h100 '/scratch/nano/envs/sr210/bin/python - <<PY
-import torch, triton
-print(torch.__version__)
-print(torch.cuda.is_available(), torch.cuda.device_count())
-print(triton.__version__)
-PY'
+ssh "$NANOGPT_REMOTE" "$NANOGPT_PYTHON -c \
+  \"import torch, triton; print(torch.__version__); \
+  print(torch.cuda.is_available(), torch.cuda.device_count()); \
+  print(triton.__version__)\""
 ```
 
 - Check GPU saturation during runs:
 
 ```bash
-ssh h100 'nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total,power.draw --format=csv,noheader,nounits'
+ssh "$NANOGPT_REMOTE" 'nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total,power.draw --format=csv,noheader,nounits'
 ```
 
 All eight GPUs should be busy during `torchrun --nproc_per_node=8`.

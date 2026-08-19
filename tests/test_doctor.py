@@ -8,9 +8,13 @@ real network call.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
 
 from argus_skill.webapi.diagnostics import Check, render_report, run_diagnostics
 
@@ -59,6 +63,137 @@ def test_render_report_all_green_has_no_recommendation():
     report = render_report([Check("daemon", True, "running (pid 5)", "")])
     assert "all checks passed" in report
     assert "→ recommended:" not in report
+
+
+def test_doctor_json_uses_stable_codes() -> None:
+    from argus_skill.apps.cli._core import _doctor_payload
+
+    payload = _doctor_payload([Check("lock sanity", False, "stale", "repair")])
+
+    assert payload["schema_version"] == 1
+    assert payload["ok"] is False
+    assert payload["checks"][0]["code"] == "ARGUS-STATE-001"
+
+
+def test_full_doctor_forwards_explicit_backend_contract(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from argus_skill.maintenance.doctor import DoctorContext, run_full_doctor
+    from argus_skill.webapi import diagnostics
+
+    seen = {}
+
+    def fake_diagnostics(project_root, **kwargs):
+        seen["project_root"] = project_root
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(diagnostics, "run_diagnostics", fake_diagnostics)
+    context = DoctorContext(
+        global_root=tmp_path,
+        project_root=tmp_path / "project",
+        backend="copilot",
+        auth_mode="subscription_cli",
+        allow_prerelease=True,
+    )
+
+    run_full_doctor(context, probe_auth=True)
+
+    assert seen == {
+        "project_root": context.project_root,
+        "global_root": context.global_root,
+        "backend": "copilot",
+        "auth_mode": "subscription_cli",
+        "probe_auth": True,
+        "allow_prerelease": True,
+    }
+
+
+def test_cli_maintenance_context_keeps_explicit_backend_contract(
+    tmp_path: Path,
+) -> None:
+    from argus_skill.apps.cli import _core
+
+    context = _core._maintenance_context(
+        SimpleNamespace(
+            life_dir=str(tmp_path),
+            resume="",
+            backend="copilot",
+            auth_mode="subscription_cli",
+            allow_prerelease=True,
+            web_host="127.0.0.1",
+            web_port=8799,
+        )
+    )
+
+    assert context.backend == "copilot"
+    assert context.auth_mode == "subscription_cli"
+    assert context.allow_prerelease is True
+
+
+def test_backend_probe_flags_do_not_change_repair_target_fingerprint(
+    tmp_path: Path,
+) -> None:
+    from argus_skill.maintenance.doctor import DoctorContext
+
+    base = DoctorContext(global_root=tmp_path, project_root=tmp_path / "project")
+    selected = DoctorContext(
+        global_root=tmp_path,
+        project_root=tmp_path / "project",
+        backend="copilot",
+        auth_mode="subscription_cli",
+        allow_prerelease=True,
+    )
+
+    assert selected.target_fingerprint == base.target_fingerprint
+
+
+def test_frozen_doctor_does_not_require_system_node(tmp_path) -> None:
+    from argus_skill.maintenance.doctor import DoctorContext, _runtime_findings
+
+    findings = _runtime_findings(DoctorContext(
+        global_root=tmp_path,
+        project_root=tmp_path,
+        python_executable=Path(sys.executable),
+        install_mode="frozen",
+    ))
+    node = next(item for item in findings if item.code == "ARGUS-NODE-001")
+
+    assert node.ok is True
+    assert node.status == "bundled_runtime"
+
+
+def test_safe_repair_removes_only_a_verified_stale_daemon_pid(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    from argus_skill.apps.cli import _core
+    from argus_skill.maintenance.doctor import DoctorContext
+
+    pid_path = tmp_path / "daemon.pid"
+    pid_path.write_text("2000000000\n", encoding="ascii")
+    context = DoctorContext(
+        global_root=tmp_path / "state",
+        project_root=tmp_path,
+        checkout=Path(__file__).resolve().parents[1],
+        python_executable=Path(sys.executable),
+    )
+    monkeypatch.setattr(_core, "_maintenance_context", lambda _args: context)
+
+    rc = _core._cmd_repair(
+        SimpleNamespace(safe=True, plan=False, json=True)
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc in {0, 3}  # consent/manual findings may remain after SAFE actions
+    assert not pid_path.exists()
+    stale = next(
+        item for item in payload["actions"]
+        if item["id"] == "remove_verified_stale_daemon_pid"
+    )
+    assert stale["status"] == "applied"
 
 
 def test_render_report_with_theme_is_failsoft():
@@ -242,6 +377,8 @@ def test_backend_preflight_defaults_to_codex_with_original_install_hint(
     monkeypatch.delenv("ARGUS_SKILL_RUNNER_BACKEND", raising=False)
     monkeypatch.delenv("ARGUS_SKILL_LIFE_BACKEND", raising=False)
     monkeypatch.delenv("ARGUS_SKILL_RUNNER_BIN", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
     monkeypatch.setattr("shutil.which", lambda name: None)
 
     check = _check_backend_preflight()

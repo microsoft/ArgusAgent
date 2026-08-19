@@ -19,12 +19,12 @@ from pathlib import Path
 
 import pytest
 
-from argus_skill.skills.venue_profiles import AAAI_PROFILE
 from argus_skill.verticals.research.paper_structural_minimums import (
     StructuralReport,
     _append_venue_compliance_issues,
     _strip_comments,
 )
+from argus_skill.verticals.research.venue_profiles import AAAI_PROFILE
 
 _KIT_CANDIDATES = [
     os.environ.get("ARGUS_SKILL_AAAI_KIT", ""),

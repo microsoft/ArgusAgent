@@ -295,6 +295,7 @@ def test_cli_archive_writes_persisted_state(tmp_path: Path) -> None:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=_cli_env(tmp_path),
     )
     assert proc.returncode == 0, proc.stderr
@@ -316,6 +317,7 @@ def test_cli_resume_refuses_non_quarantined(tmp_path: Path) -> None:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=_cli_env(tmp_path),
     )
     # Fresh project is incubating, not quarantined → resume refuses.
@@ -339,6 +341,7 @@ def test_cli_lifecycle_transition_aborts_when_explicit_session_is_missing(
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=_cli_env(tmp_path),
     )
 
@@ -377,6 +380,7 @@ def test_cli_resume_after_quarantine_returns_to_running(tmp_path: Path) -> None:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=_cli_env(tmp_path),
     )
     assert proc.returncode == 0, proc.stderr
@@ -411,6 +415,7 @@ def test_cli_status_shows_persisted_marker(tmp_path: Path) -> None:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=_cli_env(tmp_path),
     )
     assert proc.returncode == 0, proc.stderr
@@ -432,6 +437,7 @@ def test_cli_mutual_exclusion_blocks_two_lifecycle_flags(tmp_path: Path) -> None
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert proc.returncode == 2
     assert "mutually exclusive" in proc.stderr
@@ -459,11 +465,11 @@ class _GateStub:
         *,
         project_root: Path,
         memory_root: Path,
-        full_paper_gate: bool,
+        final_certification_gate: bool,
         certified: bool,
     ) -> None:
         memory_root.mkdir(parents=True, exist_ok=True)
-        self.config = SimpleNamespace(full_paper_gate=full_paper_gate)
+        self.config = SimpleNamespace(final_certification_gate=final_certification_gate)
         self.journal_entries: list[object] = []
         self.emitted: list[str] = []
         self.events: list[dict] = []
@@ -487,13 +493,13 @@ class _GateStub:
     def _lifecycle_budget_snapshot(self) -> tuple[float, float]:
         return (0.0, 0.0)
 
-    def _journal_has_full_paper_gate_success(self) -> bool:
+    def _journal_has_final_certification(self) -> bool:
         return self._certified
 
-    def _effective_full_paper_gate(self, _workdir: object) -> bool:
+    def _effective_final_certification_gate(self, _workdir: object) -> bool:
         # These gate tests model a default-research project, where the
         # vertical-effective gate equals the raw config flag.
-        return bool(self.config.full_paper_gate)
+        return bool(self.config.final_certification_gate)
 
     def _emit_status(self, text: str) -> None:
         self.emitted.append(text)
@@ -523,7 +529,7 @@ def test_gate_suppresses_premature_done_for_uncertified_emnlp(tmp_path: Path) ->
     stub = _GateStub(
         project_root=_with_preflight_pdf(tmp_path),
         memory_root=tmp_path / "mem",
-        full_paper_gate=True,
+        final_certification_gate=True,
         certified=False,
     )
     result = stub.block()
@@ -553,7 +559,7 @@ def test_gate_repairs_existing_persisted_done_once(tmp_path: Path) -> None:
     stub = _GateStub(
         project_root=_with_preflight_pdf(tmp_path),
         memory_root=memory_root,
-        full_paper_gate=True,
+        final_certification_gate=True,
         certified=False,
     )
     result = stub.block()
@@ -563,7 +569,7 @@ def test_gate_repairs_existing_persisted_done_once(tmp_path: Path) -> None:
     # repair preserved prior history and appended the repair event
     history = load_history(memory_root)
     assert history[-1].to_state == ProjectState.WRITING
-    assert history[-1].reason == "full_paper_gate_not_certified"
+    assert history[-1].reason == "final_certification_gate_not_certified"
     assert any(h.reason == "submission_artifact_present" for h in history)
     assert any(
         event.get("type") == "life.lifecycle.transition" and event.get("to_state") == "writing"
@@ -575,7 +581,7 @@ def test_gate_repairs_existing_persisted_done_once(tmp_path: Path) -> None:
     stub2 = _GateStub(
         project_root=stub._project_root,
         memory_root=memory_root,
-        full_paper_gate=True,
+        final_certification_gate=True,
         certified=False,
     )
     assert stub2.block() is None
@@ -588,7 +594,7 @@ def test_gate_allows_done_when_reviewer_certified(tmp_path: Path) -> None:
     stub = _GateStub(
         project_root=_with_preflight_pdf(tmp_path),
         memory_root=tmp_path / "mem",
-        full_paper_gate=True,
+        final_certification_gate=True,
         certified=True,
     )
     result = stub.block()
@@ -601,7 +607,7 @@ def test_gate_does_not_treat_generic_pdf_as_project_completion(tmp_path: Path) -
     stub = _GateStub(
         project_root=_with_preflight_pdf(tmp_path),
         memory_root=tmp_path / "mem",
-        full_paper_gate=False,
+        final_certification_gate=False,
         certified=False,
     )
     result = stub.block()
@@ -617,7 +623,7 @@ def test_lifecycle_block_is_deduped_across_repeated_ticks(tmp_path: Path) -> Non
     stub = _GateStub(
         project_root=_with_preflight_pdf(tmp_path),
         memory_root=tmp_path / "mem",
-        full_paper_gate=True,
+        final_certification_gate=True,
         certified=True,
     )
     results = [stub.block() for _ in range(5)]
@@ -676,11 +682,13 @@ def test_planner_waiting_records_external_dependency_status(tmp_path: Path) -> N
     sup.config = SimpleNamespace(
         continuous_objective="finish draft gate",
         budget=_Budget(),
-        full_paper_gate=False,
+        final_certification_gate=False,
     )
     sup.planner_runner = _PlannerRunner()
     sup.skill_store = None
     sup.runner = SimpleNamespace(stream_to=None)
+    sup.manager = None
+    sup._vertical_resolved = True
     sup.sink = None
     sup.reviewer_model = "gpt-5.5"
     sup._planning_cycles = 0

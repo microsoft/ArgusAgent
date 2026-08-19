@@ -5,9 +5,10 @@ Recovery from a session-mode error is covered by
 """
 from __future__ import annotations
 
-import fcntl
 import time
 from pathlib import Path
+
+import portalocker
 
 from argus_skill.manager._session_ops import _acquire_session_lock, _ManagerSession
 
@@ -40,7 +41,7 @@ def test_lock_acquire_is_bounded_then_succeeds_when_free(tmp_path: Path) -> None
     # turn can't freeze the other process indefinitely.
     lock = tmp_path / "l.lock"
     holder = lock.open("a+b")
-    fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+    portalocker.lock(holder, portalocker.LOCK_EX)
     try:
         waiter = lock.open("a+b")
         t0 = time.monotonic()
@@ -48,7 +49,7 @@ def test_lock_acquire_is_bounded_then_succeeds_when_free(tmp_path: Path) -> None
         assert time.monotonic() - t0 >= 0.3  # actually waited ~the budget, didn't block forever
         waiter.close()
     finally:
-        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+        portalocker.unlock(holder)
         holder.close()
     free = lock.open("a+b")
     assert _acquire_session_lock(free, timeout=0.4) is True  # acquires once free

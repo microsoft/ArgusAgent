@@ -11,12 +11,15 @@ plane contains no liveness timestamp.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
 from . import _store
 
 _DEFAULT: dict[str, Any] = {"state": "running"}
+_STATES = frozenset({"running", "draining", "dissolved"})
+_MAX_WIDTH_ENV = "ARGUS_TEAM_MAX_WIDTH"
 
 
 def _path(root: Path) -> Path:
@@ -50,8 +53,19 @@ def update(
     with _store.locked(_lock(root)):
         doc = read(root)
         if width is not None:
-            doc["width"] = int(width)
+            normalized_width = int(width)
+            maximum_width = int(os.environ.get(_MAX_WIDTH_ENV, "64"))
+            if normalized_width < 0 or maximum_width <= 0:
+                raise ValueError("team pool width bounds must be non-negative")
+            if normalized_width > maximum_width:
+                raise ValueError(
+                    f"team pool width {normalized_width} exceeds "
+                    f"{_MAX_WIDTH_ENV}={maximum_width}"
+                )
+            doc["width"] = normalized_width
         if state is not None:
+            if state not in _STATES:
+                raise ValueError(f"unsupported team pool state: {state!r}")
             doc["state"] = state
         _store.atomic_write_json(_path(root), doc)
         return doc

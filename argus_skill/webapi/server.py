@@ -37,12 +37,14 @@ import json
 import logging
 import os
 import queue
+import re
 import threading  # noqa: F401 - used via server.threading in tests/webapi/test_commands_m1.py
 import time
 from pathlib import Path
 from typing import Any
 
 from ..apps.cli._follow import (
+    _merge_recent_event_rows,
     _read_recent_jsonl_events,
     _read_recent_project_events,  # noqa: F401 - used via server_mod._read_recent_project_events in webapi/routes/projects.py
 )
@@ -89,6 +91,44 @@ from . import artifacts, project_state
 from .protocol import build_api_meta, protocol_header
 
 log = logging.getLogger(__name__)
+
+_QUIET_ACCESS_PATHS = re.compile(
+    r"^/api/projects(?:/costs|/[^/]+/(?:snapshot|artifacts|git-diff|status|journal))?$"
+)
+
+
+class _PollingAccessFilter(logging.Filter):
+    """Hide successful dashboard refreshes while retaining actionable traffic."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if not isinstance(args, tuple) or len(args) < 5:
+            return True
+        method = str(args[1]).upper()
+        path = str(args[2]).partition("?")[0]
+        try:
+            status = int(args[4])
+        except (TypeError, ValueError):
+            return True
+        return not (
+            method in {"GET", "HEAD"}
+            and 200 <= status < 400
+            and _QUIET_ACCESS_PATHS.fullmatch(path) is not None
+        )
+
+
+def _uvicorn_log_config(uvicorn_module: Any) -> dict[str, Any]:
+    """Return Uvicorn defaults with successful dashboard polling filtered."""
+    import copy
+
+    config = copy.deepcopy(uvicorn_module.config.LOGGING_CONFIG)
+    config.setdefault("filters", {})["argus_polling"] = {
+        "()": _PollingAccessFilter,
+    }
+    config["handlers"]["access"]["filters"] = ["argus_polling"]
+    return config
+
+
 _global_root = project_state.resolve_global_root
 _settled_spend = project_state.settled_spend
 build_snapshot = project_state.build_snapshot
@@ -256,7 +296,13 @@ def _iter_manager_stream_items(
 # backlog/inbox files directly. Each returns None if the project is unknown.
 # ---------------------------------------------------------------------------
 
-from . import daemon_lifecycle, daemon_upgrade, mission_items, project_crud
+from . import (
+    daemon_lifecycle,
+    daemon_upgrade,
+    manager_pending_question,
+    mission_items,
+    project_crud,
+)
 
 _SCHEDULED_DAEMON_UPGRADES = daemon_upgrade._SCHEDULED_DAEMON_UPGRADES
 _SCHEDULED_DAEMON_UPGRADES_LOCK = daemon_upgrade._SCHEDULED_DAEMON_UPGRADES_LOCK
@@ -292,8 +338,8 @@ _enqueue_task_unlocked = mission_items._enqueue_task_unlocked
 enqueue_task = mission_items.enqueue_task
 enqueue_task_command = mission_items.enqueue_task_command
 enqueue_nudge = mission_items.enqueue_nudge
-answer_pending_question = mission_items.answer_pending_question
-resolve_operator_decision = mission_items.resolve_operator_decision
+answer_pending_question = manager_pending_question.manager_answer_pending_question
+resolve_operator_decision = manager_pending_question.manager_resolve_operator_decision
 get_status = mission_items.get_status
 get_journal = mission_items.get_journal
 add_project_note = mission_items.add_project_note
@@ -328,6 +374,52 @@ def _is_inner_monologue(event: object) -> bool:
     return isinstance(event, dict) and str(event.get("kind") or "").strip() == "reasoning"
 
 
+def _read_replay_snapshot(
+    path: Path,
+    *,
+    limit: int,
+    max_bytes: int = 256 * 1024,
+) -> tuple[list[dict[str, Any]], int, int | None]:
+    """Read replay rows and their exact complete-line byte boundary once.
+
+    Reading from one open file description prevents an append from appearing
+    in the replay while the tail still starts at an older separately-statted
+    offset. The final unterminated JSONL record is deliberately left for the
+    live tail to finish.
+    """
+    limit = max(0, int(limit))
+    try:
+        with path.open("rb") as fh:
+            inode = os.fstat(fh.fileno()).st_ino
+            size = fh.seek(0, os.SEEK_END)
+            start = max(0, size - max(1, int(max_bytes)))
+            fh.seek(start)
+            raw = fh.read(size - start)
+    except OSError:
+        return [], 0, None
+    last_newline = raw.rfind(b"\n")
+    if last_newline < 0:
+        return [], (0 if start == 0 else size), inode
+    offset = start + last_newline + 1
+    complete = raw[: last_newline + 1]
+    if start:
+        _, separator, complete = complete.partition(b"\n")
+        if not separator:
+            complete = b""
+    rows: list[dict[str, Any]] = []
+    for raw_line in complete.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if isinstance(event, dict):
+            rows.append(event)
+    return ([] if limit == 0 else rows[-limit:]), offset, inode
+
+
 async def tail_events(
     life_dir: Path,
     *,
@@ -346,18 +438,15 @@ async def tail_events(
     """
     path = life_dir / EVENT_FILE
 
-    # Fix the tail baseline BEFORE replaying, so an event appended between the
-    # replay snapshot and the first poll is neither dropped nor duplicated:
-    # replay covers up to `offset`, the tail covers everything strictly after.
-    offset = 0
-    inode: int | None = None
-    if path.exists():
-        stat = path.stat()
-        offset = stat.st_size
-        inode = stat.st_ino
+    current, offset, inode = _read_replay_snapshot(path, limit=replay_limit)
+    previous = _read_recent_jsonl_events(
+        path.with_name(path.name + ".1"),
+        limit=replay_limit,
+    ) if replay_limit > 0 else []
+    replay = _merge_recent_event_rows(previous, current, limit=replay_limit)
 
     hide = _hides_inner_monologue()
-    for ev in _read_recent_jsonl_events(path, limit=replay_limit):
+    for ev in replay:
         if hide and _is_inner_monologue(ev):
             continue
         yield ev
@@ -511,7 +600,7 @@ def create_app(
         # old Web process can remain resident after Uvicorn shuts down, leaving
         # stale Copilot processes alive across repeated cockpit launches.
         try:
-            from .manager_bridge import shutdown_manager_bridge
+            from .manager_state import shutdown_manager_bridge
 
             shutdown_manager_bridge()
         except Exception:  # noqa: BLE001
@@ -538,6 +627,7 @@ def create_app(
     from .routes.meta import register_meta_routes
     from .routes.projects import register_project_routes
     from .routes.workitems import register_workitem_routes
+    from .routes.workspace_v2 import register_workspace_v2_routes
 
     ctx = ServerContext(
         global_root=global_root,
@@ -567,6 +657,7 @@ def create_app(
     register_artifact_routes(app, ctx, server_mod)
     register_manager_routes(app, ctx, server_mod)
     register_meta_routes(app, ctx, server_mod)
+    register_workspace_v2_routes(app, ctx, server_mod)
 
     # ── static web UI (optional) ──────────────────────────────────────────
     # When the React frontend has been built (`npm run build` in frontend/web),
@@ -605,5 +696,6 @@ def serve(
         host=host,
         port=port,
         log_level="info",
+        log_config=_uvicorn_log_config(uvicorn),
     )
     return 0

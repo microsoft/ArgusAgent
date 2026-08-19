@@ -187,6 +187,14 @@ def test_tool_activity_detector_covers_codex_items_and_plain_text() -> None:
             "item": {"type": "agent_message", "text": "finished"},
         }
     )
+    for event_type in (
+        "mcp.tools.list_changed",
+        "session.mcp_servers_loaded",
+        "session.mcp_server_status_changed",
+        "session.tools_updated",
+        "session.skills_loaded",
+    ):
+        assert not AgentCliRunner._event_has_tool_activity({"type": event_type})
 
 
 def test_clean_exit_with_message_but_no_terminal_result_fails_closed(
@@ -430,6 +438,27 @@ def test_engineer_turn_wall_clock_default_and_override(monkeypatch) -> None:
     assert _turn_wall_clock_seconds("engineer-r7") == 90
     monkeypatch.setenv("ARGUS_SKILL_ENGINEER_TURN_MAX_SECONDS", "0")
     assert _turn_wall_clock_seconds("engineer-r7") == 0
+
+
+@pytest.mark.parametrize(
+    "run_label",
+    [
+        "manager-classify-grounded",
+        "manager.skill_placement",
+        "router-classify",
+        "simple-1",
+        "chat-1",
+    ],
+)
+def test_manager_turn_wall_clock_is_bounded_by_default(monkeypatch, run_label: str) -> None:
+    monkeypatch.delenv("ARGUS_SKILL_MANAGER_TURN_MAX_SECONDS", raising=False)
+
+    assert _turn_wall_clock_seconds(run_label) == 300
+
+    monkeypatch.setenv("ARGUS_SKILL_MANAGER_TURN_MAX_SECONDS", "45")
+    assert _turn_wall_clock_seconds(run_label) == 45
+    monkeypatch.setenv("ARGUS_SKILL_MANAGER_TURN_MAX_SECONDS", "0")
+    assert _turn_wall_clock_seconds(run_label) == 0
 
 
 def test_scientist_skill_distill_wall_clock_is_opt_in(monkeypatch) -> None:

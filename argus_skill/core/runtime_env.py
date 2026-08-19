@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import shlex
+import stat as stat_module
+import sys
 from collections.abc import MutableMapping
 from pathlib import Path
 
@@ -16,6 +18,58 @@ _ALLOWED_KEYS = frozenset({
 })
 
 
+def _path_key(value: str) -> str:
+    """Return a platform-aware comparison key without changing the PATH entry."""
+    return os.path.normcase(os.path.abspath(os.path.expanduser(value)))
+
+
+def configure_framework_python_env(
+    env: MutableMapping[str, str] | None = None,
+    *,
+    executable: str | os.PathLike[str] | None = None,
+    prepend_python_path: bool = False,
+) -> MutableMapping[str, str]:
+    """Expose the owning Argus interpreter and make bare ``python`` prefer it.
+
+    Console-script launchers and unactivated Windows virtual environments can
+    run Argus with a correct interpreter while leaving an unrelated Anaconda or
+    system Python first on ``PATH``. Always expose the explicit interpreter.
+    Daemon callers may also request the historical PATH prepend needed by agent
+    child shells; ordinary CLI commands leave executable selection untouched.
+    """
+    target_env = env if env is not None else os.environ
+    framework_python = str(
+        target_env.get("ARGUS_SKILL_PYTHON") or executable or sys.executable
+    ).strip()
+    target_env["ARGUS_SKILL_PYTHON"] = framework_python
+    if os.name == "nt":
+        target_env.setdefault("PYTHONUTF8", "1")
+        target_env.setdefault("PYTHONIOENCODING", "utf-8")
+
+    if not prepend_python_path:
+        return target_env
+
+    preferred: list[str] = []
+    python_path = Path(framework_python).expanduser()
+    if python_path.parent != Path(".") or python_path.is_absolute():
+        preferred.append(str(python_path.resolve().parent))
+
+    existing = str(target_env.get("PATH") or "").split(os.pathsep)
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for entry in [*preferred, *existing]:
+        clean = entry.strip()
+        if not clean:
+            continue
+        key = _path_key(clean)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(clean)
+    target_env["PATH"] = os.pathsep.join(ordered)
+    return target_env
+
+
 def load_backend_runtime_env(
     env: MutableMapping[str, str] | None = None,
     *,
@@ -27,7 +81,14 @@ def load_backend_runtime_env(
     path = runtime_root / "runtime" / "claude.env"
     try:
         stat = path.stat()
-        if not path.is_file() or stat.st_mode & 0o022:
+        if (
+            not stat_module.S_ISREG(stat.st_mode)
+            or path.is_symlink()
+            or (
+                os.name != "nt"
+                and stat.st_mode & 0o022
+            )
+        ):
             return {}
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -54,4 +115,4 @@ def load_backend_runtime_env(
     return loaded
 
 
-__all__ = ["load_backend_runtime_env"]
+__all__ = ["configure_framework_python_env", "load_backend_runtime_env"]

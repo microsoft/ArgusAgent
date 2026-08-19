@@ -40,7 +40,7 @@ def _env(tmp_path: Path, *, backend: str, route: dict | None = None) -> dict[str
 
 
 _USABLE_ROUTE = {
-    "api_key": "sk-test-not-a-real-key",
+    "api_key": "REDACTED_TEST_CREDENTIAL",
     "base_url": "https://example.invalid/v1",
     "model": "gpt-test",
 }
@@ -86,13 +86,14 @@ def test_http_capable_backends_keep_the_original_message(
 
 
 def test_secrets_in_the_underlying_error_are_redacted(tmp_path: Path) -> None:
-    leaked = RuntimeError("401 from https://api.example.invalid key=sk-live-abcd1234efgh5678")
+    secret = "-".join(("sk", "live", "abcd1234efgh5678"))
+    leaked = RuntimeError(f"401 from https://api.example.invalid key={secret}")
     message = describe_reviewer_route_unavailable(
         leaked,
         _env(tmp_path, backend="copilot"),
     )
 
-    assert "sk-live-abcd1234efgh5678" not in message
+    assert secret not in message
 
 
 def test_never_masks_the_underlying_error_when_lookup_fails(
@@ -131,9 +132,9 @@ def test_the_gate_stays_blocking_regardless_of_the_message() -> None:
 @pytest.mark.parametrize(
     "secret",
     [
-        "sk-proj-AbCd1234EfGh5678IjKl",  # OpenAI project key
-        "sk-ant-api03-xYz9876543210abcdef",  # Anthropic key
-        "sk-abcdefghijkl123456",  # legacy flat OpenAI key
+        "-".join(("sk", "proj", "AbCd1234EfGh5678IjKl")),
+        "-".join(("sk", "ant", "api03", "xYz9876543210abcdef")),
+        "-".join(("sk", "abcdefghijkl123456")),
     ],
 )
 def test_provider_key_formats_never_reach_the_operator(

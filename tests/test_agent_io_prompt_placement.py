@@ -11,13 +11,12 @@ the event type outright, `usage.py` takes only `call_id`, `event_log.py` only
 tests that the type occurs. The history paid three times its own content for a
 field with no reader, and every projection had to scan past it.
 
-These tests pin the split and the thing that makes it safe to do: the compact
-record still carries the hash, so the verbatim copy is identifiable.
+These tests pin the split. The existing call ID links the compact history row
+to its verbatim raw transcript record.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -93,13 +92,9 @@ def test_full_mode_keeps_the_verbatim_prompt_in_the_raw_transcript(
     history, raw = _emit_start(prompt, "full", tmp_path)
 
     assert raw and raw[0]["prompt"] == prompt
-    # The hash is what makes the split safe: the history record identifies the
-    # verbatim copy without containing it.
-    assert history[0]["prompt_sha256"] == raw[0]["prompt_sha256"]
-    assert (
-        history[0]["prompt_sha256"]
-        == hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-    )
+    assert history[0]["call_id"] == raw[0]["call_id"]
+    assert "prompt_sha256" not in history[0]
+    assert "prompt_sha256" not in raw[0]
 
 
 def test_compact_mode_writes_nothing_to_the_raw_transcript(tmp_path: Path) -> None:
@@ -151,7 +146,7 @@ def test_the_prompt_is_redacted_on_its_way_to_the_raw_transcript(
     from argus_skill.adapters.agent_cli_backend._exec_spawn import log_start_record
     from argus_skill.adapters.agent_cli_backend._io_log import AgentIOLogger
 
-    secret = "sk-proj-AbCd1234EfGh5678IjKl"
+    secret = "-".join(("sk", "proj", "AbCd1234EfGh5678IjKl"))
     history = tmp_path / "events.jsonl"
 
     class _RealLoggingBackend:

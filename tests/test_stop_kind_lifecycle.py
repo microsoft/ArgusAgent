@@ -52,7 +52,6 @@ def _run_engineer(
             max_rounds=3,
             backend_failure_threshold=2,
             backend_failure_backoff_seconds=0,
-            effective_progress_timeout_seconds=0,
             background_subagent_advisory=False,
         ),
         workdir=tmp_path,
@@ -117,6 +116,15 @@ def test_control_interrupts_receive_structured_stop_kinds(
     assert _raw_backend_stop_kind(fatal_error=fatal_error, exit_code=-1) == expected
 
 
+def test_unknown_wall_clock_interrupt_is_transient() -> None:
+    assert _raw_backend_stop_kind(
+        fatal_error=(
+            "External interrupt: Manager turn wall-clock limit reached after 300s"
+        ),
+        exit_code=-1,
+    ) == "transient_error"
+
+
 def test_reviewer_budget_stop_pauses_without_failure_streak(tmp_path: Path) -> None:
     events: list[dict] = []
 
@@ -151,7 +159,6 @@ def test_reviewer_budget_stop_pauses_without_failure_streak(tmp_path: Path) -> N
             max_rounds=3,
             backend_failure_threshold=2,
             backend_failure_backoff_seconds=0,
-            effective_progress_timeout_seconds=0,
             background_subagent_advisory=False,
         ),
         workdir=tmp_path,

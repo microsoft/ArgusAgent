@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from argus_skill.team import pool
 
 
@@ -43,3 +45,17 @@ def test_width_zero_is_explicit_pause_not_unset(tmp_path: Path) -> None:
     assert "width" not in pool.read(tmp_path)
     pool.update(tmp_path, width=0, state="running")
     assert pool.read(tmp_path)["width"] == 0
+
+
+def test_width_and_state_are_safety_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ARGUS_TEAM_MAX_WIDTH", "12")
+
+    with pytest.raises(ValueError, match="exceeds ARGUS_TEAM_MAX_WIDTH"):
+        pool.update(tmp_path, width=13)
+    with pytest.raises(ValueError, match="non-negative"):
+        pool.update(tmp_path, width=-1)
+    with pytest.raises(ValueError, match="unsupported team pool state"):
+        pool.update(tmp_path, state="exploding")

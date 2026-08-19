@@ -1,0 +1,67 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from argus_skill.core.mission_view import update_mission_view_event
+from argus_skill.core.session import SessionMeta, write_session_meta
+from argus_skill.webapi.artifacts import list_project_artifacts
+
+
+def test_delivery_receipt_makes_only_its_safe_targets_openable(tmp_path: Path) -> None:
+    sid = "s-delivery"
+    life = tmp_path / "projects" / sid
+    workspace = tmp_path / "workspace"
+    life.mkdir(parents=True)
+    workspace.mkdir()
+    (workspace / "final.md").write_text("# Final\n", encoding="utf-8")
+    write_session_meta(
+        tmp_path,
+        SessionMeta(id=sid, cwd=str(life), workdir=str(workspace)),
+    )
+    update_mission_view_event(life, {
+        "type": "life.mission.completed",
+        "item_id": "task-1",
+        "title": "Deliver final report",
+        "objective": "Write the report",
+        "success": True,
+        "status": "done",
+        "summary": "Reviewed report ready.",
+        "delivery": {
+            "schema_version": 1,
+            "delivery_id": "delivery:task-1:task_completed",
+            "kind": "task_completed",
+            "item_id": "task-1",
+            "title": "Deliver final report",
+            "summary": "Reviewed report ready.",
+            "status": "done",
+            "review_status": "done",
+            "delivered_at": 1.0,
+            "primary_target": {
+                "path": "final.md",
+                "label": "final.md",
+                "source": "reviewer_evidence",
+                "why": "Reviewed output.",
+            },
+            "targets": [
+                {
+                    "path": "final.md",
+                    "label": "final.md",
+                    "source": "reviewer_evidence",
+                    "why": "Reviewed output.",
+                },
+                {
+                    "path": "../not-allowed.txt",
+                    "label": "unsafe",
+                    "source": "reviewer_evidence",
+                    "why": "must be rejected by artifact confinement",
+                },
+            ],
+        },
+    })
+
+    rows = list_project_artifacts(sid, global_root=tmp_path)
+
+    assert rows is not None
+    assert [(row["path"], row["source"]) for row in rows] == [
+        ("final.md", "delivery"),
+    ]

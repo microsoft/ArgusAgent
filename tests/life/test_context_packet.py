@@ -24,6 +24,10 @@ def test_context_packet_seals_engineer_and_reviewer_handoffs(tmp_path: Path) -> 
         scope="bounded",
         objective="Screen one candidate on public tasks.",
         acceptance_check="research/screen.json reports a binding pass/fail",
+        plan_hypothesis="The candidate screen can eliminate weak directions cheaply.",
+        goal_contribution="Reduce uncertainty before the expensive experiment.",
+        expected_regressions="Candidate count may fall sharply.",
+        decision_rule="Replace the screen if it fails to predict the binding test.",
         non_goals=["do not preregister", "do not run GPU inference"],
         context_refs=[
             {
@@ -38,6 +42,8 @@ def test_context_packet_seals_engineer_and_reviewer_handoffs(tmp_path: Path) -> 
         node_key="screen",
     )
     checkpoint = mission.parent / "CHECKPOINT.md"
+    assert checkpoint.is_file()
+    assert checkpoint.read_text(encoding="utf-8") == ""
     checkpoint.write_text("# Current State\n\nScreen complete.\n", encoding="utf-8")
     engineer = record_engineer_handoff(
         mission_context_path=mission,
@@ -58,14 +64,38 @@ def test_context_packet_seals_engineer_and_reviewer_handoffs(tmp_path: Path) -> 
     assert mission_payload["scope"] == "bounded"
     assert mission_payload["objective"] == "Screen one candidate on public tasks."
     assert mission_payload["acceptance_check"].endswith("binding pass/fail")
+    assert mission_payload["plan_hypothesis"].startswith("The candidate screen")
+    assert mission_payload["goal_contribution"].startswith("Reduce uncertainty")
+    assert mission_payload["expected_regressions"] == "Candidate count may fall sharply."
+    assert mission_payload["decision_rule"].startswith("Replace the screen")
     assert mission_payload["non_goals"] == [
         "do not preregister",
         "do not run GPU inference",
     ]
     assert mission_payload["context_refs"][0]["ref"] == "research/IDEA_CANDIDATES.md"
     assert "content_hash" not in mission_payload["context_refs"][0]
+    assert mission_payload["checkpoint"] == {
+        "path": str(checkpoint),
+        "contract_version": 2,
+    }
+    frontier_path = Path(mission_payload["frontier"]["path"])
+    frontier = json.loads(frontier_path.read_text(encoding="utf-8"))
+    assert frontier["objective"] == "Screen one candidate on public tasks."
+    assert frontier["current_hypothesis"].startswith("The candidate screen")
+    assert frontier["next_decision_point"].startswith("Replace the screen")
     assert (
-        not {"stage", "scope", "objective", "acceptance_check", "non_goals", "context_refs"}
+        not {
+            "stage",
+            "scope",
+            "objective",
+            "acceptance_check",
+            "plan_hypothesis",
+            "goal_contribution",
+            "expected_regressions",
+            "decision_rule",
+            "non_goals",
+            "context_refs",
+        }
         & latest.keys()
     )
     assert "sha256" not in engineer_payload["checkpoint"]
@@ -82,6 +112,14 @@ def test_context_packet_seals_engineer_and_reviewer_handoffs(tmp_path: Path) -> 
             reason="Artifact verified.",
             next_action="Planner may choose the next frontier.",
             operator_question="",
+            frontier_report={
+                "change": "uncertainty_reduced",
+                "summary": "The screen eliminated one weak direction.",
+                "resolved_obligations": ["screen candidate"],
+                "remaining_work": ["choose the next candidate"],
+                "uncertainty": "One candidate is now ruled out.",
+                "next_decision_point": "Choose or stop based on remaining candidates.",
+            },
         ),
         checkpoint_path=checkpoint,
     )
@@ -97,9 +135,38 @@ def test_context_packet_seals_engineer_and_reviewer_handoffs(tmp_path: Path) -> 
         "reason",
         "next_action",
         "operator_question",
+        "frontier_transition",
+        "frontier_disposition",
     }
+    frontier = json.loads(frontier_path.read_text(encoding="utf-8"))
+    assert frontier["history"][-1]["change"] == "uncertainty_reduced"
+    assert reviewed_payload["review"]["frontier_disposition"] == "continue"
     assert "engineer_summary" not in reviewed_payload
     assert "text" not in reviewed_payload["checkpoint"]
+
+
+def test_context_refresh_never_overwrites_role_authored_checkpoint(tmp_path: Path) -> None:
+    mission = create_mission_context(
+        life_dir=tmp_path,
+        mission_id="mission-refresh",
+        stage="research",
+        objective="First objective",
+    )
+    checkpoint = mission.parent / "CHECKPOINT.md"
+    checkpoint.write_text(
+        "# Open Questions / Blockers\n\n- preserve this state\n",
+        encoding="utf-8",
+    )
+
+    refreshed = create_mission_context(
+        life_dir=tmp_path,
+        mission_id="mission-refresh",
+        stage="research",
+        objective="Refreshed objective",
+    )
+
+    assert refreshed == mission
+    assert checkpoint.read_text(encoding="utf-8").endswith("- preserve this state\n")
 
 
 def test_agent_task_context_hides_host_content_hash() -> None:
@@ -124,6 +191,36 @@ def test_agent_task_context_hides_host_content_hash() -> None:
     assert "current result" in rendered
     assert "content_hash" not in rendered
     assert "sha256" not in rendered
+
+
+def test_attachment_context_ref_renders_structured_metadata() -> None:
+    supervisor = LifeSupervisor.__new__(LifeSupervisor)
+    supervisor.config = SimpleNamespace(paper_mission=False)
+    item = BacklogItem.new(
+        title="Inspect upload",
+        objective="Read the operator attachment.",
+        context_refs=[
+            {
+                "kind": "attachment",
+                "ref": ".argus/attachments/s-demo/att-123456789abc/brief.md",
+                "why": "operator-uploaded attachment in the canonical project workdir",
+                "attachment_id": "att-123456789abc",
+                "original_name": "brief.md",
+                "mime": "text/markdown",
+                "size_bytes": "9",
+                "integrity": "01234567 89abcdef 01234567 89abcdef 01234567 89abcdef 01234567 89abcdef",
+            }
+        ],
+    )
+
+    rendered = supervisor._render_backlog_item_metadata(item)
+
+    assert ".argus/attachments/s-demo/att-123456789abc/brief.md" in rendered
+    assert "attachment_id: att-123456789abc" in rendered
+    assert "original_name: brief.md" in rendered
+    assert "mime: text/markdown" in rendered
+    assert "size_bytes: 9" in rendered
+    assert "integrity: 01234567 89abcdef" in rendered
 
 
 def test_planner_context_ref_hash_tracks_project_file_revision(tmp_path: Path) -> None:
@@ -172,3 +269,23 @@ def test_planner_context_refs_reject_project_escape(tmp_path: Path) -> None:
             }],
             tmp_path,
         )
+
+
+def test_planner_context_refs_normalize_local_absolute_and_drop_external(
+    tmp_path: Path,
+) -> None:
+    local = tmp_path / "notes.md"
+    local.write_text("grounded", encoding="utf-8")
+    external = tmp_path.parent / "external-handoff.json"
+    external.write_text("runtime", encoding="utf-8")
+
+    hydrated = hydrate_task_context_refs(
+        [
+            {"kind": "wiki", "ref": str(local), "why": "local grounding"},
+            {"kind": "handoff", "ref": str(external), "why": "runtime state"},
+        ],
+        tmp_path,
+        discard_external=True,
+    )
+
+    assert [ref["ref"] for ref in hydrated] == ["notes.md"]

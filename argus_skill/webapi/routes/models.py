@@ -1,14 +1,8 @@
-"""Pydantic request bodies shared across the webapi route domains.
-
-Extracted from ``create_app`` (previously locally-defined classes named
-``_TaskIn``, ``_NudgeIn``, ...). Field names, defaults, and validation are
-byte-for-byte identical; only the module location and the leading underscore
-(no longer needed once these are shared across domain modules) changed.
-"""
+"""Pydantic request bodies shared across web API route modules."""
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TaskIn(BaseModel):
@@ -23,8 +17,13 @@ class NudgeIn(BaseModel):
     text: str
 
 
+class AttachmentRefIn(BaseModel):
+    attachment_id: str
+
+
 class MessageIn(BaseModel):
     text: str
+    attachments: list[AttachmentRefIn] = Field(default_factory=list)
 
 
 class AnswerIn(BaseModel):
@@ -34,7 +33,6 @@ class AnswerIn(BaseModel):
 class DecisionIn(BaseModel):
     option_id: str
     note: str = ""
-    expected_revision: int | None = None
 
 
 class AbortMissionIn(BaseModel):

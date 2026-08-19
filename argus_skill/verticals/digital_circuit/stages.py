@@ -17,7 +17,7 @@ completion_gate = "none"
 
 _PIPELINE_CHECK = (
     "Pipeline state present",
-    "test -f research/PIPELINE_STATE.json",
+    "test -f .argus/PIPELINE_STATE.json",
 )
 
 STAGE_CHECKS: dict[str, list[tuple[str, str]]] = {

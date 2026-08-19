@@ -6,6 +6,7 @@ from pathlib import Path
 from argus_skill.verticals.research.paper_infrastructure_review import (
     REQUIRED_CHECKED_SCOPES,
     PaperInfrastructureReviewError,
+    _review_prompt,
     generate_paper_infrastructure_review,
 )
 from argus_skill.verticals.research.paper_infrastructure_review import (
@@ -150,3 +151,30 @@ def test_runner_failure_produces_blocked_review_artifact(
     assert "model_review_unavailable" in {
         issue["code"] for issue in result["blocking_issues"]
     }
+
+
+def test_review_prompt_preserves_complete_middle_source() -> None:
+    class DummyVenue:
+        reviewer_persona = "systems"
+
+    source = "\n".join(
+        [
+            "\\section{Start}",
+            "opening",
+            *[f"middle filler {idx}" for idx in range(1200)],
+            "MIDDLE_SENTINEL_LOCAL_PATH_CHECK",
+            *[f"tail filler {idx}" for idx in range(1200)],
+            "\\section{End}",
+            "closing",
+        ]
+    )
+
+    prompt = _review_prompt(
+        source_text_by_path={"paper/main.tex": source},
+        threshold=4.0,
+        venue=DummyVenue(),  # type: ignore[arg-type]
+    )
+
+    assert "Complete numbered LaTeX sources:" in prompt
+    assert "MIDDLE_SENTINEL_LOCAL_PATH_CHECK" in prompt
+    assert "[truncated" not in prompt

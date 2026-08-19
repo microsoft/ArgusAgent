@@ -13,17 +13,20 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ...daemon.state import (
+    _terminate_windows_process_tree as terminate_windows_process_tree,
+)
 from ._experiment_preflight import (
     experiment_launch_preflight,
     release_experiment_launch_claim,
 )
 from ._registry import (
     _ZERO_USAGE_TUPLE,
-    REGISTRY_DIR,
     _apply_supervisor_usage_fields,
     _exit_status_path,
     _launch_durable_command,
     _read_task,
+    _task_log_dir,
     _write_task,
 )
 from ._reporting import _alert_engineer
@@ -230,11 +233,27 @@ def _terminate_proc(proc: "subprocess.Popen[Any]", grace: float = 10.0) -> None:
     if proc.poll() is not None:
         return
     if os.name == "nt":
+        pid = int(getattr(proc, "pid", 0) or 0)
+        if pid > 0:
+            tree_stopped = terminate_windows_process_tree(
+                pid,
+                identity_check=lambda: proc.pid == pid and proc.poll() is None,
+            )
+            if tree_stopped:
+                try:
+                    proc.wait(timeout=0.1)
+                except subprocess.TimeoutExpired:
+                    pass
+                return
         proc.terminate()
         try:
             proc.wait(timeout=grace)
         except subprocess.TimeoutExpired:
             proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
         return
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -274,7 +293,7 @@ def _run_direct(
     run_dir: str | None = None,
 ) -> None:
     """Run command directly via Popen. No LLM involved."""
-    log_dir = REGISTRY_DIR / f"{task_id}_logs"
+    log_dir = _task_log_dir(task_id)
     log_dir.mkdir(parents=True, exist_ok=True)
     stdout_path = log_dir / "stdout.log"
     stderr_path = log_dir / "stderr.log"

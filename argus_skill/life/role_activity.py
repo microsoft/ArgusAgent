@@ -133,6 +133,31 @@ def _describe_engineer_progress(event: dict[str, Any]) -> str:
     return "thinking" + (f" · {t[:60]}" if t else "")
 
 
+#: What a non-Engineer role is doing when it streams progress. Every role
+#: streams under the single ``engineer.progress`` type (see
+#: ``adapters/stream_progress.py``), so this map is keyed by ``agent_layer``.
+_PROGRESS_VERB_BY_LAYER = {
+    "planner": "planning",
+    "reviewer": "reviewing",
+    "manager": "handling your message",
+}
+
+
+def _describe_layer_progress(event: dict[str, Any], layer: str) -> str:
+    """Describe streamed progress belonging to a role other than Engineer.
+
+    ``agent_layer`` is the only discriminator on a progress event, so running
+    every role through ``_describe_engineer_progress`` rendered a Planner turn
+    as an Engineer shell step ("run · …") in the role panel. The action summary
+    is role-neutral and kept when the emitter supplied one; otherwise fall back
+    to the role's own verb rather than the Engineer's.
+    """
+    summary = " ".join(str(event.get("action_summary") or "").split())
+    if summary:
+        return summary[:72]
+    return _PROGRESS_VERB_BY_LAYER[layer]
+
+
 def _describe_event(event: dict[str, Any]) -> tuple[str, str]:
     """Return ``(label, status)`` for a role-activity event."""
     etype = canonical_event_type(event.get("canonical_type") or event.get("type"))
@@ -169,6 +194,9 @@ def _describe_event(event: dict[str, Any]) -> tuple[str, str]:
             return (f"{label} failed", "blocked") if failed else (f"{label} done", "done")
         return label, "running"
     if etype == "engineer.progress":
+        layer = str(event.get("agent_layer") or "").strip().lower()
+        if layer in _PROGRESS_VERB_BY_LAYER:
+            return _describe_layer_progress(event, layer), "running"
         return _describe_engineer_progress(event), "running"
     if etype == "venue.research.started":
         return "researching target venue", "running"
@@ -196,6 +224,8 @@ def _describe_event(event: dict[str, Any]) -> tuple[str, str]:
         verdict = str(event.get("verdict") or event.get("decision") or "")
         if etype.endswith("start"):
             return "planning new work", "running"
+        if etype.endswith("waiting"):
+            return "waiting on external work", "waiting"
         return (f"plan verdict {verdict}" if verdict else "planning done"), verdict or "done"
     if etype.startswith("manager") or etype.startswith("life.manager"):
         # Front-door decisions must read as a TERSE state token, never the raw
@@ -277,7 +307,9 @@ def role_activity(
             ev.get("canonical_type") or ev.get("type")
         )
         call_id = str(ev.get("call_id") or "").strip()
-        if event_type == "agent.io.start" and role and call_id:
+        if event_type == "life.mission.completed":
+            inflight_calls.clear()
+        elif event_type == "agent.io.start" and role and call_id:
             inflight_calls[call_id] = role
         elif event_type in {"agent.io.complete", "agent.io.error"} and call_id:
             inflight_calls.pop(call_id, None)
@@ -307,7 +339,7 @@ def role_activity(
             if role in inflight_roles
             else active_window_s
         )
-        active = status not in {"done", "blocked", "idle"} and (
+        active = status not in {"done", "blocked", "idle", "waiting"} and (
             age is None or age <= effective_active_window
         )
         if not active and (age is None or age > stale_window_s):

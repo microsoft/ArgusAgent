@@ -1,28 +1,11 @@
-"""Draft-first outline: paper/DRAFT_OUTLINE.md as the single source of truth.
+"""Validate a draft-first manuscript outline.
 
-Why this exists
----------------
+Early prose, figures, and experiments drift when they are added independently
+while results are still changing. ``paper/DRAFT_OUTLINE.md`` provides one
+shared frame: sections, figure slots, and experiment slots are declared before
+downstream artifacts fill them.
 
-In agent-multimodal-reasoning-v1 the planner authorized 14 consecutive
-"Bounded overlap paper-drafting mission while current_stage stays run"
-missions. Engineer drafted the paper *while* runs were still in flight,
-which created a moving target: figures got commissioned ad-hoc,
-experiments got added ad-hoc, and ``paper/main.tex`` slowly diverged
-from what the run matrix actually contained. Reviewer then spent 14
-rounds rolling back to fix the drift.
-
-The fix recommended by the operator's classmate is structural:
-
-1. Write a Draft text frame FIRST, with every figure and every experiment
-   stubbed out as a placeholder that records its intended style /
-   reference / experiment-id.
-2. Treat the placeholders as the binding contract: figures and
-   experiments downstream may only fill placeholders, not invent new
-   slots.
-3. Stop scattering small markdown notes in the project root; everything
-   feeds back into the Draft.
-
-This module is the harness side of (1) and (2). It defines:
+This module defines:
 
 * the canonical path ``paper/DRAFT_OUTLINE.md``;
 * a YAML-frontmatter + markdown body schema;
@@ -32,10 +15,8 @@ This module is the harness side of (1) and (2). It defines:
   elsewhere in the workspace (e.g. ``\\label{fig:...}`` in main.tex),
   reports which ones lack a placeholder.
 
-This is *not* a hard gate. The validator returns structured issues;
-``paper_structural_minimums`` decides their draft-time severity. We
-specifically avoid a "you may not advance" gate because the operator's
-philosophy is "soft critique-driven, not hard checklist-driven".
+The validator returns structured issues; ``paper_structural_minimums`` decides
+their draft-time severity.
 
 Schema
 ------
@@ -50,29 +31,25 @@ mission_sha: <sha of MISSION.md at outline creation>
 
 ## Sections
 - title: Introduction
-  goal: motivate the trap-vs-control framing
+  goal: motivate the research question and evidence gap
 - title: Method
   goal: ...
 
 ## Figures
 - id: F1_teaser
-  style_ref: MMMU2024 Fig.1                # which paper/figure to copy from
-  data_source: bench/dev_smoke/items.jsonl   # what feeds the figure
-  caption_placeholder: "trap vs. control example for broken-scale family"
-- id: F2_results_heatmap
-  style_ref: MathVista2024 Tab.2 heatmap
+  style_ref: primary_exemplar Fig.1
+  data_source: results/summary.json
+  caption_placeholder: "method overview and research setting"
+- id: F2_results
+  style_ref: primary_exemplar Fig.2
   data_source: paper/artifacts/results_table.tsv
-  caption_placeholder: "model x trap-family accuracy"
+  caption_placeholder: "main comparison with uncertainty"
 
 ## Experiments
-- id: E1_main_matrix
-  cell_spec: 13 models x 5 trap families x 3 seeds
-  expected_metric: trap-control gap (paired)
-  n_seeds: 3
-- id: E2_severity_ladder
-  cell_spec: same models x severity in {1,2,3}
-  expected_metric: monotonicity
-  n_seeds: 3
+- id: E1_main_comparison
+  cell_spec: proposed method and relevant baselines on the primary task split
+  expected_metric: task-appropriate primary metric
+  n_seeds: <planned repetitions>
 ```
 
 The frontmatter is parsed strictly; the body is parsed permissively
@@ -87,13 +64,11 @@ from typing import Iterable
 
 DRAFT_OUTLINE_PATH = Path("paper/DRAFT_OUTLINE.md")
 
-# Sentinel: minimum number of placeholders the outline must contain to be
-# treated as "filled". Below these the validator emits an
-# ``outline_unfilled`` issue. Threshold values come from MISSION-typical
-# requirements (≥6 figures, ≥3 experiments).
-MIN_FIGURE_PLACEHOLDERS = 3
-MIN_EXPERIMENT_PLACEHOLDERS = 1
-MIN_SECTION_PLACEHOLDERS = 4
+# Structural floor only. Venue and contribution-specific depth is reviewed
+# separately; theory and analysis papers may not require experiments.
+MIN_FIGURE_PLACEHOLDERS = 1
+MIN_EXPERIMENT_PLACEHOLDERS = 0
+MIN_SECTION_PLACEHOLDERS = 3
 
 # Required frontmatter keys.
 _REQUIRED_FRONTMATTER_KEYS = ("outline_version",)

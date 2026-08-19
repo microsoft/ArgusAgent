@@ -175,7 +175,8 @@ run-to-run sd, AND N**. Internalize:
 ## 4. Diagnosis: where does the wall-clock go?
 
 Optimizing the non-bottleneck is the #1 way to waste a day. Decompose first, with real
-measurement — you have **direct GPU access** (`ssh h100` / the run box), so use it.
+measurement. Use direct GPU access only when the mission manifest provides a
+working remote command; otherwise record an infrastructure blocker.
 
 - **Step decomposition:** `per_step = train_time / steps`. Know it before touching kernels.
 - **The convergence curve (the most important plot):** `val_loss` vs step. *Where* does it

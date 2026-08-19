@@ -60,6 +60,7 @@ _JOURNAL_TAIL_CACHE: dict[
 ] = {}
 _JOURNAL_TAIL_CACHE_LOCK = threading.Lock()
 _JOURNAL_TAIL_CACHE_TTL_S = 2.0
+_JOURNAL_TAIL_CACHE_MAX_ENTRIES = 256
 
 
 def _enqueue_task_unlocked(
@@ -76,7 +77,7 @@ def _enqueue_task_unlocked(
     )
     objective = cleaned or text.strip()
     item_id = BacklogItem.new_id()
-    from .manager_bridge import manager_bounded_handoff
+    from .manager_dispatch import manager_bounded_handoff
 
     mem = LifeMemory.open(life_dir)
 
@@ -170,45 +171,6 @@ def enqueue_nudge(
     return True
 
 
-def answer_pending_question(
-    sid: str,
-    item_id: str,
-    text: str,
-    *,
-    global_root: Path | str | None = None,
-) -> dict[str, Any] | None:
-    """Route one blocked-item answer through the Manager authority boundary."""
-    from .manager_bridge import manager_answer_pending_question
-
-    return manager_answer_pending_question(
-        sid,
-        item_id,
-        text,
-        global_root=global_root,
-    )
-
-
-def resolve_operator_decision(
-    sid: str,
-    decision_id: str,
-    option_id: str,
-    note: str = "",
-    *,
-    expected_revision: int | None = None,
-    global_root: Path | str | None = None,
-) -> dict[str, Any] | None:
-    from .manager_bridge import manager_resolve_operator_decision
-
-    return manager_resolve_operator_decision(
-        sid,
-        decision_id,
-        option_id,
-        note,
-        expected_revision=expected_revision,
-        global_root=global_root,
-    )
-
-
 def get_status(sid: str, *, global_root: Path | str | None = None) -> dict[str, Any] | None:
     """Composite of the Python /status view: identity, pending backlog + pending
     questions, recent journal, continuous, inbox count, daemon, active role."""
@@ -241,7 +203,10 @@ def get_status(sid: str, *, global_root: Path | str | None = None) -> dict[str, 
     )
     inbox_pending = _safe(lambda: count_pending_inbox_messages(life_dir), 0)
     daemon = _safe(
-        lambda: _daemon_dict(_srv().read_daemon_status(life_dir)), {"alive": False, "pid": None}
+        lambda: _daemon_dict(
+            _srv().read_daemon_status(life_dir), life_dir=life_dir
+        ),
+        {"alive": False, "pid": None},
     )
     roles = _safe(
         lambda: _roles_list(resolve_all_roles(env=os.environ), role_activity(life_dir)), []
@@ -286,7 +251,10 @@ def get_journal(
     except Exception:  # noqa: BLE001
         rows = []
     with _JOURNAL_TAIL_CACHE_LOCK:
+        _JOURNAL_TAIL_CACHE.pop(key, None)
         _JOURNAL_TAIL_CACHE[key] = (signature, time.monotonic(), rows)
+        while len(_JOURNAL_TAIL_CACHE) > _JOURNAL_TAIL_CACHE_MAX_ENTRIES:
+            del _JOURNAL_TAIL_CACHE[next(iter(_JOURNAL_TAIL_CACHE))]
     return rows
 
 
@@ -452,6 +420,12 @@ _CONFIG_ALIASES = {
     "reviewer_backend": "ARGUS_SKILL_REVIEWER_BACKEND",
     "planner_backend": "ARGUS_SKILL_PLANNER_BACKEND",
     "manager_backend": "ARGUS_SKILL_MANAGER_BACKEND",
+    # Which provider catalog the multi-provider CLIs buy from. Without these
+    # the operator can pick the backend from the cockpit but not the account
+    # behind it, which is how a Pi pointed at a non-default provider ends up
+    # unusable with no visible setting to blame.
+    "pi_provider": "ARGUS_SKILL_PI_PROVIDER",
+    "opencode_provider": "ARGUS_SKILL_OPENCODE_PROVIDER",
     "model": "ARGUS_SKILL_MODEL",
     "engineer_model": "ARGUS_SKILL_ENGINEER_MODEL",
     "reviewer_model": "ARGUS_SKILL_REVIEWER_MODEL",

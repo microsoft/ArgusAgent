@@ -7,6 +7,7 @@ import { JsonPreview, TablePreview } from './DataPreview';
 import { MarkdownContent } from './MarkdownContent';
 import { Modal } from './Modal';
 import { Spinner } from './primitives';
+import { useI18n } from '../i18n';
 
 /** Authenticated preview/download for one reviewer-approved result file. */
 export function ArtifactModal({
@@ -18,6 +19,7 @@ export function ArtifactModal({
   path: string | null;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   const artifactQ = useArtifact(sid, path);
   const info = artifactQ.data;
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -68,14 +70,14 @@ export function ArtifactModal({
   };
 
   return (
-    <Modal open={Boolean(path)} onClose={onClose} label="Artifact preview" width="max-w-5xl">
+    <Modal open={Boolean(path)} onClose={onClose} label={t('artifact.preview')} width="max-w-5xl">
       <div className="flex items-start gap-3 border-b border-line px-4 py-3 sm:px-5">
         <div className="min-w-0 flex-1">
           <h2 className="truncate font-mono text-sm font-semibold text-ink" title={info?.path ?? path ?? ''}>
-            {info?.name ?? path ?? 'Artifact'}
+            {info?.name ?? path ?? t('artifact.title')}
           </h2>
           <p className="mt-0.5 truncate text-[11px] text-ink-faint">
-            {info ? `${info.kind} · ${formatBytes(info.size)} · ${info.mime}` : 'reviewer-approved evidence'}
+            {info ? `${info.kind} · ${formatBytes(info.size)} · ${info.mime}` : t('artifact.approvedEvidence')}
           </p>
         </div>
         <button
@@ -84,7 +86,7 @@ export function ArtifactModal({
           onClick={() => void download()}
           className="rounded-md border border-blue-deep/60 bg-blue-deep/10 px-3 py-1.5 text-xs text-blue-sky transition-colors hover:bg-blue-deep/20 disabled:cursor-wait disabled:opacity-50"
         >
-          {downloading ? 'Downloading…' : 'Download'}
+          {downloading ? t('artifact.downloading') : t('artifact.download')}
         </button>
         {info?.kind === 'pdf' && previewUrl ? (
           <a
@@ -93,12 +95,12 @@ export function ArtifactModal({
             rel="noreferrer"
             className="rounded-md border border-line px-3 py-1.5 text-xs text-ink-dim transition-colors hover:border-ink-faint hover:bg-surface hover:text-ink"
           >
-            Open
+            {t('artifact.open')}
           </a>
         ) : null}
         <button
           type="button"
-          aria-label="close artifact preview"
+          aria-label={t('artifact.close')}
           onClick={onClose}
           className="rounded-md px-2 py-1 text-lg leading-none text-ink-faint hover:bg-surface hover:text-ink"
         >
@@ -109,7 +111,7 @@ export function ArtifactModal({
       <div className="flex min-h-64 max-h-[72vh] flex-col overflow-x-hidden overflow-y-auto bg-bg/40 p-3 scroll-thin sm:p-4">
         {artifactQ.isLoading ? <div className="m-auto"><Spinner /></div> : null}
         {artifactQ.isError ? (
-          <div className="m-auto text-sm text-err">preview unavailable · {(artifactQ.error as Error).message}</div>
+          <div className="m-auto text-sm text-err">{t('artifact.unavailable')} · {(artifactQ.error as Error).message}</div>
         ) : null}
         {info?.why ? (
           <div className="mb-3 rounded-md border border-line bg-surface px-3 py-2 text-xs text-ink-dim">
@@ -118,13 +120,13 @@ export function ArtifactModal({
         ) : null}
         {info?.kind === 'text' ? (
           <pre className="min-h-52 overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-line bg-bg p-4 font-mono text-xs leading-relaxed text-ink-dim scroll-thin">
-            {info.preview || '(empty file)'}
-            {info.truncated ? '\n\n… preview truncated · download to inspect the complete file' : ''}
+            {info.preview || t('artifact.empty')}
+            {info.truncated ? `\n\n… ${t('artifact.truncated')}` : ''}
           </pre>
         ) : null}
         {info?.kind === 'markdown' ? (
           <div className="min-h-52 overflow-auto rounded-lg border border-line bg-bg p-4 text-sm text-ink-dim scroll-thin">
-            <MarkdownContent>{info.preview || '(empty file)'}</MarkdownContent>
+            <MarkdownContent>{info.preview || t('artifact.empty')}</MarkdownContent>
           </div>
         ) : null}
         {info?.kind === 'json' ? <JsonPreview value={info.preview || ''} /> : null}
@@ -138,7 +140,7 @@ export function ArtifactModal({
         ) : null}
         {info?.kind === 'html' && info.truncated ? (
           <div className="m-auto text-sm text-warn">
-            HTML preview is too large to render safely. Download the complete file.
+            {t('artifact.htmlTooLarge')}
           </div>
         ) : null}
         {info?.kind === 'image' && previewUrl ? (
@@ -154,8 +156,8 @@ export function ArtifactModal({
             className="h-[62vh] w-full rounded-lg border border-line bg-white"
           >
             <div className="flex h-full min-h-64 flex-col items-center justify-center gap-2 text-center text-sm text-ink-dim">
-              <span>Inline PDF preview is disabled by this browser.</span>
-              <a href={previewUrl} target="_blank" rel="noreferrer" className="text-blue underline underline-offset-2">Open PDF</a>
+              <span>{t('artifact.pdfDisabled')}</span>
+              <a href={previewUrl} target="_blank" rel="noreferrer" className="text-blue underline underline-offset-2">{t('artifact.openPdf')}</a>
             </div>
           </object>
         ) : null}
@@ -175,8 +177,8 @@ export function ArtifactModal({
         {info?.kind === 'binary' ? (
           <div className="m-auto max-w-md text-center">
             <div className="text-3xl text-ink-faint">◇</div>
-            <p className="mt-2 text-sm text-ink-dim">This file type has no safe inline preview.</p>
-            <p className="mt-1 text-xs text-ink-faint">Download it to inspect with a local application.</p>
+            <p className="mt-2 text-sm text-ink-dim">{t('artifact.noPreview')}</p>
+            <p className="mt-1 text-xs text-ink-faint">{t('artifact.downloadHint')}</p>
           </div>
         ) : null}
         {previewError ? <div className="mt-3 text-center text-xs text-err">{previewError}</div> : null}

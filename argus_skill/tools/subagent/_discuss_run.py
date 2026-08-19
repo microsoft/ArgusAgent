@@ -15,7 +15,7 @@ from ._discussion_log import (
     _engineer_turn_count,
     _mirror_discussion_md,
 )
-from ._llm import _run_codex_with_usage
+from ._llm import _run_supervisor_with_usage
 from ._normalize import _coerce_bool
 from ._registry import (
     _ZERO_USAGE_TUPLE,
@@ -100,7 +100,7 @@ def _supervisor_discuss_with_usage(
         "Only output the JSON, nothing else."
     )
     try:
-        messages, thread_id, usage = _run_codex_with_usage(
+        messages, thread_id, usage = _run_supervisor_with_usage(
             prompt,
             model,
             cwd,

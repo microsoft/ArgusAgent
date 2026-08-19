@@ -63,37 +63,50 @@ class RolePromptCatalog:
                 stage_checklist="",
                 stage_order=(),
                 completion_gate="none",
+                paper_mission=False,
                 workflow_mode="staged",
+                verification_stage_profiles={},
                 requires_independent_review=False,
                 search_altitude="",
                 fragment_ids=(),
             )
 
-        from ...verticals._base import (
-            load_vertical,
-            vertical_checklist_stage_order,
-            vertical_completion_gate,
-            vertical_requires_independent_review,
-            vertical_role_banner,
-            vertical_search_altitude,
-            vertical_workflow_mode,
-        )
+        from ...verticals._base import load_vertical_contract
 
-        vertical_module = load_vertical(vertical, project_root=root)
-        vertical_banner = vertical_role_banner(vertical_module, banner_role)
-        # A controller-owned external gate is a stronger objective contract than
-        # a generic vertical's optimization style. Keep the stage/checklist state,
-        # but suppress a vertical banner that can otherwise redefine the task
-        # (for example speedrun's kernel-invention mandate on an accuracy contest).
-        if os.environ.get("ARGUS_SKILL_EXTERNAL_COMPLETION_GATE", "").strip():
-            vertical_banner = ""
-        role_banner = vertical_banner
+        contract = load_vertical_contract(vertical, project_root=root)
+        vertical_banner = contract.banner(banner_role)
         domain = ""
         domain_banner = ""
-        if root is not None:
+        if root is not None and not str(request.vertical or "").strip():
             from ...skills.vertical_select import resolve_domain_if_decided
 
             domain = resolve_domain_if_decided(root) or ""
+        stage_order = contract.stage_order
+        stage = str(request.stage or "").strip()
+        if not stage and request.checklist_mode is not ChecklistMode.NONE:
+            from ...skills.stage_machine import current_stage
+
+            stage = current_stage(root or ".")
+        vertical_fragment = contract.prompt_fragment(
+            role=banner_role,
+            operation=request.operation,
+            stage=stage,
+            scope=scope,
+            project_root=root,
+        )
+        if vertical_fragment.strip():
+            vertical_banner = "\n\n".join(
+                part
+                for part in (vertical_banner.strip(), vertical_fragment.strip())
+                if part
+            )
+        # A controller-owned external gate is a stronger objective contract than
+        # a generic vertical's optimization style. Keep the stage/checklist state,
+        # but suppress a vertical banner that can otherwise redefine the task.
+        if os.environ.get("ARGUS_SKILL_EXTERNAL_COMPLETION_GATE", "").strip():
+            vertical_banner = ""
+            vertical_fragment = ""
+        role_banner = vertical_banner
         if domain:
             from ...domains import domain_role_banner, load_domain
 
@@ -101,12 +114,6 @@ class RolePromptCatalog:
             role_banner = "\n\n".join(
                 part for part in (role_banner.strip(), domain_banner.strip()) if part
             )
-        stage_order = tuple(vertical_checklist_stage_order(vertical_module))
-        stage = str(request.stage or "").strip()
-        if not stage and request.checklist_mode is not ChecklistMode.NONE:
-            from ...skills.stage_machine import current_stage
-
-            stage = current_stage(root or ".")
 
         checklist_mode = request.checklist_mode
         if checklist_mode is ChecklistMode.AUTO:
@@ -137,13 +144,17 @@ class RolePromptCatalog:
             )
 
         search_altitude = (
-            vertical_search_altitude(vertical_module, root)
+            contract.altitude(root)
             if request.include_search_altitude and root is not None
             else ""
         )
         fragment_ids: list[str] = []
         if vertical_banner.strip():
             fragment_ids.append(f"vertical:{vertical}:banner:{banner_role}")
+        if vertical_fragment.strip():
+            fragment_ids.append(
+                f"vertical:{vertical}:prompt:{banner_role}:{request.operation}"
+            )
         if domain_banner.strip():
             fragment_ids.append(f"domain:{domain}:banner:{banner_role}")
         if checklist.strip():
@@ -168,11 +179,13 @@ class RolePromptCatalog:
             role_banner=role_banner,
             stage_checklist=checklist,
             stage_order=stage_order,
-            completion_gate=vertical_completion_gate(vertical_module),
-            workflow_mode=vertical_workflow_mode(vertical_module),
-            requires_independent_review=vertical_requires_independent_review(
-                vertical_module
+            completion_gate=contract.completion_gate,
+            paper_mission=contract.paper_mission,
+            workflow_mode=contract.workflow_mode,
+            verification_stage_profiles=dict(
+                contract.verification_stage_profiles or {}
             ),
+            requires_independent_review=contract.requires_independent_review,
             search_altitude=search_altitude,
             fragment_ids=tuple(fragment_ids),
         )

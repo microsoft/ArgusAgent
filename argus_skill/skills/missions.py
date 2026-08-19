@@ -28,6 +28,7 @@ class RoleMission:
         *,
         extra_exclude: set[str] | None = None,
         force_empty_match: bool = False,
+        required_relative_paths: tuple[str, ...] = (),
     ) -> RoleSkillLibraries:
         # Method name is retained for role-call compatibility; no selection occurs.
         _ = (task, extra_exclude, force_empty_match)
@@ -35,6 +36,7 @@ class RoleMission:
             self.skill_store,
             role=self.role,
             on_event=self.on_event,
+            required_relative_paths=required_relative_paths,
         )
 
 
@@ -54,8 +56,13 @@ class ManagerMission(RoleMission):
     role = "manager"
 
 
+class SelfMission(RoleMission):
+    role = "self"
+
+
 __all__ = [
     "RoleMission",
+    "SelfMission",
     "EngineerMission",
     "ReviewerMission",
     "PlannerMission",

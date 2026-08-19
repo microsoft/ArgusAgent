@@ -8,6 +8,7 @@ subagent-spawn helpers. The default (gate OFF) must be byte-for-byte unchanged.
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -21,14 +22,28 @@ _ENV = "ARGUS_SKILL_ENGINEER_SANDBOX"
 @pytest.fixture
 def gate_off(monkeypatch):
     monkeypatch.delenv(_ENV, raising=False)
+    monkeypatch.setenv("ARGUS_SKILL_SAFE_MODE", "1")
 
 
 @pytest.fixture
 def gate_on(monkeypatch):
     monkeypatch.setenv(_ENV, "workspace-write")
+    monkeypatch.setenv("ARGUS_SKILL_SAFE_MODE", "1")
 
 
 # ── gate ───────────────────────────────────────────────────────────────────
+def test_default_policy_grants_every_backend_full_access(monkeypatch):
+    monkeypatch.delenv("ARGUS_SKILL_SAFE_MODE", raising=False)
+    for backend in ("codex", "claude", "copilot", "opencode", "pi"):
+        runner = AgentCliRunner(agent_bin=backend, backend=backend)
+        options = runner._apply_sandbox_policy(
+            RunnerOptions(sandbox_mode="read-only", isolate_workdir=True)
+        )
+        assert options.sandbox_mode is None
+        assert options.isolate_workdir is False
+        assert options.dangerous_yolo is True
+
+
 def test_gate_default_off(gate_off):
     assert sandbox.engineer_sandbox_mode() is None
 
@@ -55,27 +70,26 @@ def test_gate_env_parsing(monkeypatch, val, expected):
 
 # ── writable allowlist containment invariants ────────────────────────────────
 def test_writable_roots_excludes_gate_brain_and_package():
-    home = str(Path.home())
-    roots = sandbox.writable_roots()
+    home = Path.home()
+    roots = [Path(root) for root in sandbox.writable_roots()]
     # NEVER writable: the gate's brain, the package source, the codex config.
-    for r in roots:
-        assert not (r == home + "/.argus-skill" or r.startswith(home + "/.argus-skill/"))
-        assert not (r == home + "/.codex" or r.startswith(home + "/.codex/"))
-    forb = sandbox.forbidden_write_roots()
-    assert home + "/.argus-skill" in forb
-    assert home + "/.codex" in forb
+    assert not any(root.is_relative_to(home / ".argus-skill") for root in roots)
+    assert not any(root.is_relative_to(home / ".codex") for root in roots)
+    forbidden = {Path(root) for root in sandbox.forbidden_write_roots()}
+    assert home / ".argus-skill" in forbidden
+    assert home / ".codex" in forbidden
     # the package root is forbidden
     import argus_skill
-    pkg = str(Path(argus_skill.__file__).resolve().parent.parent)
-    assert pkg in forb
+    package_root = Path(argus_skill.__file__).resolve().parent.parent
+    assert package_root in forbidden
 
 
 def test_writable_roots_includes_research_caches():
-    roots = sandbox.writable_roots()
-    assert any(r.endswith("/.cache") for r in roots)   # pip / HF / torch
-    assert any(r.endswith("/.kube") for r in roots)     # B200 kubectl token cache
-    assert any(r.endswith("/.triton") for r in roots)   # Triton JIT/autotune cache
-    assert any(r.endswith("/.nv") for r in roots)       # NVIDIA ptxas/nvrtc cache
+    names = {Path(root).name for root in sandbox.writable_roots()}
+    assert ".cache" in names   # pip / HF / torch
+    assert ".kube" in names     # B200 kubectl token cache
+    assert ".triton" in names   # Triton JIT/autotune cache
+    assert ".nv" in names       # NVIDIA ptxas/nvrtc cache
 
 
 def test_writable_roots_never_grants_the_venv():
@@ -92,7 +106,11 @@ def test_writable_roots_never_grants_the_venv():
     assert prefix in sandbox.forbidden_write_roots()
 
 
-def test_writable_roots_resolves_symlinked_candidate_into_venv(tmp_path, monkeypatch):
+def test_writable_roots_resolves_symlinked_candidate_into_venv(
+    tmp_path,
+    monkeypatch,
+    require_symlink_support,
+):
     """Cross-session escape: a sandboxed session can write ~/.cache, so it could
     repoint it at the venv via symlink. writable_roots() must realpath candidates
     so the symlinked ~/.cache resolves into the (forbidden) venv and is DROPPED —
@@ -125,7 +143,11 @@ def test_fail_closed_workdir_returns_real_nonsymlink_dir(tmp_path, monkeypatch):
     assert os.path.realpath(wd).startswith(os.path.realpath(str(fake_tmp)))
 
 
-def test_fail_closed_workdir_rejects_preplanted_symlink(tmp_path, monkeypatch):
+def test_fail_closed_workdir_rejects_preplanted_symlink(
+    tmp_path,
+    monkeypatch,
+    require_symlink_support,
+):
     # The pid-derived scratch path is predictable and /tmp is engineer-writable, so
     # a prior sandboxed turn can pre-plant it as a symlink to the gate brain. The
     # rootless reviewer -C must NOT resolve there.
@@ -177,11 +199,24 @@ def test_chokepoint_noop_when_gate_off(gate_off):
     assert o.dangerous_yolo is True and o.sandbox_mode is None
 
 
+def test_chokepoint_allows_per_invocation_safe_mode(gate_off):
+    o = _codex_runner()._apply_sandbox_policy(
+        RunnerOptions(
+            dangerous_yolo=True,
+            sandbox_mode="read-only",
+            force_safe_mode=True,
+            working_dir="/wd",
+        )
+    )
+    assert o.dangerous_yolo is True
+    assert o.sandbox_mode == "read-only"
+
+
 def test_chokepoint_converts_builder_when_gate_on(gate_on):
     o = _codex_runner()._apply_sandbox_policy(RunnerOptions(dangerous_yolo=True, working_dir="/wd"))
     assert o.sandbox_mode == "workspace-write"
     assert o.dangerous_yolo is False and o.full_auto is False
-    assert any(r.endswith("/.cache") for r in o.add_dirs)
+    assert any(Path(root).name == ".cache" for root in o.add_dirs)
     assert not any("/.argus-skill" in r for r in o.add_dirs)
 
 
@@ -244,6 +279,7 @@ def test_sandboxed_child_env_scrubs_vcs_creds(monkeypatch):
     assert env["PATH"] == "/usr/bin"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX worktree isolation")
 def test_isolated_workdir_wraps_any_backend_and_hides_vcs_credentials(
     tmp_path,
     monkeypatch,
@@ -271,9 +307,15 @@ def test_isolated_workdir_wraps_any_backend_and_hides_vcs_credentials(
     assert ["--bind", str(workdir), str(workdir)] == command[
         command.index("--bind") : command.index("--bind") + 3
     ]
-    assert ["--tmpfs", "/root"] == command[
-        command.index("/root") - 1 : command.index("/root") + 1
+    hidden_roots = [
+        path
+        for path in ("/root", "/home", "/data", "/scratch", "/mnt", "/workspace")
+        if Path(path).is_dir()
     ]
+    for hidden_root in hidden_roots:
+        assert ["--tmpfs", hidden_root] == command[
+            command.index(hidden_root) - 1 : command.index(hidden_root) + 1
+        ]
     assert str(home / ".ssh") not in command
     assert str(home / ".config" / "gh") not in command
     git_entry = workdir / ".git"
@@ -295,6 +337,7 @@ def test_isolated_workdir_wraps_any_backend_and_hides_vcs_credentials(
     assert command[-2:] == ["/usr/bin/copilot", "--version"]
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX worktree isolation")
 def test_isolated_workdir_rebinds_symlinked_resolver_target(
     tmp_path,
     monkeypatch,
@@ -327,6 +370,7 @@ def test_isolated_workdir_rebinds_symlinked_resolver_target(
     ]
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX worktree isolation")
 def test_isolated_workdir_rebinds_runner_hidden_under_home(
     tmp_path,
     monkeypatch,
@@ -359,6 +403,7 @@ def test_isolated_workdir_rebinds_runner_hidden_under_home(
     assert command[-2:] == [str(runner), "--version"]
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX worktree isolation")
 def test_isolated_workdir_rebinds_vscode_codex_selected_by_wrapper(
     tmp_path,
     monkeypatch,
@@ -408,6 +453,7 @@ def test_isolated_workdir_rebinds_vscode_codex_selected_by_wrapper(
     ]
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX worktree isolation")
 def test_isolated_workdir_fails_closed_without_bubblewrap(
     tmp_path,
     monkeypatch,
@@ -415,6 +461,39 @@ def test_isolated_workdir_fails_closed_without_bubblewrap(
     monkeypatch.setattr(sandbox.shutil, "which", lambda _name: None)
     with pytest.raises(RuntimeError, match="bubblewrap"):
         sandbox.isolated_workdir_command(["copilot"], working_dir=tmp_path)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX worktree isolation")
+def test_isolated_workdir_uses_macos_sandbox_exec_without_bubblewrap(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workdir = tmp_path / "worktree"
+    home = tmp_path / "home"
+    workdir.mkdir()
+    home.mkdir()
+    monkeypatch.setattr(sandbox.sys, "platform", "darwin")
+    monkeypatch.setattr(sandbox.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(
+        sandbox.shutil,
+        "which",
+        lambda name: (
+            "/usr/bin/sandbox-exec"
+            if name == "sandbox-exec"
+            else None
+        ),
+    )
+
+    command = sandbox.isolated_workdir_command(
+        ["/usr/bin/true"],
+        working_dir=workdir,
+    )
+
+    assert command[:2] == ["/usr/bin/sandbox-exec", "-p"]
+    assert str(workdir.resolve()) in command[2]
+    assert str(home / ".ssh") in command[2]
+    assert any(part.startswith("HOME=") for part in command)
+    assert command[-1] == "/usr/bin/true"
 
 
 def test_isolated_runner_scrubs_credentials_even_without_native_sandbox(
@@ -434,7 +513,7 @@ def test_isolated_runner_scrubs_credentials_even_without_native_sandbox(
     assert "AWS_SESSION_TOKEN" not in env
     assert "KUBECONFIG" not in env
     assert env["GIT_CONFIG_GLOBAL"] == os.devnull
-    assert env["GH_CONFIG_DIR"] == "/tmp/argus-no-gh-auth"
+    assert Path(env["GH_CONFIG_DIR"]) == Path(tempfile.gettempdir()) / "argus-no-gh-auth"
 
 
 def test_isolated_copilot_disables_builtin_mcp_and_custom_instructions() -> None:
@@ -469,7 +548,7 @@ def test_no_hardcoded_bypass_left_in_subagent_spawns():
     """Every codex spawn must route through the gated policy. The only remaining
     literal bypass is the legacy default-OFF fallback in the runner/policy."""
     import argus_skill.tools.subagent._core as sub
-    src = Path(sub.__file__).read_text()
+    src = Path(sub.__file__).read_text(encoding="utf-8")
     assert "--dangerously-bypass-approvals-and-sandbox" not in src
 
 
@@ -496,7 +575,9 @@ def test_no_raw_codex_spawn_bypasses_gate_anywhere():
         rel = p.relative_to(pkg_root).as_posix()
         if rel in allowed:
             continue
-        if "--dangerously-bypass-approvals-and-sandbox" in p.read_text():
+        if "--dangerously-bypass-approvals-and-sandbox" in p.read_text(
+            encoding="utf-8"
+        ):
             offenders.append(rel)
     assert offenders == [], f"raw codex bypass outside the gated chokepoint: {offenders}"
 
@@ -505,7 +586,7 @@ def test_teammate_has_no_harness_forced_research_spawn():
     """Teammates use the normal reviewed mission path, not a second CLI spawn."""
     import argus_skill.team.teammate_entry as te
 
-    src = Path(te.__file__).read_text()
+    src = Path(te.__file__).read_text(encoding="utf-8")
     assert "_forced_web_research" not in src
     assert "codex_sandbox_args" not in src
     assert "--dangerously-bypass-approvals-and-sandbox" not in src
@@ -523,6 +604,7 @@ def test_off_path_inert_for_all_roles(gate_off):
     # legacy command still emits the bypass and no -s
     cmd = r._build_codex_command(resume_thread_id=None, options=o1)
     assert "--dangerously-bypass-approvals-and-sandbox" in cmd and "-s" not in cmd
+@pytest.mark.skipif(os.name != "posix", reason="requires a POSIX executable wrapper")
 def test_copilot_wrapper_exposes_real_nvm_binary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

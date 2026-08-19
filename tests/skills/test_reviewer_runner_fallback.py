@@ -5,7 +5,6 @@ from types import SimpleNamespace
 import pytest
 
 from argus_skill.core.models import RunnerResult
-from argus_skill.skills.venue_profiles import EMNLP_PROFILE
 from argus_skill.tools.image_api import ImageToolError
 from argus_skill.verticals.research import (
     _reviewer_runner_fallback as fallback,
@@ -15,6 +14,7 @@ from argus_skill.verticals.research import paper_infrastructure_review as infras
 from argus_skill.verticals.research._reviewer_runner_fallback import (
     ReviewerRunnerError,
 )
+from argus_skill.verticals.research.venue_profiles import EMNLP_PROFILE
 
 
 def _explicit_env() -> dict[str, str]:

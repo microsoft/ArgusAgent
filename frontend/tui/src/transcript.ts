@@ -1,10 +1,17 @@
 import type { EventMsg, Turn } from './api.js';
 import { reduceOperatorEvent } from '../../core/src/activity.js';
 
+function isBackgroundMissionNotice(turn: Turn): boolean {
+  return String(turn.message_id ?? '').startsWith('mission-result-');
+}
+
 /** Convert persisted operator/Manager turns into the local events the TUI renders. */
 export function transcriptEvents(turns: Turn[]): EventMsg[] {
   const events: EventMsg[] = [];
   for (const turn of turns) {
+    // These notices already appear in the bounded event-stream replay. Sending
+    // hundreds through Ink Static floods scrollback and hides the input UI.
+    if (isBackgroundMissionNotice(turn)) continue;
     const text = String(turn.text ?? '').trim();
     if (!text) continue;
     const type = turn.role === 'operator'
@@ -17,6 +24,7 @@ export function transcriptEvents(turns: Turn[]): EventMsg[] {
       type,
       text,
       ...(typeof turn.ts === 'number' ? { ts: turn.ts } : {}),
+      ...(turn.message_id ? { message_id: turn.message_id } : {}),
     } as EventMsg);
   }
   return events;

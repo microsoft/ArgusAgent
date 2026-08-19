@@ -1,37 +1,16 @@
-"""Cross-run subagent failure-streak detector for the L4 planner.
+"""Cross-run subagent failure-streak detector for the Planner.
 
-Observed pathology (2 real projects, 2026-07-04..07-06): a continuous-mode
-daemon's L4 planner kept re-queuing "fix the SWE-bench full-canary run" as a
-*freshly worded* task every cycle (title/objective rephrased each time by the
-LLM planner), for ~20 consecutive attempts over 2 days, each one relaunching
-``swebench_api_patch_pilot.py`` via the subagent tool (up to 1200 hosted model
-calls per attempt) before failing on the same class of error. The existing
-duplicate-task / recent-no-progress-failure dedup in
-:mod:`argus_skill.life.supervisor._core` never caught this because:
+Task titles are not stable enough to detect repeated failures: a Planner may
+rephrase each retry while the same underlying experiment family keeps failing.
+This module reads terminal subagent records and surfaces a structured failure
+streak independent of task wording or parent-mission status.
 
-1. It matches on an *exact* (NFKC + casefold) title/objective signature, and
-   the planner never phrased the retry the same way twice.
-2. It only inspects ``mission_failed`` journal entries with
-   ``terminal_status == "no_progress"`` — but the supervisor's own missions
-   were graded ``success=True`` each round (the engineer legitimately
-   resubmitted the job, polled it, and updated docs; that IS real work at the
-   mission level). The actual repeated failure lived one layer down, in the
-   subagent registry (``.argus_subagents/*.json``), which the planner's dedup
-   never looks at.
+It complements :mod:`argus_skill.engineer.background_subagents`, whose in-flight
+classification covers non-terminal work. This module handles terminal family
+outcomes and remains dependency-free.
 
-This module closes that gap by reading the subagent registry directly and
-surfacing "this experiment family has failed N times in a row without a
-successful completion" as a first-class, structured fact — independent of
-whatever prose the planner used to describe it, and independent of whether the
-supervisor's own mission bookkeeping considered the round "successful".
-
-Kept dependency-free (stdlib only), mirroring
-:mod:`argus_skill.engineer.background_subagents`, whose in-flight (non-
-terminal) classification this module complements rather than duplicates: that
-module answers "is this running job already watched, so the engineer should
-not babysit it"; this module answers "has this family of attempts, across
-MULTIPLE runs, been failing without a break, so the planner should not just
-resubmit it again".
+The companion module answers whether a live job is already supervised; this
+module answers whether repeated completed attempts should be circuit-broken.
 """
 from __future__ import annotations
 
@@ -62,11 +41,8 @@ _FAILURE_STATES = frozenset({"error", "timeout", "early_stopped"})
 # computation entirely — it has not concluded yet.
 _TERMINAL_STATES = _FAILURE_STATES | {_SUCCESS_STATE}
 
-# Task ids are minted as ``<family-slug>-<UTC-compact-timestamp>`` (e.g.
-# ``swebench-verified-full-canary-20260706T123839Z``); strip that trailing
-# timestamp to recover the family. A task id with no such suffix is its own
-# one-member family (still eligible for a streak if literally resubmitted
-# under the identical id, which is harmless/rare).
+# Strip the standard UTC launch suffix to recover a stable experiment family.
+# An id without that suffix forms its own family.
 _FAMILY_SUFFIX_RE = re.compile(r"-\d{8}T\d{6}Z$")
 
 

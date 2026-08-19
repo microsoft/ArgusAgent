@@ -369,12 +369,16 @@ class _CostTrackingSink:
         return self.copilot_premium_requests
 
     def _ledger_summary(self) -> UsageSummary:
-        assert self._usage_ledger is not None
-        return self._usage_ledger.summary(mission_id=self._mission_id)
+        ledger = self._usage_ledger
+        if ledger is None:
+            raise RuntimeError("usage ledger is unavailable")
+        return ledger.summary(mission_id=self._mission_id)
 
     def _ledger_records(self) -> list[UsageRecord]:
-        assert self._usage_ledger is not None
-        return self._usage_ledger.records(mission_id=self._mission_id)
+        ledger = self._usage_ledger
+        if ledger is None:
+            raise RuntimeError("usage ledger is unavailable")
+        return ledger.records(mission_id=self._mission_id)
 
     def _role_cost(self, role: str | None, *, cost_basis: str) -> float:
         total = 0.0

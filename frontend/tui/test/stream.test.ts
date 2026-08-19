@@ -4,6 +4,7 @@ import {
   ApiClient,
   defaultExecutionWorkdir,
   parseSSEFrames,
+  streamCloseInfo,
   taskDispatchMessage,
 } from '../src/api.js';
 import { messageId, mergeFragment, renderEvent } from '../src/eventRender.js';
@@ -34,6 +35,20 @@ test('parseSSEFrames skips a malformed data line without throwing', () => {
   const { frames } = parseSSEFrames('data: not-json\n\ndata: {"type":"done","result":{"kind":"chat"}}\n\n');
   assert.equal(frames.length, 1);
   assert.equal(frames[0].type, 'done');
+});
+
+test('event stream stops reconnecting for terminal auth and missing-project closes', () => {
+  assert.deepEqual(streamCloseInfo(4401), {
+    code: 4401,
+    reason: 'event stream authentication was rejected',
+    retryable: false,
+  });
+  assert.deepEqual(streamCloseInfo(4404, 'workspace was removed'), {
+    code: 4404,
+    reason: 'workspace was removed',
+    retryable: false,
+  });
+  assert.equal(streamCloseInfo(1006, 'socket reset').retryable, true);
 });
 
 test('messageId coalesces ui.argus reply blocks by message_id', () => {
@@ -212,7 +227,7 @@ test('renderEvent accepts round and round_index lifecycle schemas', () => {
   );
 });
 
-test('default feed shows pale reasoning but hides internal actions', () => {
+test('default feed shows pale reasoning and concise command details', () => {
   assert.deepEqual(
     renderEvent({
       type: 'engineer.progress', kind: 'reasoning', text: 'verify the smallest case', agent_layer: 'planner',
@@ -225,7 +240,12 @@ test('default feed shows pale reasoning but hides internal actions', () => {
     messageId({ type: 'engineer.progress', kind: 'reasoning', message_id: 'reasoning:r1' } as never),
     'reasoning:r1',
   );
-  assert.equal(renderEvent({ type: 'engineer.progress', kind: 'command_execution', command: 'pytest' } as never), null);
+  assert.deepEqual(
+    renderEvent({ type: 'engineer.progress', kind: 'command_execution', command: 'pytest' } as never),
+    {
+      role: 'engineer', label: 'Engineer', glyph: '▸ $', text: 'pytest', tone: 'dim', expand: true,
+    },
+  );
   const milestone = renderEvent({
     type: 'role.activity', role: 'engineer', status: 'done', milestone: true,
     label: 'generated 6 candidate ideas',

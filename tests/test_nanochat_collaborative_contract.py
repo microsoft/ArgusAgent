@@ -11,6 +11,12 @@ def test_common_banner_supports_both_scaffolds_and_canonical_workdir():
     assert "STANDING/open-ended" in banner
     assert "return to" in banner and "optimize" in banner
     assert "about 5 minutes" in banner
+    assert "protocol is not evidence" in banner
+    assert "GPU identity" in banner
+    assert "B200" not in banner
+    assert "A100" not in banner
+    assert "0.9344" not in banner
+    assert "0.9109" not in banner
     assert "ONE clean scorer run" in banner
     assert "Do NOT hedge" in banner
 

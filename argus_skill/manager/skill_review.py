@@ -9,29 +9,12 @@ from typing import Any
 
 from ..core.models import RunnerOptions
 from ..core.run_gateway import run_exec as gateway_run_exec
-from ..roles.prompts.manager import (
-    build_skill_placement_prompt,
-    build_skill_placements_prompt,
-)
+from ..roles.prompts.manager import build_skill_placements_prompt
 
 log = logging.getLogger(__name__)
 
 
 _PLACEMENT_KEYS = ("CANDIDATE_ID", "PLACEMENT", "VERTICAL", "WHY")
-
-
-def _named_placement(text: str) -> dict | None:
-    """One placement verdict from named lines, or ``None`` when absent."""
-    from ..core.role_reply import read_key_values, read_optional
-
-    values = read_key_values(text, _PLACEMENT_KEYS)
-    if "PLACEMENT" not in values:
-        return None
-    return {
-        "placement": read_optional(values, "PLACEMENT"),
-        "vertical": read_optional(values, "VERTICAL"),
-        "why": read_optional(values, "WHY"),
-    }
 
 
 def _named_placements(text: str) -> dict | None:
@@ -112,43 +95,22 @@ def classify_skill_placement(
         return PlacementVerdict("stay", "", "empty content")
     if runner is None:
         return PlacementVerdict("stay", "", "no manager runner available")
-    candidates = [v for v in (candidate_verticals or []) if isinstance(v, str) and v]
-
-    prompt = build_skill_placement_prompt(
-        content=content,
-        task=task,
-        candidate_verticals=candidates,
+    candidate_id = "single"
+    return classify_skill_placements(
+        skills=[{
+            "candidate_id": candidate_id,
+            "name": candidate_id,
+            "task": task,
+            "content": content,
+        }],
+        candidate_verticals=candidate_verticals,
+        runner=runner,
+        model=model,
+        reasoning_effort=reasoning_effort,
+    ).get(
+        candidate_id,
+        PlacementVerdict("stay", "", "batch placement unavailable"),
     )
-    try:
-        result = gateway_run_exec(
-            runner,
-            prompt=prompt,
-            options=RunnerOptions(
-                model=model or None,
-                reasoning_effort=reasoning_effort,
-                skip_git_repo_check=True,
-                full_auto=True,
-            ),
-            run_label="manager.skill_placement",
-        )
-    except Exception as exc:  # noqa: BLE001 — tidy-up must never break the loop
-        log.warning("manager skill placement failed (%s: %s)", type(exc).__name__, exc)
-        return PlacementVerdict("stay", "", f"placement error: {type(exc).__name__}")
-
-    reply = getattr(result, "last_agent_message", "") or ""
-    parsed = _named_placement(reply) or _extract_json(reply)
-    if parsed is None:
-        return PlacementVerdict("stay", "", "placement returned no JSON verdict")
-    placement = str(parsed.get("placement", "")).strip().lower()
-    vertical = str(parsed.get("vertical", "")).strip()
-    why = str(parsed.get("why", "")).strip()[:500]
-    if placement == "global":
-        return PlacementVerdict("global", "", why or "general capability")
-    if placement == "vertical" and vertical in candidates:
-        return PlacementVerdict("vertical", vertical, why or f"belongs to {vertical}")
-    # Unknown placement, or a vertical not in the candidate list → conservative
-    # stay (never mis-file into a vertical the caller did not offer).
-    return PlacementVerdict("stay", "", why or "unplaceable / unknown vertical")
 
 
 def classify_skill_placements(

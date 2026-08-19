@@ -98,11 +98,19 @@ def test_continuous_handoff_requests_boundary_yield(tmp_path, monkeypatch) -> No
         "prepare_manager_execution_task",
         lambda *_args, **_kwargs: Prepared(),
     )
+    persisted: list[str] = []
+
+    def persist(execution_task, _division):
+        assert manager_pipeline_yield_requested(life_dir) is True
+        rows = {item.id: item for item in backlog.all()}
+        assert rows[old_item.id].status == "superseded"
+        persisted.append(execution_task)
 
     result = front_door.manager_continuous_handoff(
         memory,
         "new objective",
         {},
+        persist=persist,
     )
 
     assert result == "manager-authored theorem objective"
@@ -113,6 +121,7 @@ def test_continuous_handoff_requests_boundary_yield(tmp_path, monkeypatch) -> No
     rows = {item.id: item for item in backlog.all()}
     assert rows[old_item.id].status == "superseded"
     assert rows[legacy_bootstrap.id].status == "superseded"
+    assert persisted == ["manager-authored theorem objective"]
 
 
 def test_continuous_handoff_additive_authority_preserves_stage_and_backlog(

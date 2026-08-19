@@ -6,18 +6,21 @@ ledger, structured RunWriter signal readers, and usage accounting helpers.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
-try:
-    import fcntl  # POSIX advisory locks for safe concurrent appends
-except ImportError:  # pragma: no cover - non-POSIX fallback
-    fcntl = None  # type: ignore[assignment]
-
+from ...core.daemon_lock import is_pid_running
+from ...core.evidence_ledger import EvidenceLedger
+from ...core.portable_filename import (
+    legacy_hashed_filename_components,
+    portable_filename_component,
+)
 from ._text import _tail_file
 
 # ---------------------------------------------------------------------------
@@ -28,7 +31,7 @@ REGISTRY_DIR = Path(".argus_subagents")
 SUPERVISOR_MODEL = "gpt-5.5"
 SUPERVISOR_INTERVAL_CAP = 900
 
-# Reuse one persistent codex supervisor thread for at most this many checks,
+# Reuse one persistent supervisor thread for at most this many checks,
 # then rotate to a fresh thread seeded with a short summary so a multi-hour
 # run never overflows the context window.
 SUPERVISOR_THREAD_MAX_CHECKS = 12
@@ -36,7 +39,7 @@ SUPERVISOR_THREAD_MAX_CHECKS = 12
 # A parked supervisor refreshes ``last_heartbeat`` every poll. A discussion
 # whose heartbeat is older than this is treated as abandoned (worker hung/dead)
 # so it never wedges the relaunch gate forever. Sized to clear the worst-case
-# gap between heartbeats: one poll plus a resume-then-fresh codex retry
+# gap between heartbeats: one poll plus a resume-then-fresh backend retry
 # (~2×120s).
 DISCUSSION_STALE_AFTER_S = 600
 
@@ -54,13 +57,53 @@ _QUIET_LOGS_ENV = "ARGUS_SUBAGENT_QUIET_LOGS"
 # Registry paths
 # ---------------------------------------------------------------------------
 
+def _task_file_component(task_id: str) -> str:
+    return portable_filename_component(str(task_id), windows=os.name == "nt")
+
+
 def _registry_path(task_id: str) -> Path:
-    return REGISTRY_DIR / f"{task_id}.json"
+    return REGISTRY_DIR / f"{_task_file_component(task_id)}.json"
+
+
+def _legacy_registry_paths(task_id: str) -> tuple[Path, ...]:
+    return tuple(
+        REGISTRY_DIR / f"{component}.json"
+        for component in legacy_hashed_filename_components(task_id)
+    )
+
+
+def _task_record_paths(task_id: str) -> tuple[Path, ...]:
+    return (_registry_path(task_id), *_legacy_registry_paths(task_id))
+
+
+def _unlink_task_records(task_id: str) -> None:
+    for path in _task_record_paths(task_id):
+        try:
+            task = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if isinstance(task, dict) and str(task.get("task_id") or "") == task_id:
+            path.unlink(missing_ok=True)
 
 
 def _exit_status_path(task_id: str, run_id: str | None = None) -> Path:
     name = f"exit_code.{run_id}" if run_id else "exit_code"
-    return REGISTRY_DIR / f"{task_id}_logs" / name
+    return REGISTRY_DIR / f"{_task_file_component(task_id)}_logs" / name
+
+
+def _task_log_dir(task_id: str) -> Path:
+    return REGISTRY_DIR / f"{_task_file_component(task_id)}_logs"
+
+
+def _legacy_exit_status_paths(
+    task_id: str,
+    run_id: str | None = None,
+) -> tuple[Path, ...]:
+    name = f"exit_code.{run_id}" if run_id else "exit_code"
+    return tuple(
+        REGISTRY_DIR / f"{component}_logs" / name
+        for component in legacy_hashed_filename_components(task_id)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +146,56 @@ def _launch_durable_command(
 ) -> "subprocess.Popen[Any]":
     """Launch a command whose exit status survives loss of its Python owner."""
     exit_path = _exit_status_path(task_id, run_id).resolve()
+    exit_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = exit_path.with_name(exit_path.name + ".tmp")
+    if os.name == "nt":
+        wrapper = (
+            "$__command = [Environment]::GetEnvironmentVariable('ARGUS_DURABLE_COMMAND', 'Process')\n"
+            "$__tmp = [Environment]::GetEnvironmentVariable('ARGUS_DURABLE_TMP', 'Process')\n"
+            "$__exit = [Environment]::GetEnvironmentVariable('ARGUS_DURABLE_EXIT', 'Process')\n"
+            "$__rc = 1\n"
+            "try {\n"
+            "  & powershell.exe -NoProfile -NonInteractive "
+            "-Command $__command\n"
+            "  if ($null -ne $global:LASTEXITCODE) {\n"
+            "    $__rc = [int]$global:LASTEXITCODE\n"
+            "  } elseif ($?) {\n"
+            "    $__rc = 0\n"
+            "  } else {\n"
+            "    $__rc = 1\n"
+            "  }\n"
+            "} catch {\n"
+            "  Write-Error $_\n"
+            "  $__rc = 1\n"
+            "}\n"
+            "[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($__exit)) | Out-Null\n"
+            "[IO.File]::WriteAllText($__tmp, ([string]$__rc + [Environment]::NewLine), [Text.Encoding]::ASCII)\n"
+            "Move-Item -LiteralPath $__tmp -Destination $__exit -Force\n"
+            "exit $__rc\n"
+        )
+        env = _child_env()
+        env.setdefault("PYTHONUTF8", "1")
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        env["ARGUS_DURABLE_COMMAND"] = command
+        env["ARGUS_DURABLE_TMP"] = str(temporary)
+        env["ARGUS_DURABLE_EXIT"] = str(exit_path)
+        return subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                wrapper,
+            ],
+            stdout=stdout,
+            stderr=stderr,
+            cwd=cwd,
+            env=env,
+            creationflags=(
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            ),
+        )
     wrapper = (
         'set +e\n'
         'bash -lc "$1"\n'
@@ -129,10 +221,10 @@ def _launch_durable_command(
 def _write_task(task_id: str, data: dict[str, Any]) -> None:
     REGISTRY_DIR.mkdir(parents=True, exist_ok=True)
     path = _registry_path(task_id)
-    try:
-        existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
-    except (json.JSONDecodeError, OSError):
-        existing = None
+    legacy_paths = _legacy_registry_paths(task_id)
+    existing = _read_task(task_id)
+    if existing is None and len(str(task_id).encode("utf-8")) > 120:
+        raise ValueError("task_id exceeds 120 UTF-8 bytes")
     if isinstance(existing, dict):
         preserved_fields = {
             key: existing[key]
@@ -145,6 +237,17 @@ def _write_task(task_id: str, data: dict[str, Any]) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, path)
+    for legacy in legacy_paths:
+        try:
+            legacy_task = json.loads(legacy.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            legacy_task = None
+        if (
+            legacy != path
+            and isinstance(legacy_task, dict)
+            and str(legacy_task.get("task_id") or "") == task_id
+        ):
+            legacy.unlink(missing_ok=True)
 
 
 def _write_task_if_run_id(
@@ -165,27 +268,46 @@ def _write_task_if_run_id(
 
 
 def _read_task(task_id: str) -> dict[str, Any] | None:
-    path = _registry_path(task_id)
-    if not path.exists():
+    records: list[tuple[int, bool, dict[str, Any]]] = []
+    canonical = _registry_path(task_id)
+    for path in _task_record_paths(task_id):
+        if not path.exists():
+            continue
+        try:
+            task = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if isinstance(task, dict) and str(task.get("task_id") or "") == task_id:
+            try:
+                modified = path.stat().st_mtime_ns
+            except OSError:
+                modified = 0
+            records.append((modified, path == canonical, task))
+    if not records:
         return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
+    return max(records, key=lambda item: item[:2])[2]
 
 
 def _list_tasks() -> list[dict[str, Any]]:
     if not REGISTRY_DIR.exists():
         return []
-    tasks = []
+    tasks: dict[str, tuple[int, dict[str, Any]]] = {}
     for f in sorted(REGISTRY_DIR.glob("*.json")):
         if f.name.endswith(".tmp"):
             continue
         try:
-            tasks.append(json.loads(f.read_text(encoding="utf-8")))
+            task = json.loads(f.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
-            pass
-    return tasks
+            continue
+        if isinstance(task, dict):
+            task_id = str(task.get("task_id") or f.name)
+            try:
+                modified = f.stat().st_mtime_ns
+            except OSError:
+                modified = 0
+            if task_id not in tasks or modified > tasks[task_id][0]:
+                tasks[task_id] = (modified, task)
+    return [task for _modified, task in tasks.values()]
 
 
 # ---------------------------------------------------------------------------
@@ -193,20 +315,19 @@ def _list_tasks() -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def _is_pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
+    return is_pid_running(pid)
 
 
 def _read_exit_code(task_id: str, run_id: str | None = None) -> int | None:
-    try:
-        return int(
-            _exit_status_path(task_id, run_id).read_text(encoding="utf-8").strip()
-        )
-    except (OSError, ValueError):
-        return None
+    for path in (
+        _exit_status_path(task_id, run_id),
+        *_legacy_exit_status_paths(task_id, run_id),
+    ):
+        try:
+            return int(path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            continue
+    return None
 
 
 def reconcile_terminal_task(task_id: str, task: dict[str, Any]) -> dict[str, Any]:
@@ -214,14 +335,14 @@ def reconcile_terminal_task(task_id: str, task: dict[str, Any]) -> dict[str, Any
     if task.get("state") not in {"starting", "preflight", "running"}:
         return task
     pid = int(task.get("pid") or 0)
-    if pid and _is_pid_alive(pid):
+    run_id = str(task.get("run_id") or "") or None
+    exit_code = _read_exit_code(task_id, run_id)
+    if exit_code is None and pid and _is_pid_alive(pid):
         worker_pid = int(task.get("worker_pid") or 0)
         if worker_pid and not _is_pid_alive(worker_pid):
             task["owner_lost"] = True
             task["terminal_owner"] = "exit_sidecar_reconciler"
         return task
-    run_id = str(task.get("run_id") or "") or None
-    exit_code = _read_exit_code(task_id, run_id)
     if exit_code is None:
         task["state"] = "crashed"
         task["error"] = f"sub-agent process {pid} no longer running and no exit sidecar exists"
@@ -547,32 +668,50 @@ def _append_experiment_history(cwd: str, record: dict[str, Any]) -> None:
     count. This is the durable, project-local memory a future engineer scans to
     learn why past runs succeeded or failed.
     """
-    try:
-        path = Path(cwd) / EXPERIMENT_HISTORY_REL
-        path.parent.mkdir(parents=True, exist_ok=True)
-        rid = record.get("run_id")
-        if rid and path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
-                try:
-                    if json.loads(line).get("run_id") == rid:
-                        return  # already recorded
-                except (json.JSONDecodeError, AttributeError):
-                    continue
-        with path.open("a", encoding="utf-8") as f:
-            if fcntl is not None:
-                try:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-                except OSError:
-                    pass
-            f.write(json.dumps(record) + "\n")
-            f.flush()
-            if fcntl is not None:
-                try:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-                except OSError:
-                    pass
-    except OSError:
-        pass
+    path = Path(cwd) / EXPERIMENT_HISTORY_REL
+    run_id = str(record.get("run_id") or "").strip()
+    if not run_id:
+        encoded = json.dumps(
+            record,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        run_id = f"event-{hashlib.sha256(encoded).hexdigest()[:20]}"
+    EvidenceLedger(path).append_record(
+        record_id=run_id,
+        record_type="experiment",
+        payload=record,
+        preserve_existing=True,
+    )
+
+
+def append_experiment_correction(
+    cwd: str,
+    *,
+    run_id: str,
+    correction_id: str,
+    relation: str,
+    reason: str,
+    evidence_refs: list[str] | tuple[str, ...] = (),
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Add a traceable correction without rewriting the original run row."""
+    normalized_run_id = str(run_id or "").strip()
+    if not normalized_run_id:
+        raise ValueError("run_id must be non-empty")
+    return EvidenceLedger(Path(cwd) / EXPERIMENT_HISTORY_REL).append_correction(
+        correction_id=correction_id,
+        target_record_id=normalized_run_id,
+        relation=relation,
+        reason=reason,
+        evidence_refs=evidence_refs,
+        payload={
+            "run_id": normalized_run_id,
+            "event": "CORRECTION",
+            "details": dict(details or {}),
+        },
+    )
 
 
 def _persist_experiment_record(
@@ -609,7 +748,18 @@ def _persist_experiment_record(
         "run_state": metrics.get("state", ""),
         "ts": time.time(),
     }
-    _append_experiment_history(cwd, record)
+    try:
+        _append_experiment_history(cwd, record)
+    except (OSError, TimeoutError, ValueError) as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        td["evidence_persistence_error"] = error
+        _write_task(task_id, td)
+        print(
+            f"argus subagent: terminal result preserved, but experiment "
+            f"history persistence failed for {task_id}: {error}",
+            file=sys.stderr,
+            flush=True,
+        )
     if not run_dir:
         return
     try:
@@ -631,6 +781,6 @@ def _persist_experiment_record(
                   f"Resolution: {record['discussion_resolution'] or 'n/a'}\n"
                   f"Headline: {headline or 'n/a'}")
         (rp / "SUPERVISOR_VERDICT.md").write_text(
-            f"# Supervisor verdict — {task_id} [{event}]\n\n{vt}\n", encoding="utf-8")
+            f"# Supervisor verdict - {task_id} [{event}]\n\n{vt}\n", encoding="utf-8")
     except OSError:
         pass

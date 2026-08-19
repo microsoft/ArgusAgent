@@ -2,9 +2,22 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0b0d11" />
+    <!-- viewport-fit=cover lets the shell paint under the notch and the home
+         indicator; the safe-area insets in index.css keep controls clear of
+         them. No maximum-scale — pinch-zoom stays available. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0b0d11" media="(prefers-color-scheme: dark)" />
+    <meta name="color-scheme" content="light dark" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- Installable on a phone: Android reads the manifest, iOS reads the
+         apple-* tags and the touch icon. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Argus" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Argus · Research Workbench</title>
     <script>
       (() => {
@@ -13,11 +26,12 @@
         document.documentElement.dataset.theme = dark ? 'dark' : 'light';
       })();
     </script>
-    <script type="module" crossorigin src="/assets/index-BfVVqhgg.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/query-BkmKrQ5_.js">
-    <link rel="modulepreload" crossorigin href="/assets/icons-CeJW0-mr.js">
-    <link rel="modulepreload" crossorigin href="/assets/markdown-DEWoRQIz.js">
-    <link rel="stylesheet" crossorigin href="/assets/index-DD3gtzoQ.css">
+    <script type="module" crossorigin src="/assets/index-Cf1DGb_h.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/rolldown-runtime-hePW80VL.js">
+    <link rel="modulepreload" crossorigin href="/assets/icons-BgG77X6K.js">
+    <link rel="modulepreload" crossorigin href="/assets/query-DOc9YWJi.js">
+    <link rel="modulepreload" crossorigin href="/assets/markdown-BdostSiP.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-D-1WLY6D.css">
   </head>
   <body>
     <div id="root"></div>

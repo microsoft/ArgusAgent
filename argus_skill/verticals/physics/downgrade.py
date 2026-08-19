@@ -60,7 +60,12 @@ def _atomic_write(path: Path, text: str) -> None:
 
 
 def _pipeline_state(root: Path) -> dict:
-    return _read_json(_research_dir(root) / "PIPELINE_STATE.json") or {}
+    from ...core.pipeline_state import read_pipeline_state
+
+    try:
+        return read_pipeline_state(root)
+    except (OSError, ValueError):
+        return {}
 
 
 def _norm(s: object) -> str:

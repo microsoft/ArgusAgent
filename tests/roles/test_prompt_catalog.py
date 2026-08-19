@@ -29,7 +29,7 @@ from argus_skill.verticals._base import load_vertical, vertical_role_banner
 
 
 def _set_stage(project_root, stage: str) -> None:
-    path = project_root / "research" / "PIPELINE_STATE.json"
+    path = project_root / ".argus" / "PIPELINE_STATE.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["current_stage"] = stage
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -63,7 +63,8 @@ def test_planner_context_resolves_banner_stage_and_checklist(tmp_path) -> None:
         role="planner",
         project_root=tmp_path,
     )
-    assert context.completion_gate != "full_paper"
+    assert context.paper_mission is False
+    assert context.completion_gate != "certified"
     assert "vertical:speedrun:checklist:planner:stage:optimize" in (
         context.fragment_ids
     )
@@ -79,6 +80,9 @@ def test_reviewer_auto_selects_full_pipeline_for_final_submission(
     )
 
     assert context.scope == "final_submission"
+    assert context.paper_mission is True
+    assert "## Near-complete paper review" in context.role_banner
+    assert "## Final paper review" in context.role_banner
     assert context.stage_checklist == format_full_pipeline_checklist(
         role="reviewer",
         project_root=tmp_path,
@@ -86,6 +90,17 @@ def test_reviewer_auto_selects_full_pipeline_for_final_submission(
     assert "vertical:research:checklist:reviewer:full_pipeline" in (
         context.fragment_ids
     )
+
+
+def test_research_planner_receives_dynamic_paper_policy(tmp_path) -> None:
+    persist_vertical(tmp_path, "research")
+    _set_stage(tmp_path, "run")
+
+    context = resolve_role_prompt(continuous_request(tmp_path))
+
+    assert "## Parallel paper-drafting track" in context.role_banner
+    assert "paper/RESULT_PLACEHOLDERS.md" in context.role_banner
+    assert "vertical:research:prompt:planner:continuous" in context.fragment_ids
 
 
 def test_manager_stage_decision_preserves_planner_checklist_framing(
@@ -118,6 +133,7 @@ def test_non_vertical_manager_operation_resolves_empty_context() -> None:
 
     assert context.vertical == ""
     assert context.role_banner == ""
+    assert context.paper_mission is False
     assert context.fragment_ids == ()
 
 

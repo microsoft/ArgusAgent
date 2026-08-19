@@ -17,7 +17,11 @@ from typing import Any
 from ...core.event_catalog import EventType
 from ...core.stop_kinds import stop_kind_is_recoverable
 from ..memory import BacklogItem
-from ..mission_outcome import mission_outcome_class, mission_outcome_dimensions
+from ..mission_outcome import (
+    mission_outcome_class,
+    mission_outcome_dimensions,
+    review_keeps_mission_resumable,
+)
 from ._constants import (
     _REPLAN_STREAK_JOURNAL_WINDOW,
     PLANNER_RECENT_FAILURE_STATUS,
@@ -27,6 +31,7 @@ from ._constants import (
 )
 from ._helpers import _normalize_planner_text
 from ._mission_execution_helpers import _MissionRunState
+from .pending_notify import notify_pending_question
 
 log = logging.getLogger(__name__)
 
@@ -164,6 +169,7 @@ class MissionExecutionSettlementMixin:
                         target_stage=state.pipeline_stage_at_start,
                         reason=guard_reason,
                         rolled_back_by="supervisor_dynamic_plan_guard",
+                        evidence_root=self._project_workdir(),
                     )
                     guard_applied = True
                 except Exception:  # noqa: BLE001
@@ -198,6 +204,32 @@ class MissionExecutionSettlementMixin:
         state.stage_transition = stage_transition
         state.stage_action = stage_action
         state.planner_bounded_node = planner_bounded_node
+
+        review_status = str(
+            getattr(outcome, "final_review_status", "") or ""
+        ).strip().lower()
+        if (
+            self._item_is_stage_closing(item)
+            and review_status == "done"
+            and state.pipeline_stage_at_start
+        ):
+            try:
+                from ...core.stage_certificate import record_stage_review
+
+                record_stage_review(
+                    state_root=self.memory.root,
+                    project_root=self._artifact_root(),
+                    stage=state.pipeline_stage_at_start,
+                    item=item,
+                    manager_action=stage_action or "hold",
+                    manager_reason=(
+                        str(stage_transition.get("reason") or "")
+                        if isinstance(stage_transition, dict)
+                        else ""
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - certificate is observability/control aid
+                log.exception("life supervisor: failed to record stage review certificate")
 
     def _maybe_short_circuit_for_stage_transition(
         self, state: _MissionRunState,
@@ -362,6 +394,62 @@ class MissionExecutionSettlementMixin:
         operator_question = str(
             getattr(outcome, "operator_question", "") or ""
         ).strip()
+        if operator_question:
+            from ...core.autonomy import (
+                assess_operator_intervention,
+                technical_continuation,
+            )
+
+            planner_report = dict(
+                getattr(outcome, "final_planner_report", {}) or {}
+            )
+            intervention = assess_operator_intervention(
+                question=operator_question,
+                reason=str(getattr(outcome, "final_review_reason", "") or ""),
+                next_action=str(getattr(outcome, "final_review_next_action", "") or ""),
+                planner_report=planner_report,
+            )
+            if not intervention.required:
+                continuation = technical_continuation(
+                    question=operator_question,
+                    reason=str(
+                        getattr(outcome, "final_review_reason", "") or ""
+                    ),
+                    next_action=str(
+                        getattr(outcome, "final_review_next_action", "") or ""
+                    ),
+                )
+                planner_report.update({
+                    "forward_progress": False,
+                    "plan_signal": "reconsider",
+                    "challenge": str(
+                        planner_report.get("challenge")
+                        or getattr(outcome, "final_review_reason", "")
+                        or operator_question
+                    ),
+                    "alternative": continuation,
+                    "authority_impact": "technical",
+                    "auto_continued": True,
+                })
+                outcome.final_planner_report = planner_report
+                outcome.operator_question = ""
+                self._emit({
+                    "type": EventType.LIFE_MANAGER_PLAN_CHALLENGE_DECIDED,
+                    "item_id": item.id,
+                    "manager_action": "replace",
+                    "manager_reason": intervention.reason,
+                    "challenge": operator_question,
+                    "alternative": continuation,
+                    "authority_impact": "technical",
+                    "source": "pragmatic_autonomy_policy",
+                    "text": (
+                        "Argus kept a reversible technical choice inside the team "
+                        "instead of interrupting the operator."
+                    ),
+                })
+                operator_question = ""
+                if status in {"blocked", "replan_requested"}:
+                    status = "replan_requested"
         research_pause = status in {
             "research_incomplete",
             "paused_no_breakthrough",
@@ -383,46 +471,130 @@ class MissionExecutionSettlementMixin:
             replan_requested and stage_action in {"advance", "rollback"}
         )
         err = state.exc_str or state.stop_reason or "unspecified failure"
+        final_review_status = str(getattr(outcome, "final_review_status", "") or "")
         resumable = bool(
-            research_pause or stop_kind_is_recoverable(state.stop_kind)
+            research_pause
+            or stop_kind_is_recoverable(state.stop_kind)
+            # A stall the Reviewer answered with ``continue`` is unfinished
+            # work, not a dead task. Without this the mission is journaled with
+            # ``terminal_status=no_progress`` and ``resumable=False``, which
+            # quarantines its own signature out of the next planning cycle.
+            or review_keeps_mission_resumable(
+                status=status,
+                success=success,
+                review_status=final_review_status,
+                stop_kind=state.stop_kind,
+            )
         )
         outcome_dimensions = mission_outcome_dimensions(
             status=status,
             success=success,
-            review_status=str(
-                getattr(outcome, "final_review_status", "") or ""
-            ),
+            review_status=final_review_status,
             stage_transition=stage_transition,
             stage_transition_skipped=(
                 self._item_skips_stage_transition(item)
                 or bool(getattr(outcome, "stage_transition_skipped", False))
             ),
+            stage_transition_deferred=bool(
+                getattr(outcome, "stage_transition_deferred", False)
+            ),
             stop_kind=state.stop_kind,
             resumable=resumable,
         )
+
+        manager_decision = getattr(item, "manager_decision", {}) or {}
+        learned_candidate = bool(
+            isinstance(manager_decision, dict)
+            and manager_decision.get("learned_vertical_status") == "candidate"
+        )
+        if learned_candidate:
+            from ...verticals._data_domain import (
+                promote_data_domain,
+                record_data_domain_failure,
+            )
+
+            vertical = str(manager_decision.get("vertical") or "")
+            review_status = str(
+                getattr(outcome, "final_review_status", "") or ""
+            ).strip().lower()
+            review_source = str(
+                getattr(outcome, "final_review_source", "") or ""
+            ).strip().lower()
+            if success and review_status == "done" and review_source == "reviewer":
+                try:
+                    promoted = promote_data_domain(
+                        self.memory.root,
+                        self._budget_global_root(),
+                        vertical,
+                        review_reason=str(
+                            getattr(outcome, "final_review_reason", "") or ""
+                        ),
+                    )
+                except OSError as exc:
+                    log.exception(
+                        "life supervisor: learned vertical promotion failed"
+                    )
+                    self._emit({
+                        "type": "life.learned_vertical.promotion_failed",
+                        "vertical": vertical,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    })
+                    promoted = False
+                if promoted:
+                    manager_decision = dict(manager_decision)
+                    manager_decision["learned_vertical_status"] = "formal"
+                    self.memory.backlog.update(
+                        item.id,
+                        manager_decision=manager_decision,
+                    )
+                    self._emit({
+                        "type": "life.learned_vertical.promoted",
+                        "vertical": vertical,
+                    })
+            elif not success:
+                try:
+                    record_data_domain_failure(
+                        self.memory.root,
+                        vertical,
+                        reason=state.stop_reason or status,
+                    )
+                except OSError:
+                    log.exception(
+                        "life supervisor: learned vertical failure note could not be saved"
+                    )
 
         # Update backlog row. A bounded research cycle that did not achieve its
         # persisted success target is resumable, not a success or terminal failure.
         if success:
             self.memory.backlog.mark_done(item.id, outcome=outcome_dimensions)
+            if "runtime_failure_canary" in state.item_tags:
+                try:
+                    from ..runtime_failure_circuit import clear_runtime_failure_circuit
+
+                    circuit_cleared = clear_runtime_failure_circuit(
+                        self.memory.root,
+                        reason=f"reviewed runtime canary passed in mission {item.id}",
+                    )
+                    self._emit({
+                        "type": EventType.LIFE_RUNTIME_FAILURE_CANARY_PASSED,
+                        "item_id": item.id,
+                        "circuit_cleared": circuit_cleared,
+                    })
+                except Exception:  # noqa: BLE001 - canary result remains successful
+                    log.exception("failed to clear runtime circuit after canary")
         elif status == "blocked" and operator_question:
             from ...core.operator_decision import build_operator_decision
 
+            decision_root = self.memory.root
             evidence = list(getattr(item, "context_refs", None) or [])
-            if str(getattr(item, "acceptance_check", "") or "").strip():
-                evidence.append({
-                    "label": "Acceptance check",
-                    "summary": str(item.acceptance_check).strip(),
-                })
             decision_card = build_operator_decision(
                 item_id=item.id,
                 title=item.title,
                 reason=str(getattr(outcome, "final_review_reason", "") or err),
                 question=operator_question,
-                recommendation=str(
-                    getattr(outcome, "final_review_next_action", "") or ""
-                ),
+                options=list(getattr(outcome, "operator_options", []) or []),
                 evidence=evidence,
+                project_id=decision_root.name,
             )
             # Status and the authority-bearing question must reach disk in one
             # backlog transaction. Keep the row nonterminal so dependency
@@ -438,6 +610,12 @@ class MissionExecutionSettlementMixin:
                 pending_question=operator_question,
                 operator_decision=decision_card,
             )
+            # The mission is now parked on the operator. Nobody watches a
+            # long-running daemon's portal, so tell them where they already
+            # are — otherwise the wait lasts until someone happens to look.
+            item.pending_question = operator_question
+            item.operator_decision = decision_card
+            notify_pending_question(self.memory.root, item)
         elif stage_reconciled_replan:
             self.memory.backlog.mark_failed(
                 item.id,
@@ -446,6 +624,16 @@ class MissionExecutionSettlementMixin:
                     f"{stage_transition.get('target_stage') or 'another stage'} "
                     "after Reviewer identified an upstream stage defect"
                 ),
+                outcome=outcome_dimensions,
+            )
+        elif replan_requested and bool(
+            (getattr(outcome, "final_planner_report", None) or {}).get(
+                "forward_progress"
+            )
+        ):
+            self.memory.backlog.mark_failed(
+                item.id,
+                error=state.stop_reason or "completed work requires a replacement plan",
                 outcome=outcome_dimensions,
             )
         elif replan_requested:
@@ -583,12 +771,110 @@ class MissionExecutionSettlementMixin:
             if final_submission_certified
             else ""
         )
+        try:
+            remaining_work = any(
+                row.id != item.id
+                and row.status
+                in {
+                    "pending",
+                    "running",
+                    "paused",
+                    "paused_budget",
+                    "paused_provider_cooldown",
+                    "paused_provider_fence",
+                    "paused_operator",
+                }
+                for row in self.memory.backlog.all()
+            )
+        except Exception:  # noqa: BLE001 - completion presentation fails closed
+            remaining_work = True
+        overall_complete = bool(
+            success
+            and (
+                final_submission_certified
+                or (not self.config.continuous and not remaining_work)
+            )
+        )
+        campaign_continues = bool(success and not overall_complete)
 
         self._update_no_progress_streak(
             kind=kind,
             report=getattr(outcome, "final_planner_report", {}) or {},
         )
 
+        planner_report = dict(
+            getattr(outcome, "final_planner_report", {}) or {}
+        )
+        plan_challenge = dict(getattr(outcome, "plan_challenge", {}) or {})
+        mission_summary = " ".join(
+            str(
+                getattr(outcome, "summary", "")
+                or getattr(outcome, "final_message", "")
+                or getattr(outcome, "final_review_reason", "")
+                or getattr(outcome, "reason", "")
+                or planner_report.get("summary")
+                or ""
+            ).split()
+        )[:1200]
+        # A completed mission needs one durable, operator-facing receipt rather
+        # than three loosely related hints (event, chat text, and sidebar).
+        # Resolve targets only from the final Reviewer evidence, vertical
+        # contract, or Manager-owned live view; never scan or guess workspace
+        # files at settlement time.
+        delivery: dict[str, Any] | None = None
+        frontier = getattr(outcome, "final_frontier_report", {}) or {}
+        reviewer_artifacts = (
+            list(frontier.get("artifacts") or [])
+            if isinstance(frontier, dict)
+            else []
+        )
+        try:
+            from ..delivery import build_delivery_receipt
+
+            delivery = build_delivery_receipt(
+                item_id=item.id,
+                title=item.title,
+                summary=mission_summary,
+                success=bool(success),
+                overall_complete=overall_complete,
+                status=status,
+                review_status=str(
+                    getattr(outcome, "final_review_status", "") or ""
+                ),
+                final_submission_certified=final_submission_certified,
+                workspace=(state.execution_workdir or self._project_workdir()),
+                state_root=self.memory.root,
+                stage=state.pipeline_stage_at_start,
+                reviewer_artifacts=reviewer_artifacts,
+            )
+        except Exception:  # noqa: BLE001 - delivery presentation never owns settlement
+            log.debug("mission delivery receipt could not be built", exc_info=True)
+        try:
+            from ...core.metrics import metrics_root_for_project, record_metric
+
+            forward_progress = planner_report.get("forward_progress")
+            if not isinstance(forward_progress, bool) and success and status == "done":
+                forward_progress = True
+            record_metric(
+                metrics_root_for_project(self.memory.root),
+                "goal.mission",
+                labels={"status": status},
+                fields={
+                    "project_id": self.memory.root.name,
+                    "item_id": item.id,
+                    "accepted": bool(success),
+                    "forward_progress": (
+                        forward_progress
+                        if isinstance(forward_progress, bool)
+                        else None
+                    ),
+                    "replan_requested": bool(state.replan_requested),
+                    "plan_signal": str(planner_report.get("plan_signal") or ""),
+                    "elapsed_seconds": float(state.elapsed or 0.0),
+                },
+            )
+        except Exception:  # noqa: BLE001 - metrics never own settlement
+            log.debug("goal mission metric skipped", exc_info=True)
         cost_sink = state.cost_sink
         scientist_totals = cost_sink.scientist_totals()
         scientist_usage_by_model = cost_sink.scientist_usage_by_model_snapshot()
@@ -604,8 +890,17 @@ class MissionExecutionSettlementMixin:
             ),
             "success": success,
             "status": status,
+            "summary": mission_summary,
+            "execution_workdir": str(state.execution_workdir),
+            "delivery_candidates": [
+                str(candidate)
+                for candidate in reviewer_artifacts
+                if str(candidate).strip()
+            ][:12],
             "outcome_class": mission_outcome_class(status=status, success=success),
             "outcome": state.outcome_dimensions,
+            "planner_report": planner_report,
+            "plan_challenge": plan_challenge,
             "rounds": state.rounds,
             "elapsed_seconds": state.elapsed,
             "cost_usd": state.usd,
@@ -633,6 +928,9 @@ class MissionExecutionSettlementMixin:
                 else ""
             ),
             "failure_reason": state.err if kind == "mission_failed" else "",
+            "operator_question": str(
+                getattr(outcome, "operator_question", "") or ""
+            ).strip(),
             "agent_layer": "engineer",
             "engineer_model": self.engineer_model,
             "reviewer_model": self.reviewer_model,
@@ -673,6 +971,11 @@ class MissionExecutionSettlementMixin:
             ),
             "final_submission_certified": final_submission_certified,
             "final_submission_signature": final_submission_signature,
+            "overall_complete": overall_complete,
+            "campaign_continues": campaign_continues,
+            "delivery": delivery,
+            "delivery_id": str((delivery or {}).get("delivery_id") or ""),
+            "research_result": getattr(outcome, "research_result", None),
             "repair_capability": {
                 "capability_id": str(state.repair_capability.get("capability_id") or ""),
                 "authorization_id": str(
@@ -709,6 +1012,12 @@ class MissionExecutionSettlementMixin:
                 or getattr(outcome, "reason", "")
                 or ""
             ),
+            "summary": mission_summary,
+            "overall_complete": overall_complete,
+            "campaign_continues": campaign_continues,
+            "delivery": delivery,
+            "planner_report": planner_report,
+            "plan_challenge": plan_challenge,
             "expected_plan_id": item.plan_id,
             "expected_plan_version": item.plan_version,
             "context_packet": (

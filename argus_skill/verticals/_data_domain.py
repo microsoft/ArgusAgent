@@ -12,7 +12,9 @@ the Python verticals use.
 :mod:`argus_skill.verticals._base` read via ``getattr``
 (``STAGE_ORDER`` / ``CHECKLIST_STAGE_ORDER`` / ``CHECKLIST_ITEMS`` /
 ``completion_gate`` / ``role_banner``), so ``_base`` needs no changes to consume
-it. A fresh data domain ships an EMPTY ``CHECKLIST_ITEMS`` (the Planner authors
+it. ``role_banners`` may map role names to separate prompt contracts; the legacy
+``role_banner`` string remains the fallback. A fresh data domain ships an EMPTY
+``CHECKLIST_ITEMS`` (the Planner authors
 the per-stage checklist at runtime via :mod:`argus_skill.skills.checklist_store`)
 and ``completion_gate="none"`` so it does not demand the paper submission gate.
 
@@ -41,6 +43,7 @@ log = logging.getLogger(__name__)
 #: Project-local data-domain layout: ``<root>/research/DOMAINS/<name>.json`` plus
 #: a fast ``INDEX.json`` listing every domain's metadata (minus checklist items).
 DOMAINS_RELDIR = ("research", "DOMAINS")
+LEARNED_DOMAINS_RELDIR = ("learned_verticals",)
 INDEX_FILE = "INDEX.json"
 
 #: A valid data-domain name: lowercase slug, no path separators, no leading dot.
@@ -67,6 +70,14 @@ def _index_path(project_root: object) -> Path:
     return _domains_dir(project_root) / INDEX_FILE
 
 
+def _learned_domains_dir(global_root: object) -> Path:
+    return Path(str(global_root)).joinpath(*LEARNED_DOMAINS_RELDIR)
+
+
+def _learned_domain_path(global_root: object, name: str) -> Path:
+    return _learned_domains_dir(global_root) / f"{name}.json"
+
+
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     """Atomic tmp+rename write."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -80,6 +91,16 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             os.unlink(tmp)
         except OSError:
             pass
+
+
+def _normalize_role_banners(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(role).strip().lower(): banner.strip()
+        for role, banner in value.items()
+        if str(role).strip() and isinstance(banner, str) and banner.strip()
+    }
 
 
 class DataDomain:
@@ -102,17 +123,25 @@ class DataDomain:
             str(s).strip().lower() for s in order if str(s).strip()
         ]
         gate = str(payload.get("completion_gate") or DEFAULT_COMPLETION_GATE).strip().lower()
-        # Back-compat: the paper/report completion gate was historically keyed
-        # "full_emnlp"; accept that legacy value from persisted data-domain
-        # payloads and normalize to the venue-neutral "full_paper".
-        if gate == "full_emnlp":
-            gate = "full_paper"
+        # Persisted data-domain adapter. New framework code uses the generic
+        # certification strength; historical paper-specific names stay here.
+        if gate in {"full_emnlp", "full_paper"}:
+            gate = "certified"
 
         self.name = name
+        self.status = str(payload.get("status") or "formal").strip().lower()
+        self.purpose = str(
+            payload.get("purpose") or ""
+        ).strip()
         self.STAGE_ORDER = stages
         self.CHECKLIST_STAGE_ORDER = tuple(checklist_stage_order)
+        self.CHECKLIST_OPTIONAL_STAGES = tuple(checklist_stage_order)
         self.completion_gate = gate or DEFAULT_COMPLETION_GATE
         self._role_banner = str(payload.get("role_banner") or "")
+        self.REQUIRE_INDEPENDENT_REVIEW = bool(
+            payload.get("require_independent_review", False)
+        )
+        self.ROLE_BANNERS = _normalize_role_banners(payload.get("role_banners"))
 
         # Optional per-stage seed checklist (usually empty for a fresh
         # Manager-authored domain; the Planner authors items at runtime via the
@@ -147,8 +176,13 @@ class DataDomain:
             out[str(stage).strip().lower()] = tuple(built)
         return out
 
-    def role_banner(self, role: str) -> str:  # noqa: ARG002 - role-agnostic banner
-        return self._role_banner
+    def role_banner(self, role: str) -> str:
+        role_name = str(role or "").strip().lower()
+        return (
+            self.ROLE_BANNERS.get(role_name)
+            or self.ROLE_BANNERS.get("default")
+            or self._role_banner
+        )
 
 
 def load_data_domain(name: object, project_root: object = ".") -> "DataDomain | None":
@@ -183,6 +217,14 @@ def data_domain_exists(name: object, project_root: object = ".") -> bool:
     return _domain_path(project_root, str(name)).is_file()
 
 
+def _read_payload(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def list_data_domains(project_root: object = ".") -> list[str]:
     """Return the names of every project-local data domain (fail-open to [])."""
     out: list[str] = []
@@ -199,6 +241,160 @@ def list_data_domains(project_root: object = ".") -> list[str]:
     return out
 
 
+def list_formal_data_domain_purposes(
+    project_root: object = ".",
+    *,
+    learned_root: object | None = None,
+) -> dict[str, str]:
+    """Return reusable domains and concise semantic descriptions."""
+    purposes: dict[str, str] = {}
+    roots = [_domains_dir(project_root)]
+    if learned_root is not None:
+        roots.append(_learned_domains_dir(learned_root))
+    for root in roots:
+        try:
+            entries = sorted(root.glob("*.json"), key=lambda path: path.name)
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.name == INDEX_FILE:
+                continue
+            name = entry.stem
+            if not is_valid_domain_name(name):
+                continue
+            payload = _read_payload(entry)
+            if payload is None:
+                continue
+            if str(payload.get("status") or "formal").strip().lower() != "formal":
+                continue
+            purpose = str(
+                payload.get("purpose")
+                or payload.get("role_banner")
+                or name
+            ).strip()
+            purposes.setdefault(name, purpose[:600])
+    return purposes
+
+
+def list_selectable_data_domain_summaries(
+    project_root: object = ".",
+    *,
+    learned_root: object | None = None,
+) -> dict[str, str]:
+    """Return local candidate/formal domains plus learned formal domains.
+
+    Candidate domains are selectable only inside their owning project and stay
+    explicitly labelled ``status=candidate`` so Manager can reuse them without
+    treating them as independently verified. A learned formal domain overrides
+    a stale local candidate with the same name.
+    """
+    summaries: dict[str, tuple[str, str]] = {}
+    roots = [(_domains_dir(project_root), False)]
+    if learned_root is not None:
+        roots.append((_learned_domains_dir(learned_root), True))
+    for root, learned in roots:
+        try:
+            entries = sorted(root.glob("*.json"), key=lambda path: path.name)
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.name == INDEX_FILE or not is_valid_domain_name(entry.stem):
+                continue
+            payload = _read_payload(entry)
+            if payload is None:
+                continue
+            status = str(payload.get("status") or "formal").strip().lower()
+            if status not in {"candidate", "formal"}:
+                continue
+            if learned and status != "formal":
+                continue
+            purpose = str(
+                payload.get("purpose")
+                or payload.get("role_banner")
+                or entry.stem
+            ).strip()[:600]
+            current = summaries.get(entry.stem)
+            if current is None or (current[0] == "candidate" and status == "formal"):
+                summaries[entry.stem] = (status, purpose)
+    return {
+        name: f"status={status}; {purpose}"
+        for name, (status, purpose) in sorted(summaries.items())
+    }
+
+
+def data_domain_summaries(project_root: object = ".") -> dict[str, str]:
+    """Compatibility summaries for formal project-local domains."""
+    return {
+        name: f"status=formal; {purpose}"
+        for name, purpose in list_formal_data_domain_purposes(project_root).items()
+    }
+
+
+def list_all_data_domain_names(
+    project_root: object = ".",
+    *,
+    learned_root: object | None = None,
+) -> list[str]:
+    names = set(list_data_domains(project_root))
+    if learned_root is not None:
+        try:
+            names.update(
+                entry.stem
+                for entry in _learned_domains_dir(learned_root).glob("*.json")
+                if is_valid_domain_name(entry.stem)
+            )
+        except OSError:
+            pass
+    return sorted(names)
+
+
+def materialize_learned_data_domain(
+    learned_root: object,
+    project_root: object,
+    name: str,
+) -> bool:
+    """Copy one formal learned vertical into the active session."""
+    local_path = _domain_path(project_root, name)
+    local = _read_payload(local_path) if local_path.is_file() else None
+    if (
+        local is not None
+        and str(local.get("status") or "formal").strip().lower() == "formal"
+    ):
+        return False
+    payload = _read_payload(_learned_domain_path(learned_root, name))
+    if payload is None:
+        return False
+    if str(payload.get("status") or "").strip().lower() != "formal":
+        return False
+    _atomic_write_json(local_path, payload)
+    _update_index(
+        project_root,
+        name,
+        {
+            "status": "formal",
+            "purpose": str(payload.get("purpose") or ""),
+            "stages": list(payload.get("stages") or []),
+        },
+    )
+    return True
+
+
+def migrate_data_domains(source_root: object, target_root: object) -> None:
+    """Copy valid legacy domains into an empty session state root."""
+    for name in list_data_domains(source_root):
+        source = _domain_path(source_root, name)
+        target = _domain_path(target_root, name)
+        payload = json.loads(source.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or DataDomain(payload).STAGE_ORDER == ():
+            raise ValueError(f"invalid legacy data domain: {name}")
+        if target.exists():
+            existing = json.loads(target.read_text(encoding="utf-8"))
+            if existing != payload:
+                raise ValueError(f"conflicting migrated data domain: {name}")
+            continue
+        _atomic_write_json(target, payload)
+
+
 def write_data_domain(
     project_root: object,
     name: str,
@@ -206,8 +402,11 @@ def write_data_domain(
     stages: list[str],
     checklist_stage_order: list[str] | None = None,
     completion_gate: str = DEFAULT_COMPLETION_GATE,
-    role_banner: str = "",
+    role_banner: str | dict[str, str] = "",
     created_by: str = "manager",
+    status: str = "formal",
+    purpose: str = "",
+    require_independent_review: bool = False,
     overwrite: bool = False,
 ) -> Path:
     """Persist a new data domain (create-only by default) and update the INDEX.
@@ -233,22 +432,150 @@ def write_data_domain(
     from datetime import datetime, timezone
 
     created_at = datetime.now(timezone.utc).isoformat()
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status not in {"candidate", "formal"}:
+        raise ValueError("data domain status must be candidate or formal")
+    role_banners = _normalize_role_banners(role_banner)
     payload = {
         "name": name,
         "stages": norm_stages,
         "checklist_stage_order": order,
         "completion_gate": (completion_gate or DEFAULT_COMPLETION_GATE).strip().lower(),
-        "role_banner": role_banner or "",
+        "role_banner": role_banner if isinstance(role_banner, str) else "",
         "created_by": created_by or "manager",
         "created_at": created_at,
+        "status": normalized_status,
+        "purpose": str(purpose or "").strip()[:600],
+        "require_independent_review": bool(require_independent_review),
         "promoted": False,
     }
+    if role_banners:
+        payload["role_banners"] = role_banners
     _atomic_write_json(path, payload)
     _update_index(project_root, name, {k: payload[k] for k in (
         "stages", "checklist_stage_order", "completion_gate", "created_by",
-        "created_at", "promoted",
+        "created_at", "status", "purpose", "promoted",
     )})
     return path
+
+
+def revise_data_domain_stages(
+    project_root: object,
+    name: str,
+    *,
+    stages: list[str] | tuple[str, ...],
+    reason: str = "",
+) -> Path:
+    """Refine one existing project domain without creating a competing domain."""
+    path = _domain_path(project_root, name)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"data domain {name!r} is not an object")
+    current = DataDomain(payload)
+    if not current.STAGE_ORDER:
+        raise ValueError(f"data domain {name!r} has no valid stages")
+    revised = list(dict.fromkeys(
+        str(stage or "").strip().lower()
+        for stage in stages
+        if str(stage or "").strip()
+    ))
+    if not (2 <= len(revised) <= 10) or any(
+        not is_valid_domain_name(stage) for stage in revised
+    ):
+        raise ValueError("a revised data domain needs 2-10 valid stage slugs")
+    if revised == list(current.STAGE_ORDER):
+        return path
+
+    from datetime import datetime, timezone
+
+    payload["adapted_from_stages"] = list(current.STAGE_ORDER)
+    payload["stages"] = revised
+    payload["checklist_stage_order"] = revised
+    payload["adapted_at"] = datetime.now(timezone.utc).isoformat()
+    payload["adapted_by"] = "manager"
+    payload["adaptation_reason"] = str(reason or "").strip()[:600]
+    checklist = payload.get("checklist")
+    if isinstance(checklist, dict):
+        payload["checklist"] = {
+            stage: items
+            for stage, items in checklist.items()
+            if stage in revised
+        }
+    _atomic_write_json(path, payload)
+    _update_index(
+        project_root,
+        name,
+        {
+            key: payload[key]
+            for key in (
+                "stages",
+                "checklist_stage_order",
+                "completion_gate",
+                "created_by",
+                "created_at",
+                "status",
+                "purpose",
+                "promoted",
+                "adapted_at",
+                "adaptation_reason",
+            )
+            if key in payload
+        },
+    )
+    return path
+
+
+def promote_data_domain(
+    project_root: object,
+    learned_root: object,
+    name: str,
+    *,
+    review_reason: str = "",
+) -> bool:
+    """Promote one verified candidate and publish it for later sessions."""
+    local_path = _domain_path(project_root, name)
+    payload = _read_payload(local_path)
+    if payload is None:
+        return False
+    if str(payload.get("status") or "formal").strip().lower() != "candidate":
+        return False
+    from datetime import datetime, timezone
+
+    payload["status"] = "formal"
+    payload["require_independent_review"] = False
+    payload["verified_at"] = datetime.now(timezone.utc).isoformat()
+    payload["review_reason"] = str(review_reason or "").strip()[:1000]
+    _atomic_write_json(_learned_domain_path(learned_root, name), payload)
+    _atomic_write_json(local_path, payload)
+    _update_index(
+        project_root,
+        name,
+        {
+            "status": "formal",
+            "purpose": str(payload.get("purpose") or ""),
+            "stages": list(payload.get("stages") or []),
+            "verified_at": payload["verified_at"],
+        },
+    )
+    return True
+
+
+def record_data_domain_failure(
+    project_root: object,
+    name: str,
+    *,
+    reason: str,
+) -> bool:
+    """Keep one failed candidate and the reason needed to revise it."""
+    path = _domain_path(project_root, name)
+    payload = _read_payload(path)
+    if payload is None:
+        return False
+    if str(payload.get("status") or "formal").strip().lower() != "candidate":
+        return False
+    payload["last_failure"] = str(reason or "").strip()[:1000]
+    _atomic_write_json(path, payload)
+    return True
 
 
 def _update_index(project_root: object, name: str, meta: dict[str, Any]) -> None:
@@ -283,10 +610,20 @@ def mark_promoted(project_root: object, name: str) -> None:
 __all__ = [
     "DataDomain",
     "DEFAULT_COMPLETION_GATE",
+    "LEARNED_DOMAINS_RELDIR",
     "is_valid_domain_name",
     "load_data_domain",
     "data_domain_exists",
+    "data_domain_summaries",
     "list_data_domains",
+    "list_all_data_domain_names",
+    "list_formal_data_domain_purposes",
+    "list_selectable_data_domain_summaries",
+    "materialize_learned_data_domain",
+    "migrate_data_domains",
+    "promote_data_domain",
+    "record_data_domain_failure",
+    "revise_data_domain_stages",
     "write_data_domain",
     "mark_promoted",
 ]

@@ -1,5 +1,7 @@
 import { slashCompletions } from '../../../core/src/commands';
 import type { SlashCommand } from '../../../core/src/commands';
+import { useI18n } from '../i18n';
+import { commandDescription } from '../lib/commandI18n';
 
 export const SLASH_COMPLETION_VISIBLE_ROWS = 8;
 export const SLASH_COMPLETION_LISTBOX_ID = 'slash-completion-listbox';
@@ -27,6 +29,7 @@ export function SlashCompletionMenu({
   selected: number;
   onSelect: (index: number) => void;
 }) {
+  const { locale, t } = useI18n();
   const completions = slashCompletions(query);
   if (completions.length === 0) return null;
 
@@ -37,7 +40,7 @@ export function SlashCompletionMenu({
     <div
       id={SLASH_COMPLETION_LISTBOX_ID}
       role="listbox"
-      aria-label="Slash command suggestions"
+      aria-label={t('slash.suggestions')}
       className="slash-completion-menu scroll-thin border-b border-line/40"
     >
       {visible.map((command, index) => (
@@ -62,7 +65,7 @@ export function SlashCompletionMenu({
           {command.arg ? (
             <span className="shrink-0 font-mono text-xs text-ink-faint">{command.arg}</span>
           ) : null}
-          <span className="min-w-0 flex-1 truncate text-xs text-ink-faint">{command.desc}</span>
+          <span className="min-w-0 flex-1 truncate text-xs text-ink-faint">{commandDescription(command, locale)}</span>
         </button>
       ))}
     </div>

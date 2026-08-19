@@ -53,6 +53,45 @@ def test_duplicate_command_id_executes_handler_exactly_once(tmp_path: Path) -> N
     assert metrics[-1]["labels"] == {"operation": "start", "status": "applied"}
 
 
+@pytest.mark.parametrize(
+    ("operation", "args", "expected_revision"),
+    [
+        ("stop", {"resume": True}, 0),
+        ("start", {"resume": False}, 0),
+        ("start", {"resume": True}, 99),
+    ],
+)
+def test_duplicate_command_id_rejects_a_different_request(
+    tmp_path: Path,
+    operation: str,
+    args: dict,
+    expected_revision: int,
+) -> None:
+    first = submit_daemon_command(
+        tmp_path,
+        operation="start",
+        args={"resume": True},
+        command_id="cmd-bound",
+        expected_revision=0,
+    )
+
+    conflict = execute_daemon_command(
+        tmp_path,
+        operation=operation,
+        args=args,
+        handler=lambda: pytest.fail("conflicting request must not execute"),
+        command_id="cmd-bound",
+        expected_revision=expected_revision,
+    )
+
+    assert first.status == "accepted"
+    assert conflict.status == "rejected"
+    assert "command_id conflict" in conflict.error
+    persisted = daemon_command_snapshot(tmp_path)["recent"][0]
+    assert persisted["operation"] == "start"
+    assert persisted["args"] == {"resume": True}
+
+
 def test_stale_expected_revision_is_durably_rejected(tmp_path: Path) -> None:
     first = submit_daemon_command(
         tmp_path,

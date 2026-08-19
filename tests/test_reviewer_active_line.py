@@ -1,4 +1,4 @@
-"""Direct checkpoint editing and minimal verdict parsing."""
+"""Read-only Reviewer checkpoint guidance and minimal verdict parsing."""
 
 from __future__ import annotations
 
@@ -19,17 +19,38 @@ def _prompt(checkpoint_path: str = "/tmp/project/CHECKPOINT.md") -> str:
     )
 
 
-def test_reviewer_is_told_to_edit_shared_checkpoint_directly():
+def test_reviewer_is_not_given_checkpoint_bookkeeping():
     p = _prompt()
-    assert "/tmp/project/CHECKPOINT.md" in p
-    assert "edit the file directly" in p
-    assert "do not emit checkpoint JSON" in p
+    assert "/tmp/project/CHECKPOINT.md" not in p
+    assert "CHECKPOINT_RECOMMENDED" not in p
+    assert "Do not inspect or edit checkpoint/context-packet/handoff bookkeeping" in p
 
 
-def test_reviewer_is_the_final_checkpoint_editor_for_the_round():
+def test_reviewer_never_acts_as_checkpoint_editor():
     p = _prompt()
-    assert "Engineer already edited it this round" in p
-    assert "the final editor" in p
+    assert "You do not change the work under review" in p
+    assert "Put the next Engineer instruction only in next_action" in p
+    assert "use tools only in proportion to unresolved uncertainty" in p
+    assert "six total read/search tool calls" not in p
+
+
+def test_the_no_mutation_rule_says_what_it_covers_and_what_it_does_not():
+    """It used to read "You are strictly read-only", which was not true.
+
+    Verticals hand the Reviewer commands that write: math's review skill tells
+    it to file `math_state judge` and `citation_check attribute`, and those
+    records are the independent-review evidence channel — the one thing only a
+    Reviewer can supply. A model holding both instructions has to pick one, and
+    the read-only sentence is the categorical one, so the channel starves
+    silently and the gate that waits on it never sees a check that was never
+    filed. The rule is about the *work under review*, so it now says that.
+    """
+    p = _prompt()
+
+    for forbidden in ("not its sources", "not its artifacts", "not its build"):
+        assert forbidden in p, "the prohibition still has to enumerate its scope"
+    assert "Recording your own verdict through a command your vertical gives you" in p
+    assert "strictly read-only" not in p
 
 
 def test_checkpoint_state_is_not_copied_into_the_prompt():
@@ -41,10 +62,15 @@ def test_checkpoint_state_is_not_copied_into_the_prompt():
 def test_reviewer_final_handoff_requires_explicit_progress_fields():
     p = _prompt()
 
-    assert (
-        "Return exactly STATUS, REASON, NEXT_ACTION, OPERATOR_QUESTION, "
-        "CHECKPOINT_RECOMMENDED, FORWARD_PROGRESS and PLAN_SIGNAL"
-    ) in p
+    for field in (
+        "`forward_progress`",
+        "`plan_signal`",
+        "`plan_challenge`",
+        "`plan_alternative`",
+        "`authority_impact`",
+        "`operator_options`",
+    ):
+        assert field in p
     assert "Return only STATUS, REASON, NEXT_ACTION and OPERATOR_QUESTION" not in p
 
 

@@ -5,6 +5,10 @@ import { type NoticeTone } from './components/ActionNotice';
 import { type useProjectActions } from './hooks';
 import { type ProjectHistoryMode } from './useProjectSelection';
 
+// The visible Pause control must interrupt the current operation. Graceful
+// draining remains available to upgrade/restart flows that explicitly ask for it.
+export const PAUSE_DAEMON_DRAIN = false;
+
 const errorText = (error: unknown): string =>
   error instanceof Error ? error.message : String(error || 'Unknown error');
 
@@ -54,7 +58,10 @@ export function useProjectDaemonActions({
   [actionFeedback, actions.startDaemon]);
 
   const requestStopDaemon = useCallback(() =>
-    actions.stopDaemon.mutate(true, actionFeedback('Daemon is draining and will stop safely.')),
+    actions.stopDaemon.mutate(
+      PAUSE_DAEMON_DRAIN,
+      actionFeedback('Pause requested; the current operation is being interrupted.'),
+    ),
   [actionFeedback, actions.stopDaemon]);
 
   const manageStartDaemon = useCallback(async (): Promise<boolean> => {
@@ -70,8 +77,8 @@ export function useProjectDaemonActions({
 
   const managePauseDaemon = useCallback(async (): Promise<boolean> => {
     try {
-      await actions.stopDaemon.mutateAsync(true);
-      notify('success', 'Daemon paused safely.');
+      await actions.stopDaemon.mutateAsync(PAUSE_DAEMON_DRAIN);
+      notify('success', 'Daemon paused. Progress remains resumable.');
       return true;
     } catch (error) {
       notify('error', errorText(error));
@@ -94,13 +101,18 @@ export function useProjectDaemonActions({
   const manageDeleteProject = useCallback(async (): Promise<boolean> => {
     if (!activeSid) return false;
     try {
-      await actions.deleteProject.mutateAsync();
+      const deleted = await actions.deleteProject.mutateAsync();
       setDaemonManageOpen(false);
       clearProjectSelection('replace');
       const refreshed = await refetchProjects();
       const next = rankProjects(refreshed.data?.projects ?? [])[0];
       if (next) selectProject(next.id, 'replace');
-      notify('success', 'Session moved to recoverable trash.');
+      notify(
+        'success',
+        deleted.workdir_preserved
+          ? `Session moved to recoverable trash. Files remain in ${deleted.workdir}.`
+          : 'Session moved to recoverable trash.',
+      );
       return true;
     } catch (error) {
       notify('error', errorText(error));

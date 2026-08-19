@@ -6,7 +6,7 @@ export const API_SERVICE = 'argus-skill-webapi';
 export const API_PROTOCOL = {
   name: 'argus.webapi',
   major: 1,
-  minServerMinor: 12,
+  minServerMinor: 13,
 } as const;
 export const SNAPSHOT_SCHEMA_VERSION = 7;
 export const REQUIRED_API_CAPABILITIES = [
@@ -21,6 +21,7 @@ export const REQUIRED_API_CAPABILITIES = [
   'metrics.slo.v2',
   'mission.view.v1',
   'mission.abort.v1',
+  'project.attachments.v1',
   'project.git-diff.v1',
   'project.cost-feed.v1',
   'project.workdir.v1',
@@ -57,6 +58,11 @@ export interface ApiMeta {
   snapshot_schema_version: number;
   capabilities: string[];
   runtime: ApiRuntimeIdentity;
+  /** Optional for compatibility with pre-handshake-auth servers. */
+  authentication?: {
+    required: boolean;
+    authenticated: boolean;
+  };
 }
 
 export interface ApiCompatibility {
@@ -182,7 +188,7 @@ export function inspectApiMeta(
   // snapshot schema, and capabilities above remain the compatibility authority;
   // keep drift visible so operators still know to rebuild before release.
   const warning = runtime.release_matches_source === false
-    ? 'backend source differs from its release manifest; rebuild with scripts/build_release.py before release'
+    ? 'backend source differs from its prebuilt release artifacts; pull a complete published revision and reinstall'
     : undefined;
   return { compatible: true, reason: '', warning, meta };
 }

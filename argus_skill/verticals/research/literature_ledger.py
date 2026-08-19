@@ -5,7 +5,8 @@ Research agents author one evidence-bearing file:
 ``research/LIT_MATRIX.tsv`` without asking a model to rewrite the same metadata
 in a second format.  It deliberately validates provenance shape, not paper
 counts or scientific coverage; the Reviewer judges whether the selected sources
-cover the actual claims and nearest prior work.
+cover the actual claims and nearest prior work. Source-mix diagnostics are
+advisory only: they never change validation success or stage completion.
 """
 from __future__ import annotations
 
@@ -48,6 +49,12 @@ MATRIX_COLUMNS = (
 class LiteratureIssue:
     code: str
     path: str
+    message: str
+
+
+@dataclass(frozen=True)
+class LiteratureAdvisory:
+    code: str
     message: str
 
 
@@ -147,6 +154,72 @@ def _project_relevance(paper: dict[str, Any]) -> str:
 def _valid_http_url(value: object) -> bool:
     parsed = urlparse(_text(value))
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _source_bucket(category: str, paper: dict[str, Any]) -> str:
+    explicit = _text(
+        paper.get("source_bucket")
+        or paper.get("source_type")
+        or paper.get("evidence_bucket")
+    ).strip().lower()
+    aliases = {
+        "ai": "ai_frontier",
+        "ai_venue": "ai_frontier",
+        "recent_arxiv": "ai_frontier",
+        "foundation": "foundation",
+        "foundation_theory": "foundation",
+        "theory": "foundation",
+    }
+    if explicit in aliases:
+        return aliases[explicit]
+    venue = _text(paper.get("venue") or paper.get("venue_status")).casefold()
+    url = _text(paper.get("url") or paper.get("publication_url")).casefold()
+    ai_tokens = (
+        "acl",
+        "emnlp",
+        "naacl",
+        "iclr",
+        "icml",
+        "neurips",
+        "aaai",
+        "aamas",
+        "openreview",
+        "arxiv",
+    )
+    if any(token in venue or token in url for token in ai_tokens):
+        return "ai_frontier"
+    if category == "classic" or paper.get("classic_anchor") is True:
+        return "foundation"
+    return "unclassified"
+
+
+def literature_coverage_advisories(payload: object) -> list[LiteratureAdvisory]:
+    """Return non-blocking source-mix observations for Reviewer attention."""
+    if not isinstance(payload, dict):
+        return []
+    buckets = {
+        _source_bucket(category, paper)
+        for category, _index, paper in _paper_groups(payload)
+        if isinstance(paper, dict)
+    }
+    advisories: list[LiteratureAdvisory] = []
+    if "ai_frontier" not in buckets:
+        advisories.append(
+            LiteratureAdvisory(
+                "ai_frontier_underrepresented",
+                "No recent AI-venue/arXiv source was identified; inspect nearby AI "
+                "work if relevant, or record why the theory-only mix is appropriate.",
+            )
+        )
+    if "foundation" not in buckets:
+        advisories.append(
+            LiteratureAdvisory(
+                "foundation_underrepresented",
+                "No explicit foundational anchor was identified; inspect a relevant "
+                "theory lineage if useful, or record why the AI-frontier sources suffice.",
+            )
+        )
+    return advisories
 
 
 def validate_literature_ledger(payload: object) -> list[LiteratureIssue]:
@@ -348,6 +421,10 @@ def main(argv: list[str] | None = None) -> int:
                 "papers": sum(1 for _ in _paper_groups(payload)),
                 "matrix": str(MATRIX_PATH),
                 "changed": changed,
+                "advisories": [
+                    advisory.__dict__
+                    for advisory in literature_coverage_advisories(payload)
+                ],
             }
         )
     )

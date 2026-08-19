@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 
+from argus_skill.daemon.config import config_from_payload, config_payload
 from argus_skill.daemon.life_worker import (
     DaemonStatus,
     LifeWorkerConfig,
@@ -46,16 +47,32 @@ def test_daemon_status_sidecar_carries_protocol_and_runtime_identity(
     assert status.protocol_major == DAEMON_PROTOCOL_MAJOR
     assert status.capabilities == DAEMON_CAPABILITIES
     assert status.runtime is not None
+    assert status.mission_width == 2
     assert status.runtime["source_root"]
     assert daemon_protocol_compatibility(status) == (True, "")
+
+
+def test_mission_width_round_trips_and_supports_zero_one_or_many(
+    tmp_path: Path,
+) -> None:
+    for width in (0, 1, 2, 12):
+        config = LifeWorkerConfig(
+            life_dir=tmp_path,
+            backend="memory",
+            mission_width=width,
+        )
+        assert config_from_payload(config_payload(config)).mission_width == width
 
 
 def test_daemon_status_reports_copilot_when_codex_is_missing(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    copilot = tmp_path / "copilot"
-    copilot.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    copilot = tmp_path / ("copilot.cmd" if os.name == "nt" else "copilot")
+    copilot.write_text(
+        "@exit /b 0\n" if os.name == "nt" else "#!/bin/sh\nexit 0\n",
+        encoding="utf-8",
+    )
     copilot.chmod(0o755)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PATH", str(tmp_path))

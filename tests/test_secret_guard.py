@@ -302,12 +302,30 @@ def test_scrub_only_matches_known_secrets_in_project_huggingface_cache(
 
     assert report.redacted_paths == (
         "response.headers",
-        str(cache_file.relative_to(tmp_path)),
+        cache_file.relative_to(tmp_path).as_posix(),
     )
     assert cache_file.read_text(encoding="utf-8") == (
         '{"token": "public-tokenizer-schema-value", "download_auth": "<REDACTED:known-secret>"}\n'
     )
     assert report.scanned_files == 2
+
+
+def test_scrub_preserves_crlf_without_inserting_blank_lines(tmp_path: Path) -> None:
+    artifact = tmp_path / "response.headers"
+    artifact.write_bytes(
+        b"x-api-key: live-cache-secret-value\r\ncontent-type: text/plain\r\n"
+    )
+
+    report = scrub_recent_text_artifacts(
+        tmp_path,
+        modified_since=time.time() - 5,
+        known_values=("live-cache-secret-value",),
+    )
+
+    assert report.redacted_paths == ("response.headers",)
+    assert artifact.read_bytes() == (
+        b"x-api-key: <REDACTED:known-secret>\r\ncontent-type: text/plain\r\n"
+    )
 
 
 def test_scrub_skips_project_third_party_runtime_trees(tmp_path: Path) -> None:

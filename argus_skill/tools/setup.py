@@ -1,9 +1,8 @@
 """Interactive setup wizard for Argus.
 
-Configures the author identity, one shared agent-CLI backend and authentication
-contract, optional model-API routes, and optional GPU resources.  The canonical
-entrypoint is ``argus --setup``; ``argus-skill --setup`` remains available for
-legacy automation.
+Configures one shared agent-CLI backend and validates its authentication. An
+OpenAI-compatible URL and API key use Pi, which setup installs when needed. The
+canonical entrypoint is ``argus --setup``.
 """
 from __future__ import annotations
 
@@ -13,6 +12,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 from ..core.backend_readiness import (
     AUTH_MODE_MODEL_API,
@@ -20,7 +20,9 @@ from ..core.backend_readiness import (
     SETUP_EXIT_NOT_READY,
     SETUP_EXIT_PERSISTENCE,
     SETUP_EXIT_USAGE,
+    backend_install_command,
     check_backend_readiness,
+    default_model_for_backend,
     format_backend_readiness,
     persist_validated_profile,
 )
@@ -66,13 +68,21 @@ def _dim(text: str) -> str:
 
 def _banner() -> None:
     print()
-    print(_bold("═" * 60))
-    print(_bold("  Argus — Autonomous Research Generation & Understanding System"))
-    print(_bold("  面向学术论文全流程的自主研究智能体系统"))
-    print(_bold("═" * 60))
-    print()
-    print(_dim("  This wizard configures your backend, identity, and resources."))
-    print(_dim("  Press Enter to accept [default] values."))
+    print(_bold("Argus setup"))
+    print(_dim("Configure one agent backend. Press Enter to keep the default."))
+    print(
+        _color(
+            "★ Recommended / 推荐: let your current Code Agent complete setup "
+            "and verification.",
+            "1;33",
+        )
+    )
+    print(
+        _dim(
+            "  Guide / 指引: "
+            "https://github.com/microsoft/ArgusAgent#installation"
+        )
+    )
     print()
 
 
@@ -88,14 +98,62 @@ def _prompt(label: str, default: str = "", secret: bool = False) -> str:
     return val if val else default
 
 
-_SUPPORTED_AGENT_BACKENDS = ("copilot", "codex", "claude", "opencode", "pi")
-_BACKEND_INSTALL_COMMANDS = {
-    "copilot": "npm install -g @github/copilot",
-    "codex": "npm install -g @openai/codex@latest",
-    "claude": "npm install -g @anthropic-ai/claude-code",
-    "opencode": "curl -fsSL https://opencode.ai/install | bash",
-    "pi": "npm install -g --ignore-scripts @earendil-works/pi-coding-agent",
+_SUPPORTED_AGENT_BACKENDS = (
+    "copilot",
+    "codex",
+    "claude",
+    "opencode",
+    "pi",
+    "grok",
+    "qoder",
+    "dsh",
+)
+_BACKEND_LOGIN_COMMANDS = {
+    "copilot": "copilot login",
+    "codex": "codex login",
+    "claude": "run `claude` and complete `/login`",
+    "opencode": "opencode auth login",
+    "pi": "run `pi` and complete `/login`",
+    "grok": "grok login",
+    "qoder": "qodercli login",
+    "dsh": "configure DEEPSEEK_API_KEY for dsh",
 }
+
+
+def _backend_install_hint(
+    backend: str,
+    *,
+    platform_name: str | None = None,
+) -> str:
+    return backend_install_command(backend, platform_name=platform_name)
+
+
+def _install_pi_cli() -> bool:
+    npm = shutil.which("npm")
+    if npm is None:
+        print(_yellow("  Pi requires Node.js/npm. Install Node.js, then rerun setup."))
+        return False
+    print("  Installing Pi...")
+    result = subprocess.run(
+        [
+            npm,
+            "install",
+            "-g",
+            "--ignore-scripts",
+            "@earendil-works/pi-coding-agent",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        output = result.stderr.strip() or result.stdout.strip()
+        detail = output.splitlines()[-1] if output else "npm exited with an error"
+        print(_yellow(f"  Pi installation failed: {detail}"))
+        return False
+    print(f"  {_green('✓')} Pi installed")
+    return True
 
 
 def _configured_runner_backend() -> str:
@@ -115,12 +173,28 @@ def _configured_runner_backend() -> str:
     return ""
 
 
+def _resolve_setup_runner_bin(
+    backend: str,
+    *,
+    explicit_selection: bool = False,
+) -> str | None:
+    from ..agent_cli.runner_backend import resolve_runner_bin
+    from ..core.knobs import resolve_runner_bin_setting
+
+    configured_backend = _configured_runner_backend()
+    configured_bin = resolve_runner_bin_setting()
+    explicit_bin = str(os.environ.get("ARGUS_SKILL_RUNNER_BIN") or "").strip()
+    if explicit_selection and explicit_bin:
+        return resolve_runner_bin(backend, explicit_bin)
+    if backend == configured_backend and configured_bin:
+        return resolve_runner_bin(backend, configured_bin)
+    return resolve_runner_bin(backend)
+
+
 def _configure_runner_backend(requested: str | None = None) -> str | None:
     """Select the agent CLI used by every role without mutating global config."""
-    from ..agent_cli.runner_backend import resolve_runner_bin
-
     available = [
-        name for name in _SUPPORTED_AGENT_BACKENDS if resolve_runner_bin(name)
+        name for name in _SUPPORTED_AGENT_BACKENDS if _resolve_setup_runner_bin(name)
     ]
     configured = _configured_runner_backend()
     if configured and configured in available:
@@ -139,24 +213,41 @@ def _configure_runner_backend(requested: str | None = None) -> str | None:
     selected = (
         str(requested).strip().lower()
         if requested is not None
-        else _prompt("Backend (copilot/codex/claude/opencode/pi)", default).lower()
+        else _prompt(
+            "Backend (copilot/codex/claude/opencode/pi/grok/qoder/dsh)", default
+        ).lower()
     )
     if selected not in _SUPPORTED_AGENT_BACKENDS:
         print(_yellow(f"  Unknown backend '{selected}'."))
-        print(_dim("    Choose one of: copilot, codex, claude, opencode, pi"))
+        print(
+            _dim(
+                "    Choose one of: copilot, codex, claude, opencode, pi, grok, "
+                "qoder, dsh"
+            )
+        )
         print()
         return None
 
-    executable = resolve_runner_bin(selected)
+    executable = _resolve_setup_runner_bin(selected, explicit_selection=True)
+    if executable is None and selected == "pi" and _install_pi_cli():
+        executable = _resolve_setup_runner_bin(selected, explicit_selection=True)
     if executable is None:
         print(_yellow(f"  `{selected}` CLI is not installed."))
-        print(_dim(f"    Install it with: {_BACKEND_INSTALL_COMMANDS[selected]}"))
+        print(_dim(f"    Install it with: {_backend_install_hint(selected)}"))
         if selected == "copilot":
             print(_dim("    Then authenticate with: copilot login"))
         elif selected == "opencode":
             print(_dim("    Then authenticate with: opencode auth login"))
         elif selected == "pi":
             print(_dim("    Then run `pi` and use `/login` to authenticate."))
+        elif selected == "grok":
+            print(_dim("    Then authenticate with: grok login"))
+        elif selected == "qoder":
+            print(_dim("    Then authenticate with: qodercli login"))
+            print(_dim("    Or set QODER_PERSONAL_ACCESS_TOKEN for headless use."))
+        elif selected == "dsh":
+            print(_dim("    Then export DEEPSEEK_API_KEY=<key> in the launching environment,"))
+            print(_dim("    or set it through the dsh web Models page."))
         print()
         return None
 
@@ -203,35 +294,187 @@ def _configure_auth_mode(backend: str, requested: str | None = None) -> str | No
     return normalized
 
 
+def _verify_setup_smoke(
+    backend: str,
+    *,
+    model: str = "",
+) -> bool:
+    """Prove that Argus can complete one real turn on the selected backend."""
+    from ..core.agent_probe import run_read_only_agent_prompt
+
+    executable = _resolve_setup_runner_bin(backend, explicit_selection=True)
+    if executable is None:
+        print(_yellow("  Setup failed at the end-to-end smoke test."))
+        print(f"    Backend: {backend}")
+        print("    Reason: the selected Agent CLI disappeared from PATH")
+        return False
+
+    print(_bold("  Step 2: End-to-end smoke test"))
+    print(_dim("  Argus requires one read-only reply with no tool activity."))
+    probe = run_read_only_agent_prompt(
+        backend=backend,
+        executable=executable,
+        model=model,
+        run_label="setup-smoke",
+        prompt=(
+            "This is an Argus setup smoke test. Do not use tools. "
+            "Reply with exactly: ARGUS_SETUP_OK"
+        ),
+    )
+    if probe.ok and probe.output.strip().rstrip(".") == "ARGUS_SETUP_OK":
+        print(f"  {_green('✓')} Real Agent turn completed")
+        print()
+        return True
+
+    print(_yellow("  Setup failed at Step 2: real Agent turn"))
+    print(f"    Backend: {backend}")
+    print(f"    Executable: {executable}")
+    if probe.error:
+        print(f"    Error: {probe.error}")
+    elif probe.output:
+        print(f"    Unexpected reply: {probe.output[:240]}")
+    print("    Next:")
+    print(f"      1. Authenticate with: {_BACKEND_LOGIN_COMMANDS[backend]}")
+    print("      2. Run: argus doctor --deep --advisor auto")
+    print("      3. Re-run: argus --setup")
+    print()
+    return False
+
+
+def _setup_smoke_model(
+    backend: str,
+    pi_config: tuple[str, Path] | None,
+) -> str:
+    if pi_config is not None:
+        return pi_config[0]
+    from ..core.knobs import resolve_role_model
+
+    return resolve_role_model(
+        "manager",
+        role_env="ARGUS_SKILL_MANAGER_MODEL",
+        backend=backend,
+    )
+
+
+def _pi_models_path() -> Path:
+    return Path.home() / ".pi" / "agent" / "models.json"
+
+
+def _save_pi_provider(base_url: str, api_key: str, model: str) -> Path:
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("API URL must be an absolute http(s) URL")
+    path = _pi_models_path()
+    if path.exists():
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError(f"{path} must contain a JSON object")
+    else:
+        value = {}
+    providers = value.setdefault("providers", {})
+    if not isinstance(providers, dict):
+        raise ValueError(f"{path} field 'providers' must be a JSON object")
+    providers["argus"] = {
+        "baseUrl": base_url.rstrip("/"),
+        "api": "openai-completions",
+        "apiKey": api_key,
+        "models": [{"id": model}],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.chmod(path, 0o600)
+    return path
+
+
+def _configure_pi_api(
+    *,
+    api_url: str | None,
+    api_key: str | None,
+    api_model: str | None,
+    interactive: bool,
+) -> tuple[str, Path] | None:
+    url = str(api_url or "").strip()
+    if interactive and not url:
+        url = _prompt("OpenAI-compatible API URL (Enter to use `pi` login)")
+    if not url:
+        return None
+    key = str(api_key or os.environ.get("ARGUS_SETUP_API_KEY") or "").strip()
+    if interactive and not key:
+        key = _prompt("API key", secret=True)
+    if not key:
+        raise ValueError("API key is required when API URL is provided")
+    model = str(api_model or "").strip()
+    if interactive and not model:
+        model = _prompt("Model", "gpt-5.5")
+    model = model or "gpt-5.5"
+    return model, _save_pi_provider(url, key, model)
+
+
+def _persist_pi_profile(model: str) -> bool:
+    from ..core.knob_store import write_persisted_knobs
+
+    return write_persisted_knobs({
+        "ARGUS_SKILL_RUNNER_BACKEND": "pi",
+        "ARGUS_SKILL_LIFE_BACKEND": "pi",
+        "ARGUS_SKILL_PI_PROVIDER": "argus",
+        "ARGUS_SKILL_MODEL": model,
+    })
+
+
 def _run_noninteractive_setup(
     *,
     backend: str | None,
     auth_mode: str | None,
     accept_house_rules: bool,
     allow_prerelease: bool,
+    api_url: str | None,
+    api_key: str | None,
+    api_model: str | None,
 ) -> int:
-    if not backend:
+    selected = str(backend or ("pi" if api_url else "")).strip().lower()
+    if not selected:
         sys.stderr.write(
-            "argus: --setup --non-interactive requires --backend "
-            "{copilot,codex,claude,opencode,pi}\n"
+            "argus: --setup --non-interactive requires --backend or --api-url\n"
         )
         return SETUP_EXIT_USAGE
-    selected = str(backend).strip().lower()
     if selected not in _SUPPORTED_AGENT_BACKENDS:
         sys.stderr.write(f"argus: unsupported backend {selected!r}\n")
         return SETUP_EXIT_USAGE
-    if not accept_house_rules:
-        sys.stderr.write(
-            "argus: noninteractive setup requires --accept-house-rules\n"
-        )
-        return SETUP_EXIT_USAGE
+    _ = accept_house_rules
+    if _configure_runner_backend(selected) is None:
+        return SETUP_EXIT_NOT_READY
     mode = _configure_auth_mode(selected, auth_mode)
     if mode is None:
         return SETUP_EXIT_USAGE
+    pi_config: tuple[str, Path] | None = None
+    if api_url or api_key:
+        if selected != "pi":
+            sys.stderr.write("argus: --api-url/--api-key require --backend pi\n")
+            return SETUP_EXIT_USAGE
+        try:
+            pi_config = _configure_pi_api(
+                api_url=api_url,
+                api_key=api_key,
+                api_model=api_model,
+                interactive=False,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            sys.stderr.write(f"argus: {exc}\n")
+            return SETUP_EXIT_USAGE
+        assert pi_config is not None
+        os.environ["ARGUS_SKILL_PI_PROVIDER"] = "argus"
+        os.environ["ARGUS_SKILL_MODEL"] = pi_config[0]
+    # Adopt the backend's own model BEFORE readiness runs, so the check below
+    # judges the selector this machine will really send. Mirrors how the Pi
+    # branch above seeds ARGUS_SKILL_MODEL ahead of the same call.
+    adopted_model = default_model_for_backend(selected)
+    if adopted_model:
+        os.environ["ARGUS_SKILL_MODEL"] = adopted_model
     _ensure_default_house_rules_prompt()
     report = check_backend_readiness(
         selected,
         mode,
+        runner_bin=_resolve_setup_runner_bin(selected, explicit_selection=True),
         probe_auth=mode == AUTH_MODE_SUBSCRIPTION,
         probe_vault=mode == AUTH_MODE_MODEL_API,
         allow_prerelease=allow_prerelease,
@@ -241,15 +484,17 @@ def _run_noninteractive_setup(
     stream.write(rendered + "\n")
     if not report.ok:
         return SETUP_EXIT_NOT_READY
-    if not persist_validated_profile(report):
+    smoke_model = _setup_smoke_model(selected, pi_config)
+    if not _verify_setup_smoke(selected, model=smoke_model):
+        return SETUP_EXIT_NOT_READY
+    if not persist_validated_profile(report, model=adopted_model):
         sys.stderr.write("argus: readiness passed but profile persistence failed\n")
         return SETUP_EXIT_PERSISTENCE
+    if pi_config is not None and not _persist_pi_profile(pi_config[0]):
+        sys.stderr.write("argus: Pi configuration was written but profile persistence failed\n")
+        return SETUP_EXIT_PERSISTENCE
     sys.stdout.write(
-        "\nNext:\n"
-        "  argus                    # interactive cockpit\n"
-        "  argus --daemon-fg        # supervised foreground worker\n"
-        "  argus --daemon           # persistent unattended worker\n"
-        "No global Git identity or backend authentication files were changed.\n"
+        "\nSetup complete. Run `argus`.\n"
     )
     return 0
 
@@ -1121,8 +1366,9 @@ def run_setup(
     non_interactive: bool = False,
     accept_house_rules: bool = False,
     allow_prerelease: bool = False,
-    set_git_global: bool | None = None,
-    configure_codex: bool | None = None,
+    api_url: str | None = None,
+    api_key: str | None = None,
+    api_model: str | None = None,
 ) -> int:
     """Configure and validate one explicit backend/auth contract."""
     if non_interactive:
@@ -1131,113 +1377,59 @@ def run_setup(
             auth_mode=auth_mode,
             accept_house_rules=accept_house_rules,
             allow_prerelease=allow_prerelease,
+            api_url=api_url,
+            api_key=api_key,
+            api_model=api_model,
         )
-
     _banner()
-    existing_routes = _load_existing_routes()
-    existing_gpu = _load_existing_gpu()
-    existing_author = _load_existing_author()
-
-    print(_bold("  Step 0: Author Identity"))
-    print()
-    author = _configure_author(
-        existing_author,
-        set_git_global=set_git_global,
-    )
-
-    selected_backend = _configure_runner_backend(backend)
+    selected_backend = _configure_runner_backend(backend or ("pi" if api_url else None))
     if selected_backend is None:
         return SETUP_EXIT_USAGE
     selected_auth_mode = _configure_auth_mode(selected_backend, auth_mode)
     if selected_auth_mode is None:
         return SETUP_EXIT_USAGE
 
-    if selected_auth_mode == AUTH_MODE_MODEL_API:
-        routes = _configure_model_api_routes(existing_routes)
-        print(_bold("  Step 2b: Experiment API access"))
-        print()
-        experiment_api = _configure_experiment_api(routes)
-    else:
-        routes = existing_routes
-        experiment_api = False
-        print(_dim("  Model API vault left unchanged for subscription CLI mode."))
-        print()
+    if selected_auth_mode == AUTH_MODE_MODEL_API and selected_backend != "codex":
+        print(_yellow("  model_api authentication is only supported with Codex."))
+        return SETUP_EXIT_USAGE
 
-    print(_bold("  Step 3: GPU Resources"))
-    print()
-    gpus = _detect_gpus()
-    gpu_config = _configure_gpus(gpus, existing_gpu)
-    existing_keepalive = _load_existing_keepalive()
-    keepalive_config = _configure_gpu_keepalive(
-        gpus, gpu_config, existing_keepalive
-    )
-
-    codex_paths: tuple[Path, Path] | None = None
-    if selected_backend == "codex" and selected_auth_mode == AUTH_MODE_MODEL_API:
-        print(_bold("  Step 4: Optional Codex CLI Configuration"))
-        print()
-        print(
-            _dim(
-                "  Writing ~/.codex changes user-owned backend config/auth. "
-                "Leave unchanged unless Argus should own that configuration."
+    pi_config: tuple[str, Path] | None = None
+    if selected_backend == "pi":
+        try:
+            pi_config = _configure_pi_api(
+                api_url=api_url,
+                api_key=api_key,
+                api_model=api_model,
+                interactive=True,
             )
-        )
-        opt_in = configure_codex
-        if opt_in is None:
-            answer = _prompt("Configure Codex files from this model API? (y/N)", "n")
-            opt_in = answer.lower() in ("y", "yes")
-        if opt_in:
-            engineer_route = routes.get("engineer") or routes.get("text") or {}
-            codex_paths = _seed_codex_config(
-                engineer_route.get("base_url", ""),
-                engineer_route.get("api_key", ""),
-                engineer_route.get("model", "gpt-5.5"),
-            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(_yellow(f"  {exc}"))
+            return SETUP_EXIT_USAGE
+        if pi_config is not None:
+            os.environ["ARGUS_SKILL_PI_PROVIDER"] = "argus"
+            os.environ["ARGUS_SKILL_MODEL"] = pi_config[0]
+            print(f"  {_green('✓')} Pi API configured → {pi_config[1]}")
         else:
-            print(_dim("  ~/.codex left unchanged."))
-            print()
-    else:
-        print(_bold("  Step 4: Agent CLI Authentication"))
-        print()
-        print(
-            _dim(
-                f"  Argus will use existing `{selected_backend}` CLI authentication; "
-                "no backend auth files will be written."
-            )
-        )
+            print(_dim("  Using Pi's existing login/configuration."))
         print()
 
-    print(_bold("  Saving..."))
-    if selected_auth_mode == AUTH_MODE_MODEL_API:
-        api_path = _save_model_api(routes)
-        print(f"  {_green('✓')} Model API → {api_path}")
-    if gpu_config:
-        gpu_path = _save_gpu_resources(gpu_config)
-        print(f"  {_green('✓')} GPU config → {gpu_path}")
-    if codex_paths:
-        cfg, auth = codex_paths
-        print(f"  {_green('✓')} codex config → {cfg}")
-        print(f"  {_green('✓')} codex auth   → {auth}")
+    adopted_model = default_model_for_backend(selected_backend)
+    if adopted_model:
+        os.environ["ARGUS_SKILL_MODEL"] = adopted_model
+        print(f"  {_green('✓')} Model selected → {adopted_model}")
+        print()
 
     house_rules_path = _ensure_default_house_rules_prompt()
-    if house_rules_path is None:
-        print(f"  {_green('✓')} Existing trusted house rules preserved")
-    else:
-        print(f"  {_green('✓')} Base house rules → {house_rules_path}")
-    if (
-        house_rules_path is not None
-        and house_rules_path.name != _DEFAULT_HOUSE_RULES_PROMPT_NAME
-    ):
-        print(
-            _yellow(
-                f"  Existing {_DEFAULT_HOUSE_RULES_PROMPT_NAME} was preserved "
-                "because it did not pass the trust gate."
-            )
-        )
+    if house_rules_path is not None:
+        print(f"  {_green('✓')} House rules created")
 
     report = check_backend_readiness(
         selected_backend,
         selected_auth_mode,
+        runner_bin=_resolve_setup_runner_bin(
+            selected_backend,
+            explicit_selection=True,
+        ),
         probe_auth=selected_auth_mode == AUTH_MODE_SUBSCRIPTION,
         probe_vault=selected_auth_mode == AUTH_MODE_MODEL_API,
         allow_prerelease=allow_prerelease,
@@ -1247,24 +1439,18 @@ def run_setup(
     if not report.ok:
         print(_yellow("  Setup is not ready; the backend profile was not persisted."))
         return SETUP_EXIT_NOT_READY
-    if not persist_validated_profile(report):
+    smoke_model = _setup_smoke_model(selected_backend, pi_config)
+    if not _verify_setup_smoke(selected_backend, model=smoke_model):
+        print(_yellow("  Backend checks passed, but Argus could not complete a real turn."))
+        return SETUP_EXIT_NOT_READY
+    if not persist_validated_profile(report, model=adopted_model):
         print(_yellow("  Readiness passed but backend profile persistence failed."))
         return SETUP_EXIT_PERSISTENCE
-
-    _summary(
-        routes,
-        gpu_config,
-        keepalive_config,
-        experiment_api,
-        author,
-        selected_backend,
-        selected_auth_mode,
-    )
-    print(_green("  ✓ Setup complete!"))
+    if pi_config is not None and not _persist_pi_profile(pi_config[0]):
+        print(_yellow("  Pi configuration was written but profile persistence failed."))
+        return SETUP_EXIT_PERSISTENCE
     print()
-    print(_dim("    argus              # interactive cockpit"))
-    print(_dim("    argus --daemon-fg  # supervised foreground worker"))
-    print(_dim("    argus --daemon     # persistent unattended worker"))
+    print(_green("Setup complete. Run `argus`."))
     print()
     return 0
 

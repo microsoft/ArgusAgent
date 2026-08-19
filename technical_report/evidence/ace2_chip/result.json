@@ -1,0 +1,48 @@
+{
+  "case_id": "ace2_qwen2p5_0p5b_w4a8_demonstrated_scope",
+  "certificate": {
+    "certificate_id": "ace2-qwen2p5-0p5b-w4a8-final-product-certificate-v1",
+    "certified_at_utc": "2026-08-04T07:55:21.118678Z",
+    "decision": "FORMAL_PRODUCT_CERTIFIED",
+    "issued_by": "fresh Reviewer that did not perform the work",
+    "accepted_rtl_tree_sha256": "bf12e2c83b4d569b27bbbc14835ed8d36c39ec4e8820725cc7ad054fd7ffb4f6"
+  },
+  "certified_scope": {
+    "functional": "24_layer_two_token_qwen2p5_0p5b_w4a8_command_integration",
+    "ppa": "mapped_sky130_hd_synthesis_opensta_100mhz_and_non_sram_area_at_tt_25c_1p80v"
+  },
+  "functional": {
+    "layer0_ordered_operators_exact": 18,
+    "commands_completed": 13914,
+    "commands_total": 13914,
+    "generated_token_ids": [0, 0],
+    "first_failure": null,
+    "simulator_cycles": 1240410384
+  },
+  "physical": {
+    "flow": "canonical SKY130 HD mapped synthesis + OpenSTA",
+    "corner": "TT 25C / 1.80V",
+    "clock_period_ns": 10.0,
+    "frequency_target_mhz": 100.0,
+    "cells": 62283,
+    "non_sram_area_mm2": 0.614082704,
+    "non_sram_area_cap_mm2": 2.0,
+    "area_cap_status": "PASS",
+    "setup_slack_ns": 0.6966,
+    "wns_ns": 0.0,
+    "tns_ns": 0.0,
+    "canonical_gate_verdict": "PASS",
+    "exactly_once": true
+  },
+  "explicit_non_claims": [
+    "routed_timing",
+    "power_signoff",
+    "drc_lvs",
+    "gds_or_tapeout",
+    "silicon_validation",
+    "longer_than_two_token_generation",
+    "external_deployment_interfaces",
+    "fpga_prototype"
+  ],
+  "scope_note": "Every positive claim and every exclusion in this package was emitted by the same verification gate. The certificate is bound to one RTL tree hash; each accepted RTL repair carries its own reviewer binding with originating and resulting tree hashes."
+}

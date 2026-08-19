@@ -9,7 +9,7 @@ working unchanged; the *finance* semantics are carried by the markdown
 ``checklists.py``) and the ``role_banner``.
 
 The deliverable is an interpretable, reviewer-certified **factor report**, so
-``completion_gate`` is ``"full_paper"`` (report certification), exactly like
+``completion_gate`` is ``"certified"`` (report certification), exactly like
 ``research`` — NOT a numeric speedrun metric.
 
 Two built-in finance skills back the Reviewer/Engineer prompts:
@@ -375,7 +375,8 @@ PROTECTED_ITEM_IDS: frozenset[str] = frozenset(
 
 #: Quant missions complete on a certified final factor REPORT (report
 #: certification, the research/EMNLP analog) — NOT a numeric metric.
-completion_gate = "full_paper"
+completion_gate = "certified"
+MISSION_KIND = "research"
 
 
 def role_banner(_role: str = "engineer") -> str:

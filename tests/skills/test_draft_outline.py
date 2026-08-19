@@ -76,7 +76,7 @@ def test_validate_missing_outline() -> None:
     assert all(i.severity == "missing" for i in issues if i.code == "outline_missing")
 
 
-def test_validate_underfilled_figures() -> None:
+def test_validate_accepts_one_declared_figure() -> None:
     text = """\
 ---
 outline_version: 1
@@ -105,7 +105,7 @@ outline_version: 1
 """
     o = parse_outline(text)
     issues = validate_outline(o)
-    assert any(i.code == "figures_underfilled" for i in issues)
+    assert not any(i.code == "figures_underfilled" for i in issues)
 
 
 def test_validate_figure_field_missing() -> None:

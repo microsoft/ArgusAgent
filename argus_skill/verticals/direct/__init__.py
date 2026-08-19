@@ -1,1 +1,0 @@
-"""Direct bounded-deliverable vertical."""

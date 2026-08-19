@@ -11,6 +11,7 @@ import os
 from typing import Any
 
 from ..core.event_catalog import EventType, canonical_event_type
+from ..core.role_reply import strip_named_lines
 from ..core.secret_guard import redact_secrets_text
 from .event_format import _strip_shell_wrapper, _trunc, format_event_message
 from .theme import Theme
@@ -101,11 +102,15 @@ def _render_engineer_progress_terminal(event: dict[str, Any], *, theme: Theme) -
         return theme.dim("  ⋯ " + _trunc(_first_line(text), 200))
 
     if kind in {"assistant_message", "agent_message", "message"}:
-        lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+        visible = strip_named_lines(
+            text,
+            ("MILESTONE_STATUS", "NEXT_OWNER", "OPERATOR_QUESTION", "OPERATOR_OPTIONS"),
+        )
+        lines = [line.rstrip() for line in visible.splitlines() if line.strip()]
         if not lines:
             return ""
         bar = theme.cyan("▌")
-        return "\n".join(f"{bar} {theme.bold(_trunc(line, 240))}" for line in lines)
+        return "\n".join(f"{bar} {theme.bold(line)}" for line in lines)
 
     if kind == "command_execution":
         action = redact_secrets_text(str(event.get("action_summary") or "")).strip()

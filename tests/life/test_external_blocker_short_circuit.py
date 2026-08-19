@@ -178,7 +178,7 @@ def test_plan_next_work_short_circuits_before_planner_runner(tmp_path: Path):
             continuous=True,
             continuous_objective="bounded survey",
             paper_mission=True,
-            full_paper_gate=True,
+            final_certification_gate=True,
         ),
         planner_runner=_PlannerRunnerThatMustNotBeCalled(),
     )
@@ -255,7 +255,7 @@ def test_blocker_tmp_file_is_ignored(tmp_path: Path):
 
 
 def test_bounded_mission_does_not_short_circuit_on_external_blocker(tmp_path: Path):
-    """Regression: with ``full_paper_gate=False`` (a ``--bounded`` mission), an
+    """Regression: with ``final_certification_gate=False`` (a ``--bounded`` mission), an
     operator-only external blocker must NOT short-circuit the planner cycle.
 
     Otherwise a bounded diagnostic/survey mission can never reach
@@ -301,7 +301,7 @@ def test_bounded_mission_does_not_short_circuit_on_external_blocker(tmp_path: Pa
             project_worktree=project,
             continuous=True,
             continuous_objective="bounded survey",
-            full_paper_gate=False,
+            final_certification_gate=False,
         ),
         planner_runner=None,
     )

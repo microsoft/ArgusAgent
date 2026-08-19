@@ -23,6 +23,22 @@ from argus_skill.verticals.quant.model_toolkit.registry import ModelSpec
 from argus_skill.verticals.quant.search_ledger import SearchLedger
 
 
+def _lightgbm_available() -> bool:
+    try:
+        import lightgbm  # noqa: F401
+    except (ImportError, OSError):
+        return False
+    return True
+
+
+def _torch_available() -> bool:
+    try:
+        import torch  # noqa: F401
+    except (ImportError, OSError):
+        return False
+    return True
+
+
 def _panel(seed=0, n_days=150, n_codes=30, n_feat=4):
     rng = np.random.default_rng(seed)
     dates = pd.date_range("2022-01-03", periods=n_days, freq="B")
@@ -39,9 +55,14 @@ def test_families_and_trainers_learn():
     X, y, _ = _panel()
     Xtr, ytr = X.to_numpy()[:3000], y.to_numpy()[:3000]
     Xte, yte = X.to_numpy()[3000:], y.to_numpy()[3000:]
-    for fam, cfg in [("gbdt", {"num_boost_round": 100}),
-                     ("linear", {"alpha": 1.0}),
-                     ("mlp", {"hidden_dims": (32,), "epochs": 30, "batch_size": 512})]:
+    cases = [("linear", {"alpha": 1.0})]
+    if _torch_available():
+        cases.append(
+            ("mlp", {"hidden_dims": (32,), "epochs": 30, "batch_size": 512})
+        )
+    if _lightgbm_available():
+        cases.insert(0, ("gbdt", {"num_boost_round": 100}))
+    for fam, cfg in cases:
         t = build_trainer(fam, {**cfg, "seed": 0}).fit(Xtr, ytr, Xte, yte)
         pred = t.predict(Xte)
         assert np.corrcoef(pred, yte)[0, 1] > 0.5, f"{fam} failed to learn"

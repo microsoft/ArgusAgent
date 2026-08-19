@@ -2,12 +2,12 @@
 
 The Manager is the SOLE authority over pipeline stage transitions. After the
 reviewer (and planner) produce their structured feedback, the Manager
-independently judges whether to ADVANCE to the next stage, HOLD on the current
+independently judges whether to ADVANCE to a later stage, HOLD on the current
 one, or ROLL BACK to an earlier stage, then writes ``PIPELINE_STATE.json``. The prompt body lives in ``roles.prompts.manager`` and is re-exported here for
 source compatibility; this module owns the strict parser for its JSON verdict.
 
 Fail-closed everywhere: any ambiguity in the model's answer (bad JSON, unknown
-action, an advance target that is not the immediate next stage, a rollback
+action, an advance target that is not a later stage, a rollback
 target that is not strictly earlier) parses to HOLD. The Manager therefore never
 silently advances on a malformed verdict.
 """
@@ -36,7 +36,12 @@ class StageDecision:
     resolves_wait: bool = False
 
 
-_VALID_ACTIONS = ("advance", "hold", "rollback")
+_VALID_ACTIONS = ("advance", "hold", "rollback", "complete")
+
+#: Opening of the "you are not at the last stage" refusal. Kept as a constant so
+#: ``stage_position_is_the_only_completion_blocker`` can recognise its own
+#: message without the sentence leaking into another module.
+_STAGE_POSITION_BLOCKER = "completion is only legal at the final stage"
 
 
 def extract_answer(result: Any) -> str:
@@ -154,13 +159,21 @@ def parse_stage_decision(
 ) -> StageDecision:
     """Validate the model's JSON verdict; fail-closed to HOLD on any ambiguity.
 
-    Rules:
-      * ``action`` must be one of advance/hold/rollback (else HOLD);
-      * ADVANCE ``target_stage`` must be the IMMEDIATE next stage in
-        ``stage_order`` (no skipping; else HOLD);
+        Rules:
+            * ``action`` must be one of advance/hold/rollback/complete (else HOLD);
+            * ADVANCE ``target_stage`` must be strictly LATER in ``stage_order``;
       * ROLLBACK ``target_stage`` must be strictly EARLIER than ``current_stage``
         (else HOLD);
+            * COMPLETE targets the current stage; a LATER stage becomes a
+        one-step ADVANCE (completion is only legal at the final stage), an
+        earlier or unknown one is rejected;
       * HOLD pins ``target_stage`` to the current stage.
+
+    A COMPLETE that survives this function is a request to *close the project*,
+    which is a policy question rather than a parsing one — see
+    :func:`final_stage_completion_blockers` and
+    :func:`stage_position_is_the_only_completion_blocker` for what happens when
+    the only thing wrong with it is where the pipeline is standing.
     """
     cur = (current_stage or "").strip().lower()
     order = [str(s).strip().lower() for s in stage_order]
@@ -197,6 +210,63 @@ def parse_stage_decision(
         )  # cannot validate ordering → safe HOLD
 
     cur_idx = order.index(cur)
+    if action == "complete":
+        # A COMPLETE naming a LATER stage is the model saying "everything
+        # through X is done". Testbed runs 11, 12 and 13 all emitted
+        # ``ACTION=complete`` / ``TARGET_STAGE=review`` at ``current_stage=scope``
+        # with correct reasoning behind it — run 13 had by then produced the
+        # survey, a both-directions proof, and a Lean build with no ``sorry``,
+        # all reviewer-certified.
+        #
+        # Pinning that to ``complete`` at ``cur`` does NOT rescue it. Completion
+        # is only legal at the final stage: ``final_stage_completion_decision``
+        # returns ``None`` for any earlier one (outside ``direct`` workflow
+        # mode), and the caller turns that into a HOLD. So the earlier
+        # normalization to ``complete@cur`` traded one HOLD for another and run
+        # 13 sat at ``scope`` with the problem solved, its Planner inventing
+        # gate-metadata busywork to explain the refusal.
+        #
+        # ADVANCE is the action that expresses what the model meant and that
+        # the machine can execute. One step, not a jump to ``target``:
+        # ``advance_stage`` validates the stage being *left*, so hopping
+        # ``scope -> review`` would skip ``solve``'s gate entirely. Stepping
+        # converges in as many ticks as there are stages and every gate still
+        # runs — including the vertical's deterministic completion validator,
+        # which is what raises ``StageCompletionError`` from ``_advance``.
+        #
+        # An EARLIER or unknown target stays fail-closed: that is a model
+        # confusing completion with a rollback, not a wording slip.
+        if target and target != cur:
+            if target not in order or order.index(target) < cur_idx:
+                return StageDecision(
+                    "hold", cur, "manager held (default)", "illegal_complete_target"
+                )
+            return StageDecision(
+                "advance",
+                order[cur_idx + 1],
+                reason or "operator objective complete",
+                "complete_target_advanced",
+            )
+        # Same rescue, for the model that did as it was told. The stage prompt
+        # ends with "For HOLD and for COMPLETE, set TARGET_STAGE to the current
+        # stage" — added so runs 11 and 12 would stop losing correct verdicts to
+        # ``illegal_complete_target``. A Manager that follows it lands here, and
+        # completion from a non-final stage is refused downstream every time.
+        #
+        # It is NOT rewritten here. Naming a later stage says "the work through
+        # X is done", which is a request to move and can be settled on shape
+        # alone. Naming the current stage says "close the project", which is a
+        # request the completion contract exists to answer. So it goes through,
+        # and the caller turns it into a step forward only when the contract's
+        # sole objection is the pipeline's position — see
+        # ``stage_position_is_the_only_completion_blocker``.
+        return StageDecision(
+            "complete",
+            cur,
+            reason or "operator objective complete",
+            "valid_complete",
+        )
+
     if action == "advance":
         nxt_idx = cur_idx + 1
         if nxt_idx >= len(order):
@@ -209,11 +279,17 @@ def parse_stage_decision(
                 reason or "checklist satisfied",
                 "inferred_next_stage",
             )
-        if target != next_stage:
+        if target not in order or order.index(target) <= cur_idx:
             return StageDecision(
                 "hold", cur, "manager held (default)", "illegal_advance_target"
-            )  # must be the immediate next stage
-        diagnostic = "normalized_target_stage" if raw_target != target else "valid_target"
+            )
+        diagnostic = (
+            "normalized_target_stage"
+            if raw_target != target
+            else "valid_skip_target"
+            if target != next_stage
+            else "valid_target"
+        )
         return StageDecision(
             "advance", target, reason or "checklist satisfied", diagnostic
         )
@@ -301,17 +377,7 @@ def _review_certifies_completion(
 
 
 def completion_trigger_reason(action: str, reason: str) -> str:
-    """What a `complete` transition should record when it overrode the trigger.
-
-    A hold's reason attached to a `complete` transition is what gets persisted
-    into ``stage_history``. Observed verbatim in a real run on 2026-07-26:
-
-        {"direction": "complete", ..., "reason": "manager held (default)"}
-
-    An operator reading that cannot tell whether the stage completed or was
-    held, which is the one question stage_history exists to answer. When the
-    trigger agreed, its own words are the most informative thing to keep.
-    """
+    """Describe completion without preserving a contradictory hold reason."""
     text = str(reason or "").strip()
     if str(action or "").strip().lower() != "hold":
         return text
@@ -328,20 +394,26 @@ def final_stage_completion_decision(
     stage_order: Sequence[str],
     vertical: str = "",
     mission_scope: str = "",
+    project_root: Any = None,
     research_target_level: str | None = None,
     checklist_contract: Any | None = None,
     completion_blocker: str = "",
     trigger_diagnostic: str = "",
     trigger_reason: str = "",
+    allow_early_completion: bool = False,
 ) -> StageDecision | None:
-    """Return a COMPLETE decision when the final stage is reviewer-certified."""
+    """Validate a Manager COMPLETE decision against certified stage evidence."""
     cur = (current_stage or "").strip().lower()
     order = [str(s).strip().lower() for s in stage_order]
-    if not order or cur != order[-1]:
+    if cur not in order or (cur != order[-1] and not allow_early_completion):
         return None
     if str(completion_blocker or "").strip():
         return None
-    if not _mission_scope_can_complete(mission_scope, vertical):
+    if not allow_early_completion and not _mission_scope_can_complete(
+        mission_scope,
+        vertical,
+        project_root=project_root,
+    ):
         return None
     missing = _review_certifies_completion(
         review,
@@ -352,9 +424,118 @@ def final_stage_completion_decision(
     )
     if missing:
         return None
-    reason = trigger_reason or "reviewer certified final-stage checklist"
-    diagnostic = trigger_diagnostic or "final_stage_certified_complete"
+    reason = trigger_reason or "Manager completed the certified current stage"
+    diagnostic = trigger_diagnostic or "manager_completion_certified"
     return StageDecision("complete", cur, reason, diagnostic)
+
+
+def final_stage_completion_blockers(
+    review: Any,
+    *,
+    current_stage: str,
+    stage_order: Sequence[str],
+    vertical: str = "",
+    mission_scope: str = "",
+    project_root: Any = None,
+    research_target_level: str | None = None,
+    checklist_contract: Any | None = None,
+    completion_blocker: str = "",
+    allow_early_completion: bool = False,
+) -> tuple[str, ...]:
+    """Why ``final_stage_completion_decision`` refused, in the operator's words.
+
+    That function answers yes-or-no across four independent checks and returns
+    a bare ``None`` for every no, so its caller could only report "Manager
+    completion rejected by the project completion contract" — the same sentence
+    whether the stage was simply not the last one, an external gate was open, a
+    bounded mission had no standing to close the project, or the Reviewer had
+    not certified. Testbed run 13 hit the first of those with the problem fully
+    solved (search program, both-directions proof, Lean build with no ``sorry``,
+    reviewer-certified) and its Planner responded by inventing gate-metadata
+    busywork — "record the missing route/ledger state or equivalent gate
+    metadata if required by the workflow" — because nothing told it the actual
+    answer was "you are at ``scope``; advance".
+
+    Deliberately a separate function rather than a changed return type: the
+    decision is consumed as a truthy/``None`` value in several places, and a
+    reporting improvement is not worth a signature migration across them. The
+    checks are duplicated in the same order as above; the reviewer check
+    already phrases its own reason, so that one passes through verbatim.
+
+    Every failing check is reported, not just the first. The caller needs to
+    distinguish "refused only because of where the pipeline is standing" — which
+    is recoverable by advancing — from "refused for that *and* something else",
+    which is not; a short-circuiting version cannot tell those apart.
+
+    Returns an empty tuple when nothing blocks, which callers must treat as
+    "no explanation available" rather than "completion is allowed" — the
+    decision function remains the authority on that.
+    """
+    cur = (current_stage or "").strip().lower()
+    order = [str(s).strip().lower() for s in stage_order]
+    if cur not in order:
+        return (f"stage {cur!r} is not part of this vertical's stage order",)
+    blockers: list[str] = []
+    if cur != order[-1] and not allow_early_completion:
+        blockers.append(
+            f"{_STAGE_POSITION_BLOCKER} ({order[-1]!r}); this "
+            f"project is at {cur!r}. Advance through the remaining stages "
+            f"({', '.join(order[order.index(cur) + 1:])}) instead — each one "
+            "runs its own completion gate on the way past"
+        )
+    blocker = str(completion_blocker or "").strip()
+    if blocker:
+        blockers.append(blocker)
+    if not allow_early_completion and not _mission_scope_can_complete(
+        mission_scope,
+        vertical,
+        project_root=project_root,
+    ):
+        blockers.append(
+            f"a mission scoped {mission_scope or '(unset)'!r} cannot close a "
+            f"{vertical or 'this'!r} project: its completion gate is "
+            "'certified', so only a 'final_submission' mission carries the "
+            "authority to end it"
+        )
+    missing = str(
+        _review_certifies_completion(
+            review,
+            vertical=vertical,
+            mission_scope=mission_scope,
+            research_target_level=research_target_level,
+            checklist_contract=checklist_contract,
+        )
+        or ""
+    ).strip()
+    if missing:
+        blockers.append(missing)
+    return tuple(blockers)
+
+
+def stage_position_is_the_only_completion_blocker(
+    blockers: Sequence[str],
+) -> bool:
+    """Is the pipeline's position the sole reason completion was refused?
+
+    Run 15 (``s-f0dbba19``) is why this exists. Its Manager emitted
+    ``ACTION=complete`` / ``TARGET_STAGE=scope`` — exactly what the stage prompt
+    instructs — with "Reviewer certification establishes the scoped objective
+    and all requested dependent phases", after a reproducible survey, a
+    both-directions proof, and a Lean/Mathlib build this repository recompiled
+    independently. The one objection was that ``scope`` is not the last stage.
+    It held there, as runs 11, 12 and 13 had, and the only escape any agent ever
+    found was to force the gate by hand.
+
+    An action the prompt tells the model to emit and the machine can only ever
+    refuse is not a guardrail. When position is the *sole* objection, stepping
+    forward is what the verdict means and what the machine can execute, and no
+    gate is skipped: ``advance_stage`` runs the vertical's completion validator
+    against the stage being left. When anything else also refused — an open
+    external gate, a bounded mission with no standing to close the project, an
+    uncertified review — the completion was wrong on its merits and stepping
+    forward would launder it into a transition nobody asked for.
+    """
+    return len(blockers) == 1 and blockers[0].startswith(_STAGE_POSITION_BLOCKER)
 
 
 def external_completion_gate_rework_decision(
@@ -429,28 +610,21 @@ def external_completion_gate_stage_guard_decision(
     return proposed
 
 
-def _mission_scope_can_complete(mission_scope: str, vertical: str) -> bool:
+def _mission_scope_can_complete(
+    mission_scope: str,
+    vertical: str,
+    *,
+    project_root: Any = None,
+) -> bool:
     """Whether a mission with this scope is allowed to close the project.
 
     ``final_submission`` is the *paper* transport scope and nothing else can
     complete a paper project: a bounded sub-mission must not end a submission
     just because its own Reviewer said `done`.
 
-    For every other vertical that requirement was unsatisfiable, and it produced
-    a livelock observed in a real session on 2026-07-26. Three rules interlocked:
-    ``_planner_task_tags`` downgrades ``final_submission`` to ``bounded`` for any
-    vertical whose completion gate is not ``full_paper``; ``tick()`` retires a
-    ``final_submission`` item under such a vertical as stale, which is why the
-    downgrade exists; and this function accepted nothing but
-    ``final_submission``. So the Goal Gate mission of twenty of the
-    twenty-three verticals could never close its own gate — the Reviewer
-    certified, the Manager held `not_certified`, and the Planner re-issued the
-    identical task until the operator stopped it.
-
-    The requirement now follows what the vertical declares about itself rather
-    than a transport tag it can never carry. The certification check below is
-    unchanged and still has to pass; this only decides which envelope the
-    verdict may arrive in.
+    Other verticals close through their declared completion gate, not the paper
+    transport scope. The certification check still applies; this function only
+    decides which mission envelope may carry the verdict.
     """
     normalized = (mission_scope or "").strip().lower().replace("-", "_")
     if normalized == "final_submission":
@@ -458,10 +632,12 @@ def _mission_scope_can_complete(mission_scope: str, vertical: str) -> bool:
     try:
         from ..verticals._base import load_vertical, vertical_completion_gate
 
-        gate = vertical_completion_gate(load_vertical(vertical or ""))
+        gate = vertical_completion_gate(
+            load_vertical(vertical or "", project_root=project_root)
+        )
     except Exception:  # noqa: BLE001 — an unreadable vertical keeps the strict rule
         return False
-    return gate != "full_paper"
+    return gate != "certified"
 
 
 __all__ = [
@@ -472,6 +648,7 @@ __all__ = [
     "fallback_empty_stage_decision",
     "external_completion_gate_rework_decision",
     "external_completion_gate_stage_guard_decision",
+    "final_stage_completion_blockers",
     "final_stage_completion_decision",
     "build_stage_decision_prompt",
     "parse_stage_decision",

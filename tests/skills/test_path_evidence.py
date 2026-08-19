@@ -16,7 +16,10 @@ def test_path_evidence_requires_nonempty_project_file(tmp_path):
     assert validate_any_file(tmp_path, ["attempts/**/*.json"]) == empty
 
 
-def test_path_evidence_rejects_symlink_outside_project(tmp_path):
+def test_path_evidence_rejects_symlink_outside_project(
+    tmp_path,
+    require_symlink_support,
+):
     outside = tmp_path.parent / "outside-result.json"
     outside.write_text("{}\n", encoding="utf-8")
     link = tmp_path / "attempts" / "result.json"

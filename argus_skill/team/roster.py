@@ -30,6 +30,20 @@ def create(root: Path, *, team_id: str, mission: str, lead: str, now: float) -> 
                     f"team root {root} already belongs to {existing.get('team_id')!r}, "
                     f"not {team_id!r}"
                 )
+            existing_mission = str(existing.get("mission_objective") or "").strip()
+            requested_mission = str(mission or "").strip()
+            if existing_mission != requested_mission:
+                raise ValueError(
+                    "team root mission objective does not match the existing roster "
+                    f"identity: {requested_mission!r} != {existing_mission!r}"
+                )
+            existing_lead = str(existing.get("lead") or "").strip()
+            requested_lead = str(lead or "").strip()
+            if existing_lead != requested_lead:
+                raise ValueError(
+                    "team root lead does not match the existing roster identity: "
+                    f"{requested_lead!r} != {existing_lead!r}"
+                )
             existing.setdefault("mission_objective", mission)
             existing.setdefault("lead", lead)
             existing.setdefault("created_ts", now)

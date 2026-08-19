@@ -4,39 +4,31 @@ from __future__ import annotations
 
 from pathlib import Path
 
-SHARED_CHECKPOINT_TEMPLATE = """# Goal
 
-# Current State
-
-# Verified Done
-
-# Failed / Dead Ends
-
-# Open Questions / Blockers
-
-# Relevant Files and Evidence
-"""
-
-
-def ensure_shared_checkpoint(path: Path | None) -> Path | None:
-    """Create the shared note once; agents own every later edit."""
+def resolve_shared_checkpoint(path: Path | None) -> Path | None:
+    """Resolve the optional handoff path without creating it."""
     if path is None:
         return None
-    checkpoint = Path(path).expanduser().resolve()
-    try:
-        checkpoint.parent.mkdir(parents=True, exist_ok=True)
-        if not checkpoint.exists():
-            checkpoint.write_text(SHARED_CHECKPOINT_TEMPLATE, encoding="utf-8")
-    except OSError:
-        return None
-    return checkpoint
+    return Path(path).expanduser().resolve()
 
 
-def shared_checkpoint_instructions(path: Path | None, *, role: str) -> str:
+def shared_checkpoint_instructions(
+    path: Path | None,
+    *,
+    role: str,
+    continuation: bool = True,
+) -> str:
     """Tell one role how to take its turn editing the shared note."""
     if path is None:
         return ""
     checkpoint = str(Path(path).expanduser().resolve())
+    if role == "reviewer" and not continuation:
+        return (
+            "## Shared checkpoint\n"
+            f"If your verdict is not `done`, update `{checkpoint}` with only the "
+            "remaining state, blocker, and next action before returning. For a "
+            "`done` verdict, do not read or edit the checkpoint merely for ceremony."
+        )
     packet = str(Path(path).expanduser().resolve().parent / "latest.json")
     if role == "reviewer":
         action = (
@@ -45,13 +37,16 @@ def shared_checkpoint_instructions(path: Path | None, *, role: str) -> str:
         )
     else:
         action = (
-            "Read it first; the previous Reviewer edited it last. Before ending, "
-            "directly update current state, evidence paths, blockers, and open questions."
+            "Read it if it exists; create or update it only when another round needs "
+            "current state, evidence paths, blockers, or a next action."
         )
     return (
-        "## Shared checkpoint — edit the file directly\n"
+        "## Shared checkpoint — edit the file directly using these exact absolute paths\n"
         f"Canonical context packet: `{packet}`\n"
         f"Human-editable projection: `{checkpoint}`\n\n"
+        "Use these absolute paths verbatim for every read and edit. Never create or "
+        "use a relative `state/`, `handoffs/`, `latest.json`, or `CHECKPOINT.md` "
+        "copy inside the worktree; such a copy is not runtime state.\n\n"
         "Read the index first. If its `kind` is `mission_context`, the immutable "
         "objective/acceptance contract is inline because no role handoff exists "
         "yet. If its `kind` is `handoff_ref`, open `handoff.path` for the latest "
@@ -66,7 +61,6 @@ def shared_checkpoint_instructions(path: Path | None, *, role: str) -> str:
 
 
 __all__ = [
-    "SHARED_CHECKPOINT_TEMPLATE",
-    "ensure_shared_checkpoint",
+    "resolve_shared_checkpoint",
     "shared_checkpoint_instructions",
 ]

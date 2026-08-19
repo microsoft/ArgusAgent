@@ -13,7 +13,7 @@ from . import _store, leaderboard, roster, task_board
 
 log = logging.getLogger(__name__)
 _STATE_FILE = "completion_summary.json"
-_TERMINAL_STATES = frozenset({"done", "failed"})
+_TERMINAL_STATES = frozenset({"done", "failed", "blocked"})
 
 
 def _payload(root: Path, marker: dict[str, Any]) -> dict[str, Any] | None:
@@ -46,6 +46,8 @@ def _payload(root: Path, marker: dict[str, Any]) -> dict[str, Any] | None:
             "reason": reason,
             "target": str(row.get("target") or ""),
             "result_shard": str(row.get("result_shard") or ""),
+            "owner": str(row.get("owner") or ""),
+            "pending_question": str(row.get("pending_question") or ""),
         })
     manifest = roster.load(root)
     return {
@@ -59,7 +61,19 @@ def _payload(root: Path, marker: dict[str, Any]) -> dict[str, Any] | None:
 
 def _generation_fingerprint(payload: dict[str, Any]) -> str:
     raw = json.dumps(
-        {"team_id": payload["team_id"], "generation": payload["generation"]},
+        {
+            "team_id": payload["team_id"],
+            "generation": payload["generation"],
+            "tasks": [
+                {
+                    "task_id": row["task_id"],
+                    "state": row["state"],
+                    "pending_question": row["pending_question"],
+                    "result_shard": row["result_shard"],
+                }
+                for row in payload["tasks"]
+            ],
+        },
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -71,9 +85,10 @@ def _prompt(payload: dict[str, Any]) -> str:
     facts = json.dumps(payload, ensure_ascii=False, indent=2)
     return (
         "You are the Argus Manager. A parallel Team campaign has just become quiescent: "
-        "every teammate process exited and every task is done or failed. Write the final "
+        "every teammate process exited and every task is done, failed, or blocked. "
+        "Write the final "
         "operator-facing chat summary in the mission's language. Use 5-10 concise lines. "
-        "State completed/failed counts, the strongest result or mechanism, important "
+        "State completed/failed/blocked counts, the strongest result or mechanism, important "
         "artifacts, honest failures, and the most useful next step. Do not expose internal "
         "state paths unless they are result artifacts. Do not claim success for failed tasks.\n\n"
         f"TEAM FACTS:\n{facts}"
@@ -84,9 +99,17 @@ def _fallback(payload: dict[str, Any]) -> str:
     tasks = payload["tasks"]
     done = [row for row in tasks if row["state"] == "done"]
     failed = [row for row in tasks if row["state"] == "failed"]
-    blocked = [row for row in tasks if row["state"] == "blocked"]
+    operator_waits = [
+        row for row in tasks if row["state"] == "blocked" and row["pending_question"]
+    ]
+    blocked = [
+        row for row in tasks if row["state"] == "blocked" and not row["pending_question"]
+    ]
     lines = [
-        f"Team completed · {len(done)} done · {len(failed)} failed · {len(blocked)} blocked.",
+        "Team completed"
+        f" · {len(done)} done"
+        f" · {len(failed)} failed"
+        f" · {len(operator_waits) + len(blocked)} blocked.",
     ]
     if done:
         lines.append("Completed: " + "; ".join(row["title"] for row in done[:6]))
@@ -100,6 +123,14 @@ def _fallback(payload: dict[str, Any]) -> str:
             "Failed: " + "; ".join(
                 f"{row['title']} ({safe_reason(row['reason']) if row['reason'] else 'no reason recorded'})"
                 for row in failed[:4]
+            )
+        )
+    if operator_waits:
+        lines.append(
+            "Waiting for operator: "
+            + "; ".join(
+                f"{row['title']} ({row['pending_question']})"
+                for row in operator_waits[:4]
             )
         )
     if blocked:

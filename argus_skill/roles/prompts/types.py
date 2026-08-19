@@ -56,14 +56,16 @@ class ResolvedRolePrompt:
     stage_checklist: str
     stage_order: tuple[str, ...]
     completion_gate: str
+    paper_mission: bool
     workflow_mode: str
+    verification_stage_profiles: dict[str, str]
     requires_independent_review: bool
     search_altitude: str
     fragment_ids: tuple[str, ...]
 
     @property
-    def full_paper(self) -> bool:
-        return self.completion_gate == "full_paper"
+    def requires_final_certification(self) -> bool:
+        return self.completion_gate == "certified"
 
     def prepend_role_banner(
         self,

@@ -37,6 +37,20 @@ _SYNTAX_PATTERNS = (
 )
 _AXIOM_AUDIT_MARKER = "ARGUS_AXIOM_AUDIT_FOUND:"
 _AXIOM_AUDIT_PATH = Path(__file__).with_name("lean_axiom_audit.lean")
+#: ``foo --version`` execs a binary and prints a banner; three seconds is
+#: already generous for that.
+_VERSION_PROBE_TIMEOUT = 3.0
+#: ``lake env lean --version`` is not that. It resolves the Lake workspace and
+#: elan toolchain first, so its cost is dominated by reading the manifest and,
+#: when the workspace pins a toolchain other than the default, switching to it.
+#: Measured against the Mathlib workspace that ships with this skill it takes
+#: ~0.6s warm, which left the shared budget only a five-fold margin — and page
+#: cache is exactly what a long test run or a busy Engineer evicts. Timing out
+#: here is not loud: the probe is caught below and degrades the version to the
+#: empty string, which ``math_state._lean_producer`` used to turn into a
+#: kernel name with no version in it. A separate, much larger budget so that
+#: a cold cache costs a wait rather than a mis-attributed proof.
+_WORKSPACE_PROBE_TIMEOUT = 30.0
 CANONICAL_LEAN_SOURCE = "Main.lean"
 COMPILE_LOG = "compile.log"
 LEAN_CHECK_RESULT = "lean_check.json"
@@ -87,6 +101,7 @@ def run_lean_check(
             cwd=working_dir,
             version_command=[executable, "env", "lean", "--version"],
             path_label=f"{executable} env lean",
+            timeout=_WORKSPACE_PROBE_TIMEOUT,
         )
     elif executable:
         tools["lean"] = _tool_info(
@@ -390,6 +405,7 @@ def _tool_info(
     cwd: Path | str | None = None,
     version_command: Sequence[str] | None = None,
     path_label: str | None = None,
+    timeout: float = _VERSION_PROBE_TIMEOUT,
 ) -> dict[str, Any]:
     if version_command is None:
         path = _resolve_executable(name, path_override)
@@ -406,7 +422,7 @@ def _tool_info(
             command,
             capture_output=True,
             text=True,
-            timeout=3.0,
+            timeout=timeout,
             check=False,
             cwd=cwd,
         )
@@ -436,10 +452,30 @@ def _resolve_executable(name: str, override: str | None = None) -> str | None:
         if configured_home
         else Path.home() / ".elan"
     )
-    candidate = elan_home / "bin" / name
-    if candidate.is_file() and os.access(candidate, os.X_OK):
-        return str(candidate.resolve())
+    elan_bin = elan_home / "bin"
+    candidates = [elan_bin / name]
+    if os.name == "nt" and not Path(name).suffix:
+        # ELAN installs ``lean.exe``/``lake.exe`` on Windows. Unlike a PATH
+        # lookup, probing a concrete Path does not apply PATHEXT for us.
+        candidates.extend(
+            elan_bin / f"{name}{suffix}"
+            for suffix in (".exe", ".cmd", ".bat", ".com")
+        )
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate.resolve())
     return None
+
+
+def default_mathlib_workspace() -> Path:
+    """Where the workspace search lands when nothing nearer applies.
+
+    A function rather than a module constant because ``Path.home()`` read at
+    import time freezes an answer that the search itself re-reads on every
+    call; anything quoting this to a user would then be able to name a
+    directory the code does not look in.
+    """
+    return Path.home() / ".local" / "share" / "argus-skill" / "mathlib"
 
 
 def _resolve_lake_workspace(source: Path) -> Path | None:
@@ -451,9 +487,7 @@ def _resolve_lake_workspace(source: Path) -> Path | None:
     candidates = []
     if configured:
         candidates.append(Path(configured).expanduser())
-    candidates.append(
-        Path.home() / ".local" / "share" / "argus-skill" / "mathlib"
-    )
+    candidates.append(default_mathlib_workspace())
     for candidate in candidates:
         resolved = candidate.resolve()
         if _is_lake_workspace(resolved):

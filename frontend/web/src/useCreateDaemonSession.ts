@@ -89,7 +89,7 @@ export function useCreateDaemonSession({
       }
       return true;
     } catch (error) {
-      notify('error', `Could not create daemon: ${errorText(error)}`);
+      notify('error', `Could not create session: ${errorText(error)}`);
       return false;
     } finally {
       creatingDaemonRef.current = false;

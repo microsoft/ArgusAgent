@@ -304,18 +304,18 @@ def _render_round_review_completed(event: dict[str, Any]) -> str:
     status = str(event.get("status", "?"))
     reason = _trunc(str(event.get("reason") or ""), 400)
     next_action = _trunc(str(event.get("next_action") or ""), 200)
-    status_icon = {
-        "done": "✅",
-        "continue": "↻",
-        "blocked": "⛔",
-        "no_progress": "🚫",
-    }.get(status, "•")
-    head = f"{label}: review {status_icon} {status}"
-    parts = [head]
+    outcome = {
+        "done": "✅ verified",
+        "continue": "↻ more work is needed",
+        "blocked": "⛔ cannot continue yet",
+        "replan_requested": "↺ the current route needs revision",
+        "no_progress": "🚫 no useful change was found",
+    }.get(status, "review finished")
+    parts = [f"{label}: {outcome}"]
     if reason:
-        parts.append(f"   ↳ reason: {reason}")
+        parts.append(f"   ↳ {reason}")
     if next_action and status != "done":
-        parts.append(f"   ↳ next: {next_action}")
+        parts.append(f"   ↳ Next: {next_action}")
     return "\n".join(parts)
 
 

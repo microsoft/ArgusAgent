@@ -29,7 +29,7 @@ CHECKLIST_OPTIONAL_STAGES = ("intake", "form_plan", "compose", "revise")
 
 completion_gate = "none"
 
-_PIPELINE_CHECK = ("Pipeline state present", "test -f research/PIPELINE_STATE.json")
+_PIPELINE_CHECK = ("Pipeline state present", "test -f .argus/PIPELINE_STATE.json")
 _CHECKS = "{python} -m argus_skill.verticals.classical_poetry.checks"
 
 STAGE_CHECKS: dict[str, list[tuple[str, str]]] = {

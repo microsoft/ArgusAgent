@@ -5,7 +5,6 @@ import json
 import pytest
 
 from argus_skill.manager import Manager
-from argus_skill.manager._helpers import _OPTIMIZE_VERTICALS
 from argus_skill.skills.builtins import iter_vertical_skill_texts
 from argus_skill.skills.stage_machine import (
     ChecklistLoadState,
@@ -191,12 +190,11 @@ def test_digital_circuit_banners_cover_benchmark_integrity_and_local_tools() -> 
 
 def test_digital_circuit_uses_custom_staged_kind() -> None:
     assert Manager._kind_for("digital_circuit") == "custom"
-    assert "digital_circuit" not in _OPTIMIZE_VERTICALS
 
 
 def test_verification_stage_rejects_failed_log_and_accepts_explicit_pass(tmp_path) -> None:
-    (tmp_path / "research").mkdir()
-    (tmp_path / "research" / "PIPELINE_STATE.json").write_text(
+    (tmp_path / ".argus").mkdir()
+    (tmp_path / ".argus" / "PIPELINE_STATE.json").write_text(
         json.dumps({"vertical": "digital_circuit", "current_stage": "verification"}),
         encoding="utf-8",
     )
@@ -214,8 +212,8 @@ def test_verification_stage_rejects_failed_log_and_accepts_explicit_pass(tmp_pat
 
 
 def test_verification_result_does_not_count_as_verification_source(tmp_path) -> None:
-    (tmp_path / "research").mkdir()
-    (tmp_path / "research" / "PIPELINE_STATE.json").write_text(
+    (tmp_path / ".argus").mkdir()
+    (tmp_path / ".argus" / "PIPELINE_STATE.json").write_text(
         json.dumps({"vertical": "digital_circuit", "current_stage": "verification"}),
         encoding="utf-8",
     )

@@ -25,15 +25,12 @@ _VERTICALS = Path(__file__).resolve().parents[2] / "argus_skill" / "verticals"
 def _selectable_verticals() -> list[str]:
     """Vertical package names that a project can actually resolve to.
 
-    ``direct`` is excluded on purpose: it is a retired capability name that
-    ``_known_vertical`` migrates to ``software`` + direct workflow mode, so no
-    project can resolve to it and its stage module is never read.
+    The retired ``direct`` package no longer exists. Persisted ``direct`` state
+    is still migrated to ``software`` + direct workflow mode by the selector.
     """
     names = []
     for path in sorted(_VERTICALS.glob("*/stages.py")):
         name = path.parent.name
-        if name == "direct":
-            continue
         names.append(name)
     return names
 
@@ -68,8 +65,8 @@ def test_final_stage_is_certifiable(vertical: str) -> None:
 def test_direct_is_not_selectable_and_is_migrated_to_software(tmp_path: Path) -> None:
     """Guards the exclusion above: if ``direct`` ever becomes selectable again,
     it needs a real final gate and this test must be revisited."""
-    (tmp_path / "research").mkdir()
-    (tmp_path / "research" / "PIPELINE_STATE.json").write_text(
+    (tmp_path / ".argus").mkdir()
+    (tmp_path / ".argus" / "PIPELINE_STATE.json").write_text(
         '{"vertical": "direct", "current_stage": "delivery"}', encoding="utf-8"
     )
     assert resolve_checklist_vertical(tmp_path) == "software"

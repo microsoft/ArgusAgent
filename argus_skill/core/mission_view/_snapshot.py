@@ -47,25 +47,55 @@ def merge_mission_view_snapshot(
     current_stage: str = "",
 ) -> dict[str, Any]:
     mission = view.setdefault("mission", {})
+    if continuous and continuous.get("enabled"):
+        routing = view.setdefault("routing", {})
+        if not routing.get("route"):
+            routing["route"] = "team"
+        routing["continuous"] = True
+        routing["open_ended"] = continuous.get("open_ended") is True
+        routing["lifetime"] = (
+            "standing"
+            if routing["open_ended"]
+            else str(routing.get("lifetime") or "bounded")
+        )
     active = next((item for item in backlog if str(item.get("status")) in {"running", "in_progress", "claimed"}), None)
     queued = next((item for item in backlog if str(item.get("status")) == "pending"), None)
+    owner_id = str(mission.get("id") or "")
+    owner = next(
+        (item for item in backlog if str(item.get("id") or "") == owner_id),
+        None,
+    )
+    selected = active or owner
     objective = str(
-        (continuous or {}).get("objective")
+        (selected or {}).get("objective")
+        or (selected or {}).get("title")
+        or (
+            (continuous or {}).get("objective")
+            if (continuous or {}).get("enabled")
+            else ""
+        )
         or session.get("objective")
-        or (active or {}).get("objective")
-        or (active or {}).get("title")
-        or (queued or {}).get("objective")
-        or (queued or {}).get("title")
+        or ((queued or {}).get("objective") if not owner_id else "")
+        or ((queued or {}).get("title") if not owner_id else "")
         or mission.get("objective")
         or ""
     ).strip()
     if objective:
         mission["objective"] = objective
-        mission["title"] = mission.get("title") or objective.splitlines()[0][:240]
+        if selected:
+            mission["title"] = str(
+                selected.get("title") or objective.splitlines()[0]
+            )[:240]
+        else:
+            mission["title"] = mission.get("title") or objective.splitlines()[0][:240]
     if active:
         mission["id"] = str(active.get("id") or mission.get("id") or "")
         mission["status"] = "working"
         mission["started_at"] = mission.get("started_at") or active.get("started_ts")
+    elif owner:
+        owner_status = str(owner.get("status") or "")
+        if owner_status == "pending":
+            mission["status"] = "queued"
     elif (continuous or {}).get("done_reason") or (continuous or {}).get("done_at"):
         mission["status"] = "complete"
     elif queued or (continuous or {}).get("enabled"):
@@ -144,6 +174,10 @@ def merge_mission_view_snapshot(
             "branch_id": item_id,
             "parent_branch_id": str((item.get("deps") or [""])[0] or "") or None,
             "acceptance_check": str(item.get("acceptance_check") or ""),
+            "plan_hypothesis": str(item.get("plan_hypothesis") or ""),
+            "goal_contribution": str(item.get("goal_contribution") or ""),
+            "expected_regressions": str(item.get("expected_regressions") or ""),
+            "decision_rule": str(item.get("decision_rule") or ""),
             "non_goals": [
                 str(value) for value in (item.get("non_goals") or [])
             ],
@@ -268,10 +302,14 @@ def _enrich_skill_content(
         except OSError:
             continue
         truncated = len(data) > MISSION_SKILL_CONTENT_MAX_BYTES
-        skill["content"] = data[:MISSION_SKILL_CONTENT_MAX_BYTES].decode(
+        content = data[:MISSION_SKILL_CONTENT_MAX_BYTES].decode(
             "utf-8",
             errors="replace",
         )
+        # API snapshots are protocol data, not a byte-for-byte file download.
+        # Canonical LF keeps the response stable across Windows and POSIX and
+        # matches Python's normal text-file reading semantics.
+        skill["content"] = content.replace("\r\n", "\n").replace("\r", "\n")
         skill["content_truncated"] = truncated
 
 

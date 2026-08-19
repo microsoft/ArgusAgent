@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import json
 import sqlite3
 import time
@@ -8,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from argus_skill.core.codex_usage import TokenUsage, extract_token_usage
+from argus_skill.core.token_usage import TokenUsage, extract_token_usage
 from argus_skill.core.usage import (
     UsageLedger,
     UsageRecord,
@@ -41,6 +42,35 @@ def _known_usage(*, input_tokens: int, output_tokens: int) -> TokenUsage:
         output_tokens_present=True,
         source="test",
     )
+
+
+def test_usage_process_caches_are_bounded(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from argus_skill.core import usage
+
+    monkeypatch.setattr(usage, "_CALL_ID_CACHE_MAX_PROJECTS", 2)
+    monkeypatch.setattr(usage, "_CALL_ID_CACHE_MAX_IDS", 2)
+    with usage._CALL_ID_CACHE_LOCK:
+        usage._CALL_ID_CACHE.clear()
+
+    ledgers = [UsageLedger(tmp_path / f"project-{index}") for index in range(3)]
+    for index, ledger in enumerate(ledgers):
+        ledger._cache_call_ids({f"call-{index}"})
+
+    assert len(usage._CALL_ID_CACHE) == 2
+    assert str(ledgers[0].path.resolve()) not in usage._CALL_ID_CACHE
+
+    oversized = UsageLedger(tmp_path / "oversized")
+    oversized._cache_call_ids({"call-a", "call-b", "call-c"})
+    assert str(oversized.path.resolve()) not in usage._CALL_ID_CACHE
+
+    lock_key = str(ledgers[0].lock_path.resolve())
+    with ledgers[0]._locked():
+        assert lock_key in usage._THREAD_LOCKS
+    gc.collect()
+    assert lock_key not in usage._THREAD_LOCKS
 
 
 def test_real_copilot_fixture_preserves_matcher_and_scientist_output_tokens(

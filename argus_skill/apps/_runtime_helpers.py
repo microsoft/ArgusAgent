@@ -175,6 +175,7 @@ def _should_run_stage_transition(
     skip_stage_transition: bool = False,
     preplanned: bool = False,
     stage_closing: bool = False,
+    holds_stage_authority: bool = True,
 ) -> bool:
     """Whether this mission may invoke the Manager's formal stage writer.
 
@@ -184,7 +185,27 @@ def _should_run_stage_transition(
     Replans still reach the Manager through the planning-cycle reconciliation
     path, while direct/legacy work keeps the historical reviewed-transition
     behavior.
+
+    ``holds_stage_authority`` is the separate, unconditional question of
+    whether this process is the project's stage writer at all, and it is
+    checked before everything else. The other parameters all describe *which
+    kind of work* a mission is doing, and every one of them assumes the mission
+    belongs to the Manager that owns the pipeline. A dispatched teammate breaks
+    that assumption: it runs in the project root — deliberately, so it reads
+    the one shared ledger rather than a private copy nobody reads — but it
+    holds only the single task it was handed and none of the campaign's own
+    review, while N of its siblings run concurrently against the same file.
+
+    Kept distinct from ``skip_stage_transition`` because that flag is not a
+    general off switch: :mod:`argus_skill.manager.dispatch` *rejects* a Planner
+    node that sets it without ``require_independent_review``, so it only ever
+    means "this reviewed node settles itself and must not move the stage", and
+    the guard below reads it that way. Widening that guard to cover a teammate
+    would change what the review-only contract means for every vertical, to
+    express something it was not asked about.
     """
+    if not holds_stage_authority:
+        return False
     normalized = str(status or "")
     normalized_scope = str(mission_scope or "").strip().lower().replace("-", "_")
     if (
@@ -221,6 +242,7 @@ class _ExecuteState:
 
         # Set by ``_prepare_execute_mission_context``.
         self.full_task: str = ""
+        self.review_objective: str = ""
         self.seed: str | None = None
         self.mission_scope: str = ""
 
@@ -237,7 +259,11 @@ class _ExecuteState:
         self.new_tid: str | None = None
         self.auth_fail: Any = None
         self.rounds_list: list = []
+        self.final_frontier_report: dict[str, Any] = {}
+        self.final_planner_report: dict[str, Any] = {}
+        self.plan_challenge: dict[str, Any] = {}
         self.operator_question: str = ""
+        self.operator_options: list[dict[str, Any]] = []
         self.final_review_status: str = ""
         self.final_review_next_action: str = ""
         self.review_source: str = ""
@@ -251,3 +277,4 @@ class _ExecuteState:
         self.effective_reason: str = ""
         self.stage_transition: dict = {}
         self.stage_transition_skipped: bool = False
+        self.stage_transition_deferred: bool = False

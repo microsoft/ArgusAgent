@@ -12,8 +12,10 @@ Use when a reviewed mission or Planner verdict may change lifecycle stage.
    external blocker, and a completed bounded increment inside an unfinished
    project.
 3. Choose the smallest valid transition: hold for current-stage repair, rollback
-   to the earliest broken stage, advance when the next stage is unlocked, or
-   complete only when the final contract is satisfied.
+   to the earliest broken stage, advance to the earliest later stage the operator
+   objective still needs, or complete only when the final contract is satisfied.
+   Skip later stages only when they do not apply, and name the skipped stages and
+   evidence-based reason; do not run benchmark/experiment stages by ceremony.
 4. Preserve operator scope and unfinished DAG work. Do not implement the repair,
    rewrite the verdict, or invent evidence.
 5. State the decisive evidence and target stage briefly so Planner and Engineer

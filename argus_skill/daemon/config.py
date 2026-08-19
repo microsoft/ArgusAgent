@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +27,7 @@ class LifeWorkerConfig:
     engineer_reasoning_effort: str = "xhigh"
     reviewer_reasoning_effort: str = "high"
     global_daily_cap_usd: float = 0.0
+    mission_width: int = 2
     planner_task_iteration_max_cycles: int = 6
     # See LifeSupervisorConfig.subagent_family_failure_streak_limit /
     # ..._window_hours (life/supervisor/_config.py) for the circuit breaker
@@ -55,6 +56,16 @@ class LifeWorkerConfig:
     # mission alive after the planner certifies ``project_done`` instead of
     # hard-stopping. Set False (via ``--bounded``) for a one-shot bounded goal.
     continuous_open_ended: bool = True
+    # Parent-only diagnostic populated by the clean launcher.  It is
+    # deliberately excluded from config_payload(): the child does not need to
+    # receive its own launch failure, while WebAPI needs the captured helper
+    # stderr after the integer return code comes back.
+    last_spawn_error: str = field(default="", init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        self.mission_width = int(self.mission_width)
+        if self.mission_width < 0:
+            raise ValueError("mission_width must be zero or a positive integer")
 
 def config_payload(config: LifeWorkerConfig) -> dict[str, Any]:
     return {
@@ -68,6 +79,7 @@ def config_payload(config: LifeWorkerConfig) -> dict[str, Any]:
         "engineer_reasoning_effort": config.engineer_reasoning_effort,
         "reviewer_reasoning_effort": config.reviewer_reasoning_effort,
         "global_daily_cap_usd": config.global_daily_cap_usd,
+        "mission_width": config.mission_width,
         "planner_task_iteration_max_cycles": config.planner_task_iteration_max_cycles,
         "subagent_family_failure_streak_limit": config.subagent_family_failure_streak_limit,
         "subagent_family_failure_window_hours": config.subagent_family_failure_window_hours,
@@ -87,6 +99,13 @@ def config_from_payload(data: dict[str, Any]) -> LifeWorkerConfig:
     log_path = str(data.get("log_path") or "")
     global_root = str(data.get("global_root") or "")
     project_workdir = str(data.get("project_workdir") or "")
+    backend = str(data.get("backend") or "codex")
+
+    def _model(name: str, route: str, role_env: str) -> str:
+        if name in data:
+            return str(data.get(name) or "")
+        return resolve_role_model(route, role_env=role_env, backend=backend)
+
     def _number(name: str, default: float) -> float:
         value = data.get(name)
         return default if value is None else float(value)
@@ -97,14 +116,16 @@ def config_from_payload(data: dict[str, Any]) -> LifeWorkerConfig:
         project_workdir=Path(project_workdir).expanduser() if project_workdir else None,
         project_fingerprint=str(data.get("project_fingerprint") or ""),
         project_label=str(data.get("project_label") or ""),
-        backend=str(data.get("backend") or "codex"),
-        engineer_model=str(
-            data.get("engineer_model")
-            or resolve_role_model("engineer", role_env="ARGUS_SKILL_ENGINEER_MODEL")
+        backend=backend,
+        engineer_model=_model(
+            "engineer_model",
+            "engineer",
+            "ARGUS_SKILL_ENGINEER_MODEL",
         ),
-        reviewer_model=str(
-            data.get("reviewer_model")
-            or resolve_role_model("reviewer", role_env="ARGUS_SKILL_REVIEWER_MODEL")
+        reviewer_model=_model(
+            "reviewer_model",
+            "reviewer",
+            "ARGUS_SKILL_REVIEWER_MODEL",
         ),
         engineer_reasoning_effort=str(
             data.get("engineer_reasoning_effort") or "xhigh"
@@ -113,6 +134,7 @@ def config_from_payload(data: dict[str, Any]) -> LifeWorkerConfig:
             data.get("reviewer_reasoning_effort") or "high"
         ),
         global_daily_cap_usd=_number("global_daily_cap_usd", 30.0),
+        mission_width=int(data.get("mission_width", 2)),
         planner_task_iteration_max_cycles=int(
             data.get("planner_task_iteration_max_cycles") or 6
         ),

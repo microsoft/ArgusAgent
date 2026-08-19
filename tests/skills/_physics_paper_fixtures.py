@@ -217,8 +217,8 @@ def _review_md() -> str:
 # --------------------------------------------------------------------------- #
 def write_source_package(root: Path) -> None:
     """Write the machine-checkable source layer (no paper layer)."""
-    (root / "research").mkdir(parents=True, exist_ok=True)
-    (root / "research" / "PIPELINE_STATE.json").write_text(
+    (root / ".argus").mkdir(parents=True, exist_ok=True)
+    (root / ".argus" / "PIPELINE_STATE.json").write_text(
         '{"vertical": "physics", "current_stage": "manuscript"}', encoding="utf-8"
     )
     (root / "MANUSCRIPT.md").write_text(_manuscript_md(), encoding="utf-8")

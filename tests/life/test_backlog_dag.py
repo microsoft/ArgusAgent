@@ -177,6 +177,102 @@ def test_cascade_does_not_touch_items_with_live_deps(tmp_path: Path) -> None:
     assert rows["B"].last_error == ""
 
 
+def test_pending_operator_question_is_not_claimable_without_approval(
+    tmp_path: Path,
+) -> None:
+    b = Backlog(tmp_path / "backlog.jsonl")
+    statement_lock = BacklogItem.new(
+        title="statement-lock",
+        objective="Lock the statement only after operator approval.",
+        manager_decision={"routed": True, "vertical": "argus_maintenance"},
+    )
+    statement_lock.pending_question = "Approve this statement before locking it?"
+    b.add(statement_lock)
+
+    assert b.ready() == []
+    assert b.next_pending() is None
+    assert b.claim_next() is None
+
+    stored = b.all()[0]
+    assert stored.status == "pending"
+    assert stored.pending_question == "Approve this statement before locking it?"
+
+
+def test_operator_blocked_dependency_keeps_downstream_unrunnable(
+    tmp_path: Path,
+) -> None:
+    b = Backlog(tmp_path / "backlog.jsonl")
+    statement_lock = BacklogItem.new(
+        title="statement-lock",
+        objective="Lock the statement only after operator approval.",
+        priority=10,
+        manager_decision={"routed": True, "vertical": "argus_maintenance"},
+    )
+    statement_lock.pending_question = "Approve this statement before locking it?"
+    lock = b.add(statement_lock)
+    exact_search = b.add(
+        BacklogItem.new(
+            title="exact-search",
+            objective="Search only after the statement is locked.",
+            priority=1,
+            deps=[lock.id],
+            manager_decision={"routed": True, "vertical": "argus_maintenance"},
+        )
+    )
+    b.add(
+        BacklogItem.new(
+            title="formalization",
+            objective="Formalize only after exact search.",
+            priority=2,
+            deps=[exact_search.id],
+            manager_decision={"routed": True, "vertical": "argus_maintenance"},
+        )
+    )
+
+    assert b.ready() == []
+    assert b.next_pending() is None
+    assert b.claim_next() is None
+
+    rows = {it.title: it for it in b.all()}
+    assert rows["statement-lock"].status == "pending"
+    assert rows["exact-search"].status == "pending"
+    assert rows["formalization"].status == "pending"
+    assert rows["exact-search"].last_error == ""
+    assert rows["formalization"].last_error == ""
+
+
+def test_operator_pause_dependency_remains_blocked_after_restart(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "backlog.jsonl"
+    backlog = Backlog(path)
+    approval = BacklogItem.new(
+        title="operator approval",
+        objective="Wait for explicit operator approval.",
+        manager_decision={"routed": True, "vertical": "software"},
+    )
+    approval.status = "paused_operator"
+    approval.pending_question = "Approve the next phase?"
+    parent = backlog.add(approval)
+    backlog.add(
+        BacklogItem.new(
+            title="dependent work",
+            objective="Run only after approval.",
+            deps=[parent.id],
+            manager_decision={"routed": True, "vertical": "software"},
+        )
+    )
+
+    reopened = Backlog(path)
+
+    assert reopened.next_pending() is None
+    assert reopened.claim_next() is None
+    assert {item.title: item.status for item in reopened.all()} == {
+        "operator approval": "paused_operator",
+        "dependent work": "pending",
+    }
+
+
 def test_self_and_cyclic_deps_are_reconciled_to_terminal_skips(tmp_path: Path) -> None:
     # Legacy/corrupt state can still contain a cycle even though new batch
     # commits reject one. The scheduler must make that state terminal instead
@@ -233,6 +329,11 @@ def test_operator_answer_rewires_pending_dependents(tmp_path: Path) -> None:
     blocked.execution_workdir = "/private/framework"
     blocked.authorization_id = "maintenance-auth"
     blocked.authorization_action = "repair"
+    blocked.manager_decision = {
+        "routed": True,
+        "vertical": "software",
+        "workflow_mode": "staged",
+    }
     b.add(blocked)
     downstream = b.add(
         BacklogItem.new(
@@ -252,6 +353,8 @@ def test_operator_answer_rewires_pending_dependents(tmp_path: Path) -> None:
     assert continuation.execution_workdir == "/private/framework"
     assert continuation.authorization_id == "maintenance-auth"
     assert continuation.authorization_action == "repair"
+    assert continuation.manager_decision == blocked.manager_decision
+    assert "review:required" in continuation.tags
     stored_downstream = next(item for item in b.all() if item.id == downstream.id)
     assert stored_downstream.deps == [continuation.id]
     assert b.claim_next().id == continuation.id

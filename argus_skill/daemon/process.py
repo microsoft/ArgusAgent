@@ -17,16 +17,18 @@ from .state import (
     _daemon_pid_path,
     _daemon_status_path,
     _daemon_status_payload,
+    _descendant_pids,
     _new_boot_id,
     _point_active_daemon_log,
-    _process_alive,
     _redirect_std_to_log,
+    _terminate_windows_process_tree,
     read_daemon_status,
 )
 
 log = logging.getLogger(__name__)
 
 _DAEMON_PUBLISH_TIMEOUT_SECONDS = 5.0
+_WINDOWS_DAEMON_PUBLISH_TIMEOUT_SECONDS = 180.0
 _DAEMON_STABILITY_SECONDS = 0.5
 _DAEMON_POLL_INTERVAL_SECONDS = 0.1
 
@@ -88,7 +90,50 @@ def _windows_daemon_command(config: Any) -> list[str]:
         command.append("--resume-continuous")
     if not config.continuous_open_ended:
         command.append("--bounded")
+    command.extend(["--mission-width", str(getattr(config, "mission_width", 2))])
     return command
+
+
+def _windows_runtime_belongs_to_launcher(
+    launcher_pid: int,
+    runtime_pid: int,
+) -> bool:
+    """Prove that a published worker PID belongs to the process we spawned.
+
+    A Windows virtual-environment ``python.exe`` is a launcher stub. Its PID is
+    the one returned by :class:`subprocess.Popen`, while the base interpreter
+    child acquires ``daemon.pid`` and publishes ``daemon.status.json``. Requiring
+    PID equality therefore rejects a healthy source-checkout worker. Keep the
+    foreign-status protection by accepting only the launcher itself or one of
+    its current descendants.
+    """
+    if runtime_pid == launcher_pid:
+        return True
+    return runtime_pid in _descendant_pids(launcher_pid)
+
+
+def _reap_failed_windows_spawn(process: subprocess.Popen[Any]) -> None:
+    """Reclaim the exact worker tree after a failed publication handshake."""
+    pid = int(process.pid)
+    if process.poll() is None:
+        terminated = _terminate_windows_process_tree(
+            pid,
+            identity_check=lambda: process.pid == pid and process.poll() is None,
+        )
+        if not terminated and process.poll() is None:
+            # Popen owns an OS handle to this exact process, so this fallback
+            # cannot target a reused PID. The tree helper normally handles all
+            # descendants; terminate() is the final root cleanup if Windows
+            # denied process enumeration.
+            process.terminate()
+    try:
+        process.wait(timeout=5.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            log.error("Windows worker pid=%s resisted startup cleanup", pid)
 
 
 def _spawn_windows_background_process(
@@ -104,6 +149,10 @@ def _spawn_windows_background_process(
     """Launch the terminal-scoped Windows worker without POSIX fork()."""
     env = os.environ.copy()
     env["ARGUS_BINARY_MODE"] = "cli"
+    # Windows commonly inherits a CP936 console.  The detached worker emits
+    # Unicode status glyphs and must not crash before publishing daemon status.
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     creationflags = (
         getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         | getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -121,29 +170,61 @@ def _spawn_windows_background_process(
                 close_fds=True,
                 creationflags=creationflags,
             )
-        deadline = time.monotonic() + 8.0
+        deadline = time.monotonic() + _WINDOWS_DAEMON_PUBLISH_TIMEOUT_SECONDS
+        exit_rc: int | None = None
+        stable_since: float | None = None
+        stable_pid: int | None = None
         while time.monotonic() < deadline:
             if pid_path.exists() and status_path.exists():
-                try:
-                    written_pid = int(pid_path.read_text().strip())
-                except (OSError, ValueError):
-                    written_pid = 0
-                if written_pid == process.pid and _process_alive(written_pid):
-                    if not quiet:
-                        sys.stdout.write(
-                            f"argus-skill: daemon started (pid {written_pid}, "
-                            f"life_dir={config.life_dir}, log={log_path}).\n"
-                        )
-                    return 0
+                status = read_daemon_status(config.life_dir)
+                runtime_pid = int(status.pid or 0)
+                if (
+                    status.alive
+                    and runtime_pid > 0
+                    and _windows_runtime_belongs_to_launcher(
+                        int(process.pid),
+                        runtime_pid,
+                    )
+                    and not status.status_read_error
+                    and process.poll() is None
+                ):
+                    now = time.monotonic()
+                    if stable_since is None or stable_pid != runtime_pid:
+                        stable_since = now
+                        stable_pid = runtime_pid
+                    elif now - stable_since >= _DAEMON_STABILITY_SECONDS:
+                        if not quiet:
+                            sys.stdout.write(
+                                f"argus-skill: daemon started (pid {status.pid}, "
+                                f"life_dir={config.life_dir}, log={log_path}).\n"
+                            )
+                        return 0
+                else:
+                    stable_since = None
+                    stable_pid = None
             if process.poll() is not None:
+                exit_rc = process.returncode
                 break
             time.sleep(0.1)
+        if exit_rc is None:
+            _reap_failed_windows_spawn(process)
         if not quiet:
-            sys.stderr.write(
-                "argus-skill: Windows worker did not publish its status within "
-                f"8s. Check {log_path} for errors.\n"
-            )
-        return 2
+            if exit_rc is not None:
+                sys.stderr.write(
+                    "argus-skill: Windows worker exited before publishing "
+                    f"daemon status (rc={exit_rc}). Check {log_path} for errors.\n"
+                )
+            else:
+                sys.stderr.write(
+                    "argus-skill: Windows worker did not publish its status within "
+                    f"{_WINDOWS_DAEMON_PUBLISH_TIMEOUT_SECONDS:g}s. "
+                    f"Check {log_path} for errors.\n"
+                )
+        # A zero exit before the PID/status handshake is still a failed worker:
+        # no process remains to execute queued work. Preserve actionable
+        # non-zero child codes, but never turn an unverified clean exit into a
+        # successful executor start.
+        return int(exit_rc) if exit_rc not in {None, 0} else 2
     finally:
         release_spawn_lock(spawn_lock_fd)
 

@@ -34,11 +34,10 @@ from ._experiment_preflight import (
     experiment_launch_preflight,
     release_experiment_launch_claim,
 )
-from ._llm import _run_codex_with_usage
+from ._llm import _run_supervisor_with_usage
 from ._normalize import _clean_concern, _norm_decision, _norm_health
 from ._registry import (
     _ZERO_USAGE_TUPLE,
-    REGISTRY_DIR,
     SUPERVISOR_INTERVAL_CAP,
     SUPERVISOR_THREAD_MAX_CHECKS,
     _add_usage_totals,
@@ -47,6 +46,7 @@ from ._registry import (
     _launch_durable_command,
     _persist_experiment_record,
     _read_task,
+    _task_log_dir,
     _write_task,
 )
 from ._reporting import _alert_engineer
@@ -81,7 +81,7 @@ def _supervisor_check_with_usage(
     concern is a free-text note (possibly empty) the supervisor wants the
     engineer to re-discuss even when the run is progressing normally.
 
-    ``thread_id`` resumes a persistent codex session so the supervisor keeps the
+    ``thread_id`` resumes a persistent backend session so the supervisor keeps the
     whole run's observation history in context across checks; the (possibly new)
     thread id is returned for the next check.
     """
@@ -185,7 +185,7 @@ def _supervisor_check_with_usage(
     )
 
     try:
-        messages, thread_id, usage = _run_codex_with_usage(
+        messages, thread_id, usage = _run_supervisor_with_usage(
             prompt,
             model,
             cwd,
@@ -302,7 +302,7 @@ def _supervised_do_one_check(
         raw_usage,
     )
     # Rotate the persistent supervisor thread every N checks so a multi-hour
-    # run never overflows the codex context window; the next check seeds a
+    # run never overflows the backend context window; the next check seeds a
     # fresh thread from the current run signals.
     if check_number % SUPERVISOR_THREAD_MAX_CHECKS == 0:
         supervisor_thread_id = None
@@ -484,7 +484,7 @@ def _run_supervised(
     preflight: bool = True,
 ) -> None:
     """Run command with periodic LLM supervisor checks."""
-    log_dir = REGISTRY_DIR / f"{task_id}_logs"
+    log_dir = _task_log_dir(task_id)
     log_dir.mkdir(parents=True, exist_ok=True)
     stdout_path = log_dir / "stdout.log"
     stderr_path = log_dir / "stderr.log"

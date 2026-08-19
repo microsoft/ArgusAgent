@@ -16,9 +16,21 @@ from __future__ import annotations
 from argus_skill.reviewer import Reviewer
 
 # Repeated evidence-policy prose was removed; the representative prompt is now
-# about 6.5k chars. Keep headroom for task checklists without permitting the
+# about 9.4k chars. Keep headroom for task checklists without permitting the
 # global policy block to return.
-NON_MEASURED_BUDGET = 9_000
+#
+# 9_000 -> 9_500 for two deliberate new blocks, one from each side of the merge,
+# neither of them the prose regrowth this guard exists to catch:
+#   * the RESULT_FIELD_CHOICES enumeration (602 chars) — the legal verbatim
+#     values for each research-result field, replacing prose that named the
+#     fields but not what they accept, which is the mismatch that voided results;
+#   * the root-cause evidence bar (~370 chars) — a threshold miss is not a
+#     diagnosis, so a dominant-stage or replacement-architecture claim needs
+#     profiling or a counterfactual behind it.
+# 9_500 -> 10_050 for the two independent Research ideation gates. The
+# deterministic validator carries the detailed contract; the repeated Reviewer
+# prompt adds only the concise portfolio/adversarial checklist entries.
+NON_MEASURED_BUDGET = 8_000
 
 
 def _build(measured: bool, monkeypatch) -> str:
@@ -58,6 +70,16 @@ def test_compression_removed_redundant_examples(monkeypatch):
     assert "Anti-pattern: agent shows test_accuracy=0.98" not in p
     assert "expense_tracker/ package using unittest" not in p
     assert "## Evidence policy" not in p
+
+
+def test_the_verdict_vocabulary_is_stated_once(monkeypatch):
+    # `done`/`continue`/`replan_requested`/`blocked` used to be defined twice —
+    # once in the role block and again, at greater length, in the handoff
+    # policy. Two definitions of the same four words is the redundancy this
+    # budget exists to catch, and it cost more than the sentence it funded.
+    p = _build(measured=False, monkeypatch=monkeypatch)
+    assert p.count("agent-fixable in-scope gap") == 1
+    assert p.count("replacement route, or boundary change") == 1
 
 
 def test_reviewer_records_prompt_block_token_estimates(monkeypatch):
@@ -124,6 +146,22 @@ def test_reviewer_keeps_distinct_original_and_mission_objectives(monkeypatch):
 
 
 def test_research_target_context_stays_compact(tmp_path, monkeypatch):
+    """The block may hold the contract's vocabulary, and nothing more.
+
+    The bound was 1_100 chars while the block listed the five research-result
+    field *names* and none of their legal values. Testbed run 15
+    (``s-f0dbba19``) emitted six ``RESEARCH_RESULT`` blocks under it and the
+    contract rejected all six, every one for inventing vocabulary the prompt
+    had never supplied. Enumerating the five value sets costs ~600 chars, and
+    600 chars that make a hard gate answerable are worth more than a bound
+    that made it unanswerable.
+
+    So the guard moves rather than disappears, and what it now guards is
+    prose: the value lists are rendered from ``RESULT_FIELD_CHOICES``, so they
+    track the contract on their own and only added text can push this over.
+    The margin above is sized for the longest verification-profile line, not
+    for another paragraph.
+    """
     from argus_skill.skills.vertical_select import persist_vertical
 
     persist_vertical(
@@ -147,14 +185,27 @@ def test_research_target_context_stays_compact(tmp_path, monkeypatch):
     )
 
     stats = reviewer.last_prompt_block_stats["research_target"]
-    assert stats["chars"] < 1_100
-    assert stats["estimated_tokens"] < 300
+    assert stats["chars"] < 1_320
+    assert stats["estimated_tokens"] < 340
 
 
-def test_reviewer_prompt_uses_named_footer_without_schema_language(monkeypatch) -> None:
+def test_reviewer_prompt_records_process_decision_without_final_footer(monkeypatch) -> None:
     prompt = _build(measured=False, monkeypatch=monkeypatch)
 
-    assert "STATUS=done|continue|blocked|replan_requested" in prompt
-    assert "NEXT_ACTION=<the Engineer instruction; empty for done>" in prompt
+    assert "ARGUS_ROLE_DECISION=" in prompt
+    assert '"role":"reviewer"' in prompt
+    assert "Any later response is plain language and is not parsed." in prompt
+    assert "STATUS=done|continue|blocked|replan_requested" not in prompt
     assert "JSON Schema" not in prompt
     assert "OUTPUT CONTRACT (STRICT)" not in prompt
+
+
+def test_reviewer_replans_materially_ungrounded_external_implementation(
+    monkeypatch,
+) -> None:
+    prompt = _build(measured=False, monkeypatch=monkeypatch)
+
+    assert "primary-source grounding" in prompt
+    assert "Community implementations alone are insufficient" in prompt
+    assert "Return `replan_requested`" in prompt
+    assert "do not demand new research for local-only work" in prompt

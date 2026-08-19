@@ -48,6 +48,8 @@ import { HtmlPreview } from '../components/HtmlPreview';
 import { formatStructuredData, parseDelimited } from '../components/DataPreview';
 import { Button } from '../components/primitives';
 import { ArgusMark, Wordmark } from '../components/Wordmark';
+import { ConnectionProblemBanner } from '../components/ConnectionProblemBanner';
+import { LocalArgusUnavailableError, PairingRequiredError } from '../api';
 
 const typedUsageEvent: UsageRecordedEvent = {
   type: 'usage.recorded',
@@ -61,6 +63,28 @@ const typedUsageEvent: UsageRecordedEvent = {
 };
 
 describe('shared frontend core', () => {
+  it('renders an actionable pairing message instead of a raw 401 loop', () => {
+    const html = renderToStaticMarkup(createElement(ConnectionProblemBanner, {
+      error: new PairingRequiredError(),
+      onRetry: () => undefined,
+    }));
+
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('not paired with Argus');
+    expect(html).toContain('reopen the workbench from Argus Desktop');
+  });
+
+  it('renders an actionable local-service message instead of Failed to fetch', () => {
+    const html = renderToStaticMarkup(createElement(ConnectionProblemBanner, {
+      error: new LocalArgusUnavailableError('GET', '/api/meta'),
+      onRetry: () => undefined,
+    }));
+
+    expect(html).toContain('local Argus service is unavailable');
+    expect(html).toContain('Argus Desktop running');
+    expect(html).toContain('Retry');
+  });
+
   it('uses Rounded 02 geometry with one continuous brand gradient', () => {
     const lockup = renderToStaticMarkup(createElement(Wordmark, { size: 24 }));
     const mark = renderToStaticMarkup(createElement(ArgusMark, { size: 32 }));
@@ -165,6 +189,28 @@ describe('shared frontend core', () => {
       second,
       { type: 'provider.request.completed', call_id: 'b' },
     ])).toEqual(first);
+  });
+
+  it('closes orphaned provider requests at mission completion', () => {
+    const orphaned = {
+      type: 'provider.request.started',
+      call_id: 'orphaned-manager-call',
+      run_label: 'manager-classify-grounded',
+    };
+    expect(activeProviderRequest([
+      orphaned,
+      { type: 'life.mission.completed', item_id: 'mission-1', status: 'done' },
+    ])).toBeNull();
+    const next = {
+      type: 'provider.request.started',
+      call_id: 'next-manager-call',
+      run_label: 'manager-classify-grounded',
+    };
+    expect(activeProviderRequest([
+      orphaned,
+      { type: 'life.mission.completed', item_id: 'mission-1', status: 'done' },
+      next,
+    ])).toEqual(next);
   });
 
   it('uses the canonical event catalog and explicit legacy aliases', () => {
@@ -594,6 +640,7 @@ describe('shared frontend core', () => {
     expect(html).toContain('<h2');
     expect(html).toContain('<strong');
     expect(html).toContain('<code');
+    expect(html).toContain('aria-label="Copy code"');
     expect(html).toContain('whitespace-pre-wrap');
     expect(html).not.toContain('min-w-max');
     expect(html).not.toContain('<script>');
@@ -625,7 +672,9 @@ describe('shared frontend core', () => {
 
   it('builds one palette row for every shared slash command', () => {
     const rows = commandPaletteRows(COMMANDS, vi.fn(), vi.fn());
-    expect(rows).toHaveLength(35);
+    // One row per command — asserting the relationship rather than a literal
+    // count, so adding a command does not fail a test about mapping.
+    expect(rows).toHaveLength(COMMANDS.length);
     expect(rows.map((row) => row.hint)).toContain('/status');
     expect(rows.map((row) => row.hint)).toContain('/quit');
   });

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import json
 import math
 import os
@@ -11,6 +12,8 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
+
+import portalocker
 
 from .cost_control import CostControlLockBusyError, cost_control_snapshot
 from .event_catalog import canonical_event_type, event_spec
@@ -25,13 +28,10 @@ DEFAULT_METRICS_MAX_ARCHIVES = 14
 _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
 
-try:  # pragma: no cover - production daemons are POSIX
-    import fcntl
-except ImportError:  # pragma: no cover
-    fcntl = None  # type: ignore[assignment]
-
 _WEB_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"})
-_PROVIDERS = frozenset({"codex", "copilot", "claude", "opencode", "pi", "memory"})
+_PROVIDERS = frozenset(
+    {"codex", "copilot", "claude", "opencode", "pi", "grok", "qoder", "dsh", "memory"}
+)
 _CALL_STATUSES = frozenset({"completed", "error", "denied"})
 _PRICING_STATUSES = frozenset({"priced", "partial", "unpriced", "not_billed", "unknown"})
 _COMMAND_OPERATIONS = frozenset({"create", "start", "stop", "drain", "kill", "replace"})
@@ -123,15 +123,13 @@ def _metrics_lock(root: Path) -> Iterator[None]:
     with thread_lock:
         fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            if fcntl is not None:
-                fcntl.flock(fd, fcntl.LOCK_EX)
+            portalocker.lock(fd, portalocker.LOCK_EX)
             yield
         finally:
-            if fcntl is not None:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-                except OSError:
-                    pass
+            try:
+                portalocker.unlock(fd)
+            except (OSError, portalocker.exceptions.LockException):
+                pass
             os.close(fd)
 
 
@@ -229,9 +227,23 @@ def record_metric(
 
 def _day_start(timestamp: float) -> float:
     local = time.localtime(timestamp)
-    return time.mktime(
-        (local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, -1)
-    )
+    midnight = (local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, -1)
+    try:
+        return time.mktime(midnight)
+    except (OverflowError, OSError, ValueError):
+        # Windows' C runtime rejects local midnights before the Unix epoch,
+        # even though ``time.localtime`` can represent the input timestamp.
+        # ``tm_gmtoff`` is available on supported Python/Windows versions and
+        # lets the metrics window remain deterministic for replay/test clocks.
+        offset = getattr(local, "tm_gmtoff", None)
+        if offset is None:
+            offset = -(
+                time.altzone if local.tm_isdst > 0 else time.timezone
+            )
+        utc_midnight = calendar.timegm(
+            (local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0)
+        )
+        return float(utc_midnight - int(offset))
 
 
 def _records(root: Path, since: float) -> list[dict[str, Any]]:
@@ -281,6 +293,103 @@ def _http_status(row: dict[str, Any]) -> int:
         return int(row.get("labels", {}).get("status", 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _goal_progress_snapshot(
+    rows: list[dict[str, Any]],
+    *,
+    now: float,
+) -> dict[str, Any]:
+    mission_rows = _metric_rows(rows, "goal.mission")
+    raw_planning = _metric_rows(rows, "goal.planning")
+    planning_by_delivery: dict[str, dict[str, Any]] = {}
+    for index, row in enumerate(raw_planning):
+        fields = row.get("fields", {}) if isinstance(row.get("fields"), dict) else {}
+        key = str(fields.get("delivery_id") or f"row:{index}")
+        planning_by_delivery[key] = row
+    planning_rows = list(planning_by_delivery.values())
+    project_ids = {
+        str((row.get("fields") or {}).get("project_id") or "unknown")
+        for row in [*mission_rows, *planning_rows]
+        if isinstance(row.get("fields"), dict)
+    }
+
+    def summarize(project_id: str | None) -> dict[str, Any]:
+        missions = [
+            row
+            for row in mission_rows
+            if project_id is None
+            or str((row.get("fields") or {}).get("project_id") or "unknown")
+            == project_id
+        ]
+        plans = [
+            row
+            for row in planning_rows
+            if project_id is None
+            or str((row.get("fields") or {}).get("project_id") or "unknown")
+            == project_id
+        ]
+        accepted = sum(bool((row.get("fields") or {}).get("accepted")) for row in missions)
+        progress_reports = [
+            (row.get("fields") or {}).get("forward_progress")
+            for row in missions
+            if isinstance((row.get("fields") or {}).get("forward_progress"), bool)
+        ]
+        forward = sum(value is True for value in progress_reports)
+        replans = sum(
+            bool((row.get("fields") or {}).get("replan_requested"))
+            for row in missions
+        )
+        proposed = sum(int((row.get("fields") or {}).get("task_count") or 0) for row in plans)
+        duplicates = sum(
+            int((row.get("fields") or {}).get("skipped_duplicate_tasks") or 0)
+            for row in plans
+        )
+        timestamps = [float(row.get("ts") or 0.0) for row in missions]
+        first_ts = min((value for value in timestamps if value > 0), default=0.0)
+        progress_ts = min(
+            (
+                float(row.get("ts") or 0.0)
+                for row in missions
+                if (row.get("fields") or {}).get("forward_progress") is True
+                and float(row.get("ts") or 0.0) > 0
+            ),
+            default=0.0,
+        )
+        completed = any(
+            bool((row.get("fields") or {}).get("project_done")) for row in plans
+        )
+        return {
+            "missions": len(missions),
+            "accepted": accepted,
+            "mission_acceptance_rate": accepted / len(missions) if missions else 0.0,
+            "forward_progress_reported": len(progress_reports),
+            "forward_progress_rate": (
+                forward / len(progress_reports) if progress_reports else 0.0
+            ),
+            "replans": replans,
+            "replan_rate": replans / len(missions) if missions else 0.0,
+            "planner_tasks_proposed": proposed,
+            "duplicate_tasks_skipped": duplicates,
+            "duplicate_work_rate": duplicates / proposed if proposed else 0.0,
+            "time_to_first_useful_progress_seconds": (
+                max(0.0, progress_ts - first_ts)
+                if first_ts and progress_ts
+                else None
+            ),
+            "terminal_goal_completed": completed,
+            "unfinished_goal_age_seconds": (
+                0.0 if completed or not first_ts else max(0.0, now - first_ts)
+            ),
+        }
+
+    return {
+        **summarize(None),
+        "projects": {
+            project_id: summarize(project_id)
+            for project_id in sorted(project_ids)
+        },
+    }
 
 
 def metrics_snapshot(
@@ -339,6 +448,7 @@ def metrics_snapshot(
         float(row.get("value") or 0.0)
         for row in _metric_rows(rows, "event.validation_failure")
     ))
+    goal = _goal_progress_snapshot(rows, now=timestamp)
     if cost_control is not None:
         cost = dict(cost_control)
     else:
@@ -414,6 +524,7 @@ def metrics_snapshot(
             "p95_duration_ms": web_p95_ms,
         },
         "event_validation_failures": validation_failures,
+        "goal": goal,
         "cost_control": cost,
         "slo": {
             "status": "healthy" if not violations else "degraded",
@@ -427,6 +538,7 @@ def render_prometheus(snapshot: dict[str, Any]) -> str:
     commands = snapshot["daemon_commands"]
     web = snapshot["web"]
     cost = snapshot["cost_control"]
+    goal = snapshot.get("goal", {})
     healthy = 1 if snapshot["slo"]["status"] == "healthy" else 0
     lines = [
         "# TYPE argus_slo_healthy gauge",
@@ -449,6 +561,14 @@ def render_prometheus(snapshot: dict[str, Any]) -> str:
         f'argus_cost_unresolved_calls {cost.get("unresolved_calls", 0)}',
         "# TYPE argus_event_validation_failures_total gauge",
         f'argus_event_validation_failures_total {snapshot["event_validation_failures"]}',
+        "# TYPE argus_goal_mission_acceptance_ratio gauge",
+        f'argus_goal_mission_acceptance_ratio {goal.get("mission_acceptance_rate", 0)}',
+        "# TYPE argus_goal_forward_progress_ratio gauge",
+        f'argus_goal_forward_progress_ratio {goal.get("forward_progress_rate", 0)}',
+        "# TYPE argus_goal_replan_ratio gauge",
+        f'argus_goal_replan_ratio {goal.get("replan_rate", 0)}',
+        "# TYPE argus_goal_duplicate_work_ratio gauge",
+        f'argus_goal_duplicate_work_ratio {goal.get("duplicate_work_rate", 0)}',
     ]
     return "\n".join(lines) + "\n"
 

@@ -276,12 +276,27 @@ _FOLLOW_HEARTBEAT_SECONDS = 20.0
 
 
 def main(argv: list[str] | None = None) -> int:
-    from ...core.runtime_env import load_backend_runtime_env
+    from ...core.runtime_env import (
+        configure_framework_python_env,
+        load_backend_runtime_env,
+    )
 
+    configure_framework_python_env()
     load_backend_runtime_env()
     parser = build_parser()
     args = parser.parse_args(argv)
-    args.skill_stats = bool(args.skill_stats or args.skill_stats_json)
+    objective_file = getattr(args, "objective_file", None)
+    if objective_file:
+        try:
+            args.objective = Path(objective_file).expanduser().read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            sys.stderr.write(
+                f"argus-skill: could not read --objective-file {objective_file!r}: {exc}\n"
+            )
+            return 2
+        if not str(args.objective).strip():
+            sys.stderr.write("argus-skill: --objective-file must not be empty\n")
+            return 2
     from ...core.knobs import resolve_role_backend
 
     backend_default = (
@@ -301,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:
     # --life-dir are modifiers and may combine with any of them.
     action_flags = (
         bool(args.daemon)
+        + bool(getattr(args, "update", False))
         + bool(args.daemon_fg)
         + bool(args.daemon_stop)
         + bool(args.status)
@@ -321,8 +337,6 @@ def main(argv: list[str] | None = None) -> int:
         + bool(args.ppt_master_status)
         + bool(getattr(args, "approve_publication", ""))
         + bool(getattr(args, "list_pending_publications", False))
-        + bool(args.skill_stats)
-        + bool(args.skill_cleanse)
         + bool(args.export_builtin_skills is not None)
         + bool(args.evidence_chain_check)
         + bool(args.anti_mediocrity_check)
@@ -354,28 +368,41 @@ def main(argv: list[str] | None = None) -> int:
     if readiness_modifier and not (
         args.setup
         or getattr(args, "doctor", False)
+        or getattr(args, "command", None) in {"doctor", "repair"}
         or args.daemon
         or args.daemon_fg
     ):
         sys.stderr.write(
             "argus-skill: --backend / --auth-mode / --allow-prerelease "
-            "require --setup, --doctor, --daemon, or --daemon-fg\n"
+            "require --setup, doctor/repair, --doctor, --daemon, or --daemon-fg\n"
         )
         return 2
     if action_flags > 1:
         sys.stderr.write(
             "argus-skill: --daemon / --daemon-fg / --daemon-stop / --status / "
-            "--daemon-runbook / --config-help / --config-snapshot / "
+            "--daemon-runbook / --update / --config-help / --config-snapshot / "
             "--watch / --follow / --notify / --init-identity / "
             "--setup / --doctor / "
-            "--model-api-status / --init-model-api / --skill-stats / "
+            "--model-api-status / --init-model-api / "
             "--install-ppt-master / --ppt-master-status / "
-            "--skill-cleanse / --export-builtin-skills / "
+            "--export-builtin-skills / "
             "--evidence-chain-check / --anti-mediocrity-check / --lifecycle-status / "
             "wiki subcommands "
             "are mutually exclusive.\n"
         )
         return 2
+    if args.command == "doctor":
+        return _run_with_path_resolution_errors(lambda: _cmd_doctor(args))
+    if args.command == "repair":
+        try:
+            return _run_with_path_resolution_errors(lambda: _cmd_repair(args))
+        except (FileNotFoundError, PermissionError, RuntimeError, ValueError) as exc:
+            sys.stderr.write(f"argus-skill: repair refused: {exc}\n")
+            return 3
+    if getattr(args, "update", False) or args.command == "update":
+        from ..update import run_update
+
+        return run_update()
     if args.command == "wiki" and args.wiki_cmd == "init":
         return _run_with_path_resolution_errors(lambda: _cmd_wiki_init(args))
     if args.command == "wiki" and args.wiki_cmd == "ingest":
@@ -410,6 +437,35 @@ def main(argv: list[str] | None = None) -> int:
         return _run_with_path_resolution_errors(lambda: _cmd_watch(args))
     if args.follow:
         return _run_with_path_resolution_errors(lambda: _cmd_follow(args))
+    if getattr(args, "pair_plan", False):
+        # Internal bridge for the Ink cockpit. It spawns the backend detached
+        # with stdio discarded, so it cannot see the banner the child prints;
+        # it asks for the plan here instead, passes the token down to the
+        # child, and prints the banner itself. Keeps token minting, URL
+        # construction, and QR rendering in one implementation.
+        import json as _json
+
+        from ...webapi.pairing import is_loopback_host, pairing_plan
+
+        pair_host = str(getattr(args, "web_host", "127.0.0.1") or "127.0.0.1")
+        plan = pairing_plan(
+            pair_host,
+            int(getattr(args, "web_port", 8799) or 8799),
+        )
+        sys.stdout.write(
+            _json.dumps(
+                {
+                    "token": plan.token,
+                    "url": plan.url,
+                    "banner": plan.banner,
+                    # The cockpit prints its own one-line URL for a loopback
+                    # bind; the full banner is only worth showing when a phone
+                    # actually has to pair.
+                    "pairing": not is_loopback_host(pair_host),
+                }
+            )
+        )
+        return 0
     if getattr(args, "web", False):
         entry_error = _lifetime_entry_error(args)
         if entry_error:
@@ -423,9 +479,22 @@ def main(argv: list[str] | None = None) -> int:
                 "`pip install 'argus-skill[web]'` (fastapi + uvicorn).\n"
             )
             return 2
+        from ...webapi.pairing import pairing_plan
+
+        host = str(getattr(args, "web_host", "127.0.0.1") or "127.0.0.1")
+        port = int(getattr(args, "web_port", 8799) or 8799)
+        # A LAN bind is authenticated by default: without a configured token
+        # one is minted for this run rather than serving the daemon's control
+        # surface in the clear. Prints the pairing URL and QR code.
+        plan = pairing_plan(host, port)
+        if plan.banner:
+            sys.stderr.write(f"{plan.banner}\n")
+            sys.stderr.flush()
         return serve_web(
-            host=str(getattr(args, "web_host", "127.0.0.1") or "127.0.0.1"),
-            port=int(getattr(args, "web_port", 8799) or 8799),
+            host=host,
+            port=port,
+            global_root=_resolve_global_root(args),
+            auth_token=plan.token or None,
         )
     if args.notify:
         return _run_with_path_resolution_errors(lambda: _cmd_notify(args))
@@ -439,12 +508,9 @@ def main(argv: list[str] | None = None) -> int:
             non_interactive=bool(getattr(args, "non_interactive", False)),
             accept_house_rules=bool(getattr(args, "accept_house_rules", False)),
             allow_prerelease=bool(getattr(args, "allow_prerelease", False)),
-            set_git_global=(
-                True if bool(getattr(args, "set_git_global", False)) else None
-            ),
-            configure_codex=(
-                True if bool(getattr(args, "configure_codex", False)) else None
-            ),
+            api_url=getattr(args, "api_url", None),
+            api_key=getattr(args, "api_key", None),
+            api_model=getattr(args, "api_model", None),
         )
     if getattr(args, "doctor", False):
         return _run_with_path_resolution_errors(lambda: _cmd_doctor(args))
@@ -464,10 +530,6 @@ def main(argv: list[str] | None = None) -> int:
         return _run_with_path_resolution_errors(
             lambda: _cmd_approve_publication(args)
         )
-    if args.skill_stats:
-        return _run_with_path_resolution_errors(lambda: _cmd_skill_stats(args))
-    if args.skill_cleanse:
-        return _run_with_path_resolution_errors(lambda: _cmd_skill_cleanse(args))
     if args.export_builtin_skills is not None:
         return _run_with_path_resolution_errors(
             lambda: _cmd_export_builtin_skills(args)
@@ -514,8 +576,11 @@ def _build_worker_config(args: argparse.Namespace):
     from ...daemon.life_worker import LifeWorkerConfig
     bundle = _resolve_project_bundle(args)
     from ...core.knobs import resolve_role_backend
+    from .._runtime_construction import _resolve_role_runner_backend_name
 
     backend = getattr(args, "backend", None) or resolve_role_backend("")
+    engineer_backend = _resolve_role_runner_backend_name("engineer", backend)
+    reviewer_backend = _resolve_role_runner_backend_name("reviewer", backend)
     from ...core.knobs import (
         resolve_budget_caps,
         resolve_role_model,
@@ -537,10 +602,12 @@ def _build_worker_config(args: argparse.Namespace):
         engineer_model=resolve_role_model(
             "engineer",
             role_env="ARGUS_SKILL_ENGINEER_MODEL",
+            backend=engineer_backend,
         ),
         reviewer_model=resolve_role_model(
             "reviewer",
             role_env="ARGUS_SKILL_REVIEWER_MODEL",
+            backend=reviewer_backend,
         ),
         engineer_reasoning_effort=resolve_role_reasoning_effort(
             "ARGUS_SKILL_ENGINEER_REASONING_EFFORT"
@@ -549,6 +616,7 @@ def _build_worker_config(args: argparse.Namespace):
             "ARGUS_SKILL_REVIEWER_REASONING_EFFORT"
         ),
         global_daily_cap_usd=budget.global_daily_cap_usd,
+        mission_width=getattr(args, "mission_width", 2),
         planner_task_iteration_max_cycles=int(os.environ.get("ARGUS_SKILL_PLANNER_TASK_ITERATION_MAX_CYCLES", "6")),
         poll_interval=float(os.environ.get("ARGUS_SKILL_DAEMON_POLL_S", "5.0")),
         continuous=getattr(args, "continuous", False),
@@ -614,20 +682,253 @@ def _cmd_daemon_start(args: argparse.Namespace, *, foreground: bool) -> int:
     return int(receipt.result.get("rc", 3 if receipt.status != "applied" else 0))
 
 
-def _cmd_doctor(args: argparse.Namespace) -> int:
-    from ...webapi.diagnostics import render_report, run_diagnostics
+def _doctor_checks(args: argparse.Namespace):
+    from ...webapi.diagnostics import run_diagnostics
 
     bundle = _resolve_project_bundle(args)
-    checks = run_diagnostics(
+    legacy = bool(getattr(args, "doctor", False))
+    return bundle, run_diagnostics(
         bundle.project.root,
         global_root=bundle.global_root,
         backend=getattr(args, "backend", None),
         auth_mode=getattr(args, "auth_mode", None),
-        probe_auth=True,
+        probe_auth=legacy or bool(getattr(args, "deep", False)),
         allow_prerelease=bool(getattr(args, "allow_prerelease", False)),
     )
-    sys.stdout.write(render_report(checks) + "\n")
-    return 0 if all(check.ok for check in checks) else 3
+
+
+def _doctor_payload(checks, *, verification: bool = False) -> dict[str, Any]:
+    codes = {
+        "backend preflight": "ARGUS-BACKEND-001",
+        "model API capability": "ARGUS-BACKEND-002",
+        "daemon": "ARGUS-DAEMON-001",
+        "lock sanity": "ARGUS-STATE-001",
+        "empty session": "ARGUS-STATE-002",
+    }
+    return {
+        "schema_version": 1,
+        "ok": all(check.ok for check in checks),
+        "verification": verification,
+        "checks": [
+            {
+                "code": codes.get(check.name, "ARGUS-CHECK-001"),
+                "name": check.name,
+                "ok": check.ok,
+                "detail": check.detail,
+                "fix": check.fix,
+            }
+            for check in checks
+        ],
+    }
+
+
+def _maintenance_context(args: argparse.Namespace):
+    from ...core.runtime_identity import source_root
+    from ...maintenance.doctor import DoctorContext
+
+    global_root = _resolve_global_root(args)
+    resume = str(getattr(args, "resume", "") or "").strip()
+    project_root = (
+        core_paths.session_state_root(resume, root=global_root)
+        if resume else global_root
+    )
+    source = source_root()
+    checkout = source if (source / "pyproject.toml").is_file() else None
+    from ...maintenance.repair import read_path_memory
+
+    remembered = read_path_memory(global_root)
+    if checkout is None and remembered.get("checkout"):
+        candidate = Path(str(remembered["checkout"])).expanduser()
+        if (candidate / "pyproject.toml").is_file():
+            checkout = candidate.resolve()
+    install_mode = (
+        "frozen" if getattr(sys, "frozen", False)
+        else "source" if checkout is not None
+        else "wheel"
+    )
+    desktop_user_data = None
+    if remembered.get("desktop_user_data"):
+        desktop_user_data = Path(str(remembered["desktop_user_data"])).expanduser()
+    elif os.name == "nt" and os.environ.get("APPDATA"):
+        desktop_user_data = Path(os.environ["APPDATA"]) / "argus-desktop"
+    return DoctorContext(
+        global_root=global_root,
+        project_root=project_root,
+        checkout=checkout,
+        python_executable=Path(sys.executable),
+        web_host=str(getattr(args, "web_host", "127.0.0.1") or "127.0.0.1"),
+        web_port=int(getattr(args, "web_port", 8799) or 8799),
+        desktop_user_data=desktop_user_data,
+        install_mode=install_mode,
+        backend=getattr(args, "backend", None),
+        auth_mode=getattr(args, "auth_mode", None),
+        allow_prerelease=bool(getattr(args, "allow_prerelease", False)),
+    )
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    import json
+
+    from ...maintenance.doctor import render_full_report, run_full_doctor
+    from ...maintenance.repair import apply_plan, create_plan
+
+    context = _maintenance_context(args)
+    report = run_full_doctor(
+        context,
+        include_backend=True,
+        probe_auth=bool(getattr(args, "deep", False)),
+    )
+    repair_payload = None
+    if bool(getattr(args, "fix_safe", False)):
+        plan = create_plan(context, [item for item in report.findings if not item.ok])
+        repaired = apply_plan(context, plan.plan_id, safe_only=True)
+        repair_payload = repaired.to_jsonable()
+        report = run_full_doctor(
+            context,
+            include_backend=True,
+            probe_auth=bool(getattr(args, "deep", False)),
+        )
+    from ...maintenance.advisor import run_doctor_advisor
+
+    advisor = run_doctor_advisor(
+        report,
+        context,
+        requested=str(getattr(args, "advisor", "auto") or "auto"),
+        probe_auth=bool(getattr(args, "deep", False)),
+    )
+    if advisor.get("attempts"):
+        report = run_full_doctor(
+            context,
+            include_backend=True,
+            probe_auth=bool(getattr(args, "deep", False)),
+        )
+    repaired_with_tools = any(
+        bool(item.get("tool_activity_observed"))
+        for item in advisor.get("attempts", ())
+    )
+    if report.ok and repaired_with_tools and advisor["status"] == "failed":
+        advisor["status"] = "completed"
+        advisor["error"] = ""
+        advisor["analysis"] = (
+            advisor.get("analysis")
+            or "Agent repairs passed final deterministic verification."
+        )
+        advisor["recovered_by_final_verification"] = True
+    advisor["verified"] = report.ok
+    advisor["remaining_findings"] = [
+        item.code for item in report.findings if not item.ok
+    ]
+    payload = report.to_jsonable()
+    payload["verification"] = bool(getattr(args, "verify", False))
+    if repair_payload is not None:
+        payload["repair"] = repair_payload
+    agent_ok = advisor["status"] in {"completed", "disabled"}
+    payload["deterministic_ok"] = report.ok
+    payload["ok"] = report.ok and agent_ok
+    payload["advisor"] = advisor
+    if bool(getattr(args, "json", False)):
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    else:
+        sys.stdout.write(render_full_report(report) + "\n")
+        if advisor["status"] == "completed":
+            sys.stdout.write(
+                f"\nCode Agent repair ({advisor['backend']}):\n"
+                f"{advisor['analysis'].strip()}\n"
+            )
+        elif advisor["status"] == "failed":
+            sys.stdout.write(
+                f"\nCode Agent repair failed ({advisor['backend']}): "
+                f"{advisor['error']}\n"
+            )
+            if advisor.get("analysis"):
+                sys.stdout.write(f"{advisor['analysis'].strip()}\n")
+        elif advisor["status"] == "unavailable":
+            sys.stdout.write(
+                "\nCode Agent repair unavailable: no supported Agent CLI was "
+                "found on PATH. Deterministic findings above are still valid.\n"
+            )
+        if repair_payload is not None:
+            sys.stdout.write(
+                f"safe repair plan {repair_payload['plan_id']}: "
+                f"{repair_payload['status']}\n"
+            )
+    return 0 if report.ok and agent_ok else 3
+
+
+def _cmd_repair(args: argparse.Namespace) -> int:
+    import json
+
+    from ...maintenance.doctor import render_full_report, run_full_doctor
+    from ...maintenance.repair import (
+        apply_plan,
+        create_plan,
+        prepare_pr_report,
+        submit_pr,
+    )
+
+    context = _maintenance_context(args)
+    json_output = bool(getattr(args, "json", False))
+    if bool(getattr(args, "plan", False)) or bool(getattr(args, "safe", False)):
+        before = run_full_doctor(context, include_backend=True)
+        plan = create_plan(context, [item for item in before.findings if not item.ok])
+        if bool(getattr(args, "plan", False)):
+            payload = {
+                "schema_version": 1,
+                "mode": "plan",
+                "plan_id": plan.plan_id,
+                "path": str(plan.path),
+                "actions": [item.to_jsonable() for item in plan.actions],
+                "diagnostics": before.to_jsonable(),
+            }
+            rc = 0
+        else:
+            result = apply_plan(context, plan.plan_id, safe_only=True)
+            payload = result.to_jsonable()
+            rc = 0 if result.status in {"completed", "already_applied"} else 3
+    elif getattr(args, "apply", None):
+        result = apply_plan(
+            context,
+            str(args.apply),
+            confirmed=bool(getattr(args, "yes", False)),
+        )
+        payload = result.to_jsonable()
+        rc = 0 if result.status in {"completed", "already_applied"} else 3
+    elif getattr(args, "prepare_pr", None):
+        report_path = prepare_pr_report(context, str(args.prepare_pr))
+        payload = {"schema_version": 1, "mode": "prepare-pr", "path": str(report_path)}
+        rc = 0
+    elif getattr(args, "submit_pr", None):
+        url = submit_pr(
+            context,
+            str(args.submit_pr),
+            confirmed=bool(getattr(args, "yes", False)),
+        )
+        payload = {"schema_version": 1, "mode": "submit-pr", "url": url}
+        rc = 0
+    else:  # pragma: no cover - argparse requires one mode
+        raise ValueError("repair mode is required")
+
+    if json_output:
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    else:
+        if payload.get("diagnostics"):
+            from ...maintenance.models import DoctorFinding, DoctorReport
+            raw = payload["diagnostics"]
+            findings = tuple(DoctorFinding(
+                code=item["code"], scope=item["scope"], severity=item["severity"],
+                ok=item["ok"], status=item["status"], detail=item["detail"],
+                evidence=item.get("evidence") or {},
+                repair_action_ids=tuple(item.get("repair_action_ids") or ()),
+                recommendation=item.get("recommendation") or "",
+            ) for item in raw["findings"])
+            sys.stdout.write(render_full_report(DoctorReport(
+                schema_version=1,
+                target_fingerprint=raw["target_fingerprint"],
+                generated_at=raw["generated_at"],
+                findings=findings,
+            )) + "\n")
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    return rc
 
 
 def _cmd_daemon_stop(args: argparse.Namespace) -> int:
@@ -1142,22 +1443,6 @@ def _cmd_approve_publication(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_skill_stats(args: argparse.Namespace) -> int:
-    from .._skill_stats import run_skill_stats
-    return run_skill_stats(
-        _resolve_project_bundle(args).project.root,
-        as_json=bool(args.skill_stats_json),
-    )
-
-
-def _cmd_skill_cleanse(args: argparse.Namespace) -> int:
-    from .._skill_cleanse import run_cleanse
-    return run_cleanse(
-        _resolve_skills_dir(args),
-        dry_run=not bool(args.apply),
-    )
-
-
 def _cmd_export_builtin_skills(args: argparse.Namespace) -> int:
     from ...skills.builtins import (
         DEFAULT_PROJECT_BUILTIN_SKILLS_DIR,
@@ -1667,7 +1952,15 @@ def _cmd_status(args: argparse.Namespace) -> int:
         backend_label = (
             "memory (test)" if status.backend == "memory" else "live — see /roles"
         )
-        print(f"  daemon   : alive (pid {status.pid}, up {uptime}, backend {backend_label})")
+        width = (
+            f", width {getattr(status, 'mission_width', None)}"
+            if getattr(status, "mission_width", None) is not None
+            else ""
+        )
+        print(
+            f"  daemon   : alive (pid {status.pid}, up {uptime}, "
+            f"backend {backend_label}{width})"
+        )
         health_state = getattr(status, "health_state", None)
         if health_state is not None:
             health_detail = (
@@ -1697,6 +1990,14 @@ def _cmd_status(args: argparse.Namespace) -> int:
             f"{_clean_follow_text(str(getattr(current_running, 'objective', '')), limit=120)}"
         )
     print(f"  inbox    : {count_pending_inbox_messages(bundle.project.root)} pending")
+    # Items written straight into backlog.jsonl bypass the Manager, so no
+    # vertical is chosen and the run merely looks like the Manager is idle.
+    # Nothing errors, so say it here or it stays invisible.
+    from ...life.supervisor.backlog_guard import describe_undecided
+
+    _undecided = describe_undecided(bundle.backlog.all())
+    if _undecided:
+        print(f"  manager  : {_undecided}")
     # The one thing an operator most needs from --status: a run that stopped
     # because it needs *them*. A blocked reviewer verdict carrying an
     # operator_question is persisted on the item precisely so this can list it,

@@ -16,6 +16,8 @@ describe('keybinding help panel — command reference', () => {
     expect(html).toContain('/skills [ls|promote');
     // Other group
     expect(html).toContain('/quit');
+    expect(html).toContain('⌘R / Ctrl+R');
+    expect(html).toContain('rewrite the current prompt before sending');
     expect(html).toContain('⌘T / Ctrl+T');
     expect(html).not.toContain('⌘O / Ctrl+O');
   });

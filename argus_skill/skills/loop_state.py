@@ -25,7 +25,6 @@ class SkillLibraryState:
 
     reviewer_skill_block: str = ""
     skill_text: str = ""
-    allow_settlement_side_effects: bool = True
     skill_libraries: Any = None
     # Compatibility for the protected Playground boundary; no Skill is selected.
     skill: Any = None

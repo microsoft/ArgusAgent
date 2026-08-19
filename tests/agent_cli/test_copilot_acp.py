@@ -400,9 +400,91 @@ def test_prewarm_starts_lean_process_and_session_without_model_turn(
             "low",
             "--no-custom-instructions",
             "--disable-builtin-mcps",
-            "--available-tools=",
+            "--available-tools=__argus_no_tools__",
         ]
     ]
+
+
+def test_prewarm_authenticates_when_agent_advertises_auth_method(monkeypatch) -> None:
+    def _script(req, _proc):
+        method = req.get("method")
+        if method == "initialize":
+            response = _init_ok(req)
+            response["result"]["authMethods"] = [
+                {"id": "copilot-login", "name": "Log in with Copilot CLI"}
+            ]
+            return [response]
+        if method == "authenticate":
+            return [{"jsonrpc": "2.0", "id": req["id"], "result": {}}]
+        if method == "session/new":
+            return [_session_ok(req)]
+        return []
+
+    proc = _FakeAcpProc(_script)
+    monkeypatch.setattr(copilot_acp.subprocess, "Popen", lambda *args, **kwargs: proc)
+
+    CopilotAcpClient("copilot-bin").prewarm(
+        "/workspace", front_door_session=True
+    )
+
+    requests = [item for item in proc.written if item.get("method")]
+    assert [item["method"] for item in requests] == [
+        "initialize",
+        "authenticate",
+        "session/new",
+    ]
+    assert requests[1]["params"] == {"methodId": "copilot-login"}
+
+
+def test_the_lean_allowlist_names_something_rather_than_nothing(monkeypatch) -> None:
+    """The lean flag's whole promise is that a classifier cannot act.
+
+    ``--available-tools=`` reads like "no tools" and is a no-op: Copilot CLI
+    1.0.80 kept the full surface — bash, create, edit, task — so a triage call
+    shipped ~20k of tool schemas and could issue tool calls (one did, and hung
+    past the 60s idle watchdog). Only a non-empty allowlist actually empties it.
+    """
+    proc = _FakeAcpProc(_happy_script)
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(
+        copilot_acp.subprocess,
+        "Popen",
+        lambda cmd, *a, **k: (commands.append(cmd), proc)[1],
+    )
+
+    CopilotAcpClient("copilot-bin", "fast-model", "low", lean=True).prewarm("/workspace")
+
+    allowlists = [
+        arg.split("=", 1)[1]
+        for arg in commands[0]
+        if arg.startswith("--available-tools=")
+    ]
+    assert allowlists, "lean spawn must restrict the model's tools at all"
+    assert all(value.strip() for value in allowlists), (
+        "an empty --available-tools value grants every tool instead of none"
+    )
+
+
+def test_a_tool_capable_spawn_is_never_lean(monkeypatch) -> None:
+    """The read-only Manager SELF keeps view/grep/glob; only lean is tool-free.
+
+    Guards the inverse mistake of the fix above — clamping the allowlist shut
+    for every ACP process would silently lobotomise Manager SELF instead.
+    """
+    proc = _FakeAcpProc(_happy_script)
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(
+        copilot_acp.subprocess,
+        "Popen",
+        lambda cmd, *a, **k: (commands.append(cmd), proc)[1],
+    )
+
+    CopilotAcpClient("copilot-bin", "m", "low", read_only=True).prewarm("/workspace")
+
+    assert copilot_acp._NO_TOOLS_SENTINEL not in " ".join(commands[0])
+    assert "view,grep,glob" in commands[0]
 
 
 def test_new_session_rejects_a_different_selected_model(monkeypatch) -> None:
@@ -686,7 +768,9 @@ def test_acp_soft_idle_heartbeat_resets_on_real_event_and_stops(monkeypatch) -> 
                 )
                 + "\n"
             )
-            time.sleep(0.035)
+            # Leave enough post-tool quiet time for two 20ms watchdog samples
+            # even on Windows' coarser thread scheduler.
+            time.sleep(0.08)
             proc._q.put(
                 json.dumps(
                     {
@@ -735,7 +819,7 @@ def test_acp_soft_idle_heartbeat_resets_on_real_event_and_stops(monkeypatch) -> 
 
     assert result.turn_completed
     assert len(snapshots) >= 2  # once before and once after the real tool event
-    assert all(snapshot.idle_seconds < 0.05 for snapshot in snapshots)
+    assert all(snapshot.idle_seconds < 0.1 for snapshot in snapshots)
     count_at_completion = len(snapshots)
     time.sleep(0.04)
     assert len(snapshots) == count_at_completion  # completion stops heartbeats
@@ -964,3 +1048,190 @@ def test_acp_registry_isolates_manager_scopes() -> None:
         )
         is second
     )
+
+
+def test_acp_registry_bounds_clients_per_manager_scope(monkeypatch) -> None:
+    copilot_acp._CLIENTS.clear()
+    monkeypatch.setattr(copilot_acp, "_MAX_CLIENTS_PER_SCOPE", 2)
+    closed: list[CopilotAcpClient] = []
+    monkeypatch.setattr(
+        CopilotAcpClient,
+        "close",
+        lambda self: closed.append(self),
+    )
+
+    first = copilot_acp.get_client(
+        "copilot-bin",
+        "model-a",
+        "low",
+        scope="manager:s-bounded",
+    )
+    second = copilot_acp.get_client(
+        "copilot-bin",
+        "model-b",
+        "low",
+        scope="manager:s-bounded",
+    )
+    third = copilot_acp.get_client(
+        "copilot-bin",
+        "model-c",
+        "low",
+        scope="manager:s-bounded",
+    )
+
+    scoped = [
+        client
+        for key, client in copilot_acp._CLIENTS.items()
+        if key[-1] == "manager:s-bounded"
+    ]
+    assert scoped == [second, third]
+    assert closed == [first]
+    copilot_acp._CLIENTS.clear()
+
+
+def test_acp_windows_close_terminates_the_owned_process_tree(monkeypatch) -> None:
+    class _Proc:
+        pid = 4242
+
+        def __init__(self) -> None:
+            self.alive = True
+            self.terminate_calls = 0
+
+        def poll(self):
+            return None if self.alive else 0
+
+        def terminate(self) -> None:
+            self.terminate_calls += 1
+            self.alive = False
+
+        def wait(self, timeout=None):  # noqa: ARG002
+            return 0
+
+        def kill(self) -> None:
+            self.alive = False
+
+    proc = _Proc()
+    client = CopilotAcpClient("copilot-bin")
+    client._proc = proc
+    client._alive = True
+    observed: list[int] = []
+
+    def _terminate_tree(process, *, identity_check):
+        assert identity_check() is True
+        observed.append(process.pid)
+        process.alive = False
+        return True
+
+    monkeypatch.setattr(copilot_acp.os, "name", "nt")
+    monkeypatch.setattr(copilot_acp, "_terminate_windows_acp_tree", _terminate_tree)
+
+    client.close()
+
+    assert observed == [4242]
+    assert proc.terminate_calls == 0
+    assert client._proc is None
+
+
+def test_acp_windows_close_falls_back_when_tree_snapshot_fails(monkeypatch) -> None:
+    class _Proc:
+        pid = 4243
+
+        def __init__(self) -> None:
+            self.alive = True
+            self.terminate_calls = 0
+
+        def poll(self):
+            return None if self.alive else 0
+
+        def terminate(self) -> None:
+            self.terminate_calls += 1
+            self.alive = False
+
+        def wait(self, timeout=None):  # noqa: ARG002
+            return 0
+
+        def kill(self) -> None:
+            self.alive = False
+
+    proc = _Proc()
+    client = CopilotAcpClient("copilot-bin")
+    client._proc = proc
+    client._alive = True
+    monkeypatch.setattr(copilot_acp.os, "name", "nt")
+    monkeypatch.setattr(
+        copilot_acp,
+        "_terminate_windows_acp_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("snapshot failed")),
+    )
+
+    client.close()
+
+    assert proc.terminate_calls == 1
+    assert client._proc is None
+
+
+def test_acp_respawn_terminates_stale_process_before_replacement(monkeypatch) -> None:
+    class _Proc:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+            self.alive = True
+
+        def poll(self):
+            return None if self.alive else 0
+
+    stale = _Proc(100)
+    replacement = _Proc(101)
+    client = CopilotAcpClient("copilot-bin")
+    client._proc = stale
+    client._alive = False
+    terminated: list[int] = []
+
+    def _terminate(process) -> None:
+        terminated.append(process.pid)
+        process.alive = False
+
+    def _spawn() -> None:
+        client._proc = replacement
+        client._alive = True
+
+    monkeypatch.setattr(client, "_terminate_subprocess", _terminate)
+    monkeypatch.setattr(client, "_spawn", _spawn)
+
+    client._ensure_started()
+
+    assert terminated == [100]
+    assert client._proc is replacement
+    assert client._alive is True
+
+
+def test_acp_initialization_failure_terminates_spawned_process(monkeypatch) -> None:
+    class _Proc:
+        pid = 200
+
+        def __init__(self) -> None:
+            self.alive = True
+
+        def poll(self):
+            return None if self.alive else 0
+
+    failed = _Proc()
+    client = CopilotAcpClient("copilot-bin")
+    terminated: list[int] = []
+
+    def _spawn() -> None:
+        client._proc = failed
+        client._alive = False
+        raise RuntimeError("initialize failed")
+
+    def _terminate(process) -> None:
+        terminated.append(process.pid)
+        process.alive = False
+
+    monkeypatch.setattr(client, "_spawn", _spawn)
+    monkeypatch.setattr(client, "_terminate_subprocess", _terminate)
+
+    with pytest.raises(RuntimeError, match="initialize failed"):
+        client._ensure_started()
+
+    assert terminated == [200]
+    assert client._proc is None

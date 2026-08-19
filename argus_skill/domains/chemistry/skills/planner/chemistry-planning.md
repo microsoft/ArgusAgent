@@ -48,7 +48,7 @@ the validator command as the decisive protocol check, set
 `require_independent_review=true`, `skip_stage_transition=true`, and
 `stage_closing=false` so the existing Reviewer applies the promotion gate without
 invoking the formal Research stage writer. The node must not edit
-`research/PIPELINE_STATE.json`, imply physical authorization, or treat promotion
+`.argus/PIPELINE_STATE.json`, imply physical authorization, or treat promotion
 as formal scientific evidence.
 
 If execution remains incomplete, emit only cohesive follow-up tasks whose

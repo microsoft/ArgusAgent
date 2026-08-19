@@ -71,6 +71,17 @@ _BACKEND_FAILURE_FATAL_ERROR_PATTERNS: tuple[str, ...] = (
     "before turn completion",
     "cli exited with code",
 )
+_AUTH_FAILURE_FATAL_ERROR_PATTERNS: tuple[str, ...] = (
+    "unauthorized",
+    "authentication failed",
+    "oauth refresh failed",
+    "token refresh failed",
+    "expired token",
+    "invalid token",
+    "invalid api key",
+    "missing credentials",
+    "no authentication information found",
+)
 
 _RECOVERABLE_RECONNECT_RE = re.compile(r"^reconnecting\.\.\.\s*(\d+)/(\d+)\b")
 _DAEMON_STOP_INTERRUPT_RE = re.compile(r"^external interrupt:\s*daemon stop requested\b")
@@ -79,7 +90,9 @@ _DAEMON_STOP_INTERRUPT_RE = re.compile(r"^external interrupt:\s*daemon stop requ
 # that *this one* backlog item should stop right now — the daemon process
 # itself keeps running and will move on to the next ready item. See
 # ``argus_skill.life.memory.request_running_item_abort`` for the writer side.
-_OPERATOR_ABORT_INTERRUPT_RE = re.compile(r"^external interrupt:\s*operator abort requested\b")
+_OPERATOR_ABORT_INTERRUPT_RE = re.compile(
+    r"^(?:external interrupt:|refused before start:)\s*operator abort requested\b"
+)
 
 
 def _fatal_error_looks_like_poisoned_session(fatal_error: str | None) -> bool:
@@ -87,6 +100,13 @@ def _fatal_error_looks_like_poisoned_session(fatal_error: str | None) -> bool:
         return False
     low = str(fatal_error).strip().casefold()
     return any(pattern in low for pattern in _POISONED_SESSION_FATAL_ERROR_PATTERNS)
+
+
+def fatal_error_looks_like_auth_failure(fatal_error: str | None) -> bool:
+    if not fatal_error:
+        return False
+    low = str(fatal_error).strip().casefold()
+    return any(pattern in low for pattern in _AUTH_FAILURE_FATAL_ERROR_PATTERNS)
 
 
 def fatal_error_looks_like_backend_failure(fatal_error: str | None) -> bool:
@@ -300,6 +320,39 @@ def model_configuration_review_decision(
     )
 
 
+def authentication_review_decision(
+    *,
+    fatal_error: str | None,
+    exit_code: int,
+) -> ReviewDecision:
+    error_text = str(fatal_error or f"exit={exit_code}").strip()
+    low = error_text.casefold()
+    if "github-copilot" in low or "copilot" in low:
+        action = (
+            "Re-authenticate GitHub Copilot in the provider CLI. For Pi, run "
+            "`pi`, use `/login`, and choose GitHub Copilot."
+        )
+    elif "codex" in low:
+        action = "Run `codex login` to refresh the configured Codex credentials."
+    else:
+        action = "Re-authenticate the configured model provider in its CLI."
+    question = (
+        f"Authentication blocked this mission: {error_text}\n"
+        f"{action}\n"
+        "After authentication succeeds, confirm here to resume the same mission."
+    )
+    return ReviewDecision(
+        status="blocked",
+        reason=error_text,
+        next_action=action,
+        operator_question=question,
+        backend_unavailable=True,
+        backend_fatal_error=error_text,
+        backend_exit_code=exit_code,
+        backend_stop_kind="permanent_error",
+    )
+
+
 def daemon_stop_review_decision(
     *,
     fatal_error: str | None,
@@ -328,7 +381,6 @@ def operator_abort_review_decision(
     fatal_error: str | None,
     exit_code: int,
 ) -> ReviewDecision:
-    error_text = str(fatal_error or f"exit={exit_code}").strip()
     return ReviewDecision(
         status="blocked",
         # Same contract as the daemon-stop sibling: this was an operator's
@@ -336,10 +388,7 @@ def operator_abort_review_decision(
         # shutdown. Keep it structural so the distinction survives being read
         # apart from the round record that also carries ``stop_kind``.
         backend_stop_kind="operator_abort",
-        reason=(
-            "Engineer interrupted because the Manager decided, on the "
-            f"operator's behalf, to abort this mission; error={error_text}"
-        ),
+        reason="The operator requested this mission be aborted.",
         next_action=(
             "This item was intentionally aborted, not a crash — the daemon "
             "process itself keeps running and will continue with the next "

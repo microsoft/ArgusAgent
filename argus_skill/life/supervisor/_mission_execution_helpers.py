@@ -9,48 +9,10 @@ through method signatures; it is process-local scratch state for a single
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
 from ..memory import BacklogItem
-
-
-def bounded_dag_node_max_rounds() -> int:
-    """Small repair budget for one Planner DAG node.
-
-    A short node should not become a long campaign, but Reviewer ``continue``
-    must have somewhere to go. Session rotation is controlled independently by
-    ``ARGUS_SKILL_SHIFT_ROUND_LIMIT``; one fresh session per round does not mean
-    one round per mission.
-    """
-    raw = os.environ.get("ARGUS_SKILL_BOUNDED_DAG_NODE_MAX_ROUNDS", "3")
-    try:
-        return max(2, min(8, int(raw)))
-    except ValueError:
-        return 3
-
-
-def is_progressive_experiment_matrix(item: BacklogItem) -> bool:
-    """Return whether a task is a progress-bearing experiment matrix."""
-    tags = {
-        str(tag).strip().lower()
-        for tag in getattr(item, "tags", [])
-    }
-    if "experiment_matrix" in tags:
-        return True
-    text = f"{item.title}\n{item.objective}".lower()
-    return "matrix" in text and any(
-        marker in text
-        for marker in (
-            "experiment",
-            "evaluation",
-            "benchmark",
-            "canonical",
-            "run-stage",
-            "e0",
-        )
-    )
 
 
 class _MissionRunState:
@@ -126,8 +88,4 @@ class _MissionRunState:
         self.scientist_usage_by_model: Any = None
 
 
-__all__ = [
-    "_MissionRunState",
-    "bounded_dag_node_max_rounds",
-    "is_progressive_experiment_matrix",
-]
+__all__ = ["_MissionRunState"]

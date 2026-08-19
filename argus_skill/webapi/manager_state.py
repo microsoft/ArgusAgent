@@ -30,6 +30,11 @@ _LOCKS: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDic
 _REGISTRY_LOCK = threading.Lock()
 _MANAGER_PREWARMING: set[str] = set()
 _MANAGER_PREWARMING_LOCK = threading.Lock()
+_MANAGER_PREWARM_OWNER: str | None = None
+# Emergency natural-language pause bypasses the per-session Manager lock. A
+# generation bump lets any older turn notice that it was superseded before it
+# can commit/dispatch work after the operator has clocked the session out.
+_CONTROL_GENERATIONS: dict[str, int] = {}
 _DEFAULT_WARM_CONTEXT_LIMIT = 8
 _DEFAULT_WARM_CONTEXT_IDLE_SECONDS = 30 * 60
 
@@ -43,6 +48,30 @@ def _lock_for(sid: str) -> threading.RLock:
         return lk
 
 
+def manager_control_generation(sid: str) -> int:
+    """Return the current in-process operator-control generation."""
+    with _REGISTRY_LOCK:
+        return _CONTROL_GENERATIONS.get(sid, 0)
+
+
+def interrupt_manager_turns(sid: str) -> int:
+    """Supersede older Manager turns without waiting for their session lock.
+
+    Persistent daemon/continuous state is changed by the pause handler. This
+    in-process fence only prevents an already-running front-door turn from
+    dispatching stale work after that durable pause lands.
+    """
+    with _REGISTRY_LOCK:
+        generation = _CONTROL_GENERATIONS.get(sid, 0) + 1
+        _CONTROL_GENERATIONS[sid] = generation
+        state = _STATES.get(sid)
+        if state is not None:
+            state.setdefault("config", {})["continuous"] = False
+            state["continuous_objective"] = ""
+            state.pop("_continuous_pending_manager_handoff", None)
+        return generation
+
+
 @contextmanager
 def manager_context_lock(sid: str) -> Iterator[None]:
     """Serialize a project lifecycle change with Manager turns."""
@@ -52,6 +81,8 @@ def manager_context_lock(sid: str) -> Iterator[None]:
 
 def _release_manager_state(sid: str) -> None:
     state = _STATES.pop(sid, None)
+    with _REGISTRY_LOCK:
+        _CONTROL_GENERATIONS.pop(sid, None)
     runner = state.get("manager_runner") if state else None
     if runner is not None:
         try:
@@ -79,6 +110,7 @@ def _prewarm_manager_context(
     *,
     global_root: Path | str | None = None,
 ) -> None:
+    """Warm one lightweight classifier transport for the active project."""
     from ..life.memory import MemoryBundle
     from ..manager.front_door import _ensure_manager_runner
 
@@ -89,53 +121,96 @@ def _prewarm_manager_context(
     with _lock_for(sid):
         if not mem.project_root.is_dir():
             return
-        state = _chat_state_for(sid)
+        if not _is_manager_prewarm_owner(sid):
+            return
+        state = _chat_state_for(sid, manager_activity=False)
         if state.get("_manager_acp_prewarmed") or state.get("backend") != "copilot":
             return
         state["session_id"] = sid
         state["global_root"] = str(mem.global_root)
         runner = _ensure_manager_runner(state, mem)
-        backend = getattr(runner, "_backend", None) if runner is not None else None
-        prewarm = getattr(backend, "prewarm_acp_client", None)
-        if not callable(prewarm):
+        default_backend = getattr(runner, "_backend", None) if runner is not None else None
+        classifier_backend = None
+        if runner is not None:
+            classifier_backend = (
+                getattr(runner, "manager_backend", None) or default_backend
+            )
+        prewarm_classifier = getattr(
+            classifier_backend,
+            "prewarm_acp_client",
+            None,
+        )
+        prewarm_reply = getattr(default_backend, "prewarm_acp_client", None)
+        if not callable(prewarm_classifier) or not callable(prewarm_reply):
             return
-        import os
-
         from ..core.knobs import (
+            resolve_knob,
             resolve_manager_classify_model,
             resolve_manager_reply_model,
             resolve_role_reasoning_effort,
         )
 
         cwd = str(state.get("manager_runner_workdir") or Path.cwd())
-        classify_effort = (
-            os.environ.get("ARGUS_SKILL_FRONTDOOR_CLASSIFY_EFFORT", "low").strip() or "low"
+        classifier_backend_name = getattr(
+            classifier_backend,
+            "backend",
+            state.get("backend"),
         )
-        prewarm(
-            model=resolve_manager_classify_model(),
+        reply_backend_name = getattr(
+            default_backend,
+            "backend",
+            state.get("backend"),
+        )
+        classify_effort = resolve_knob(
+            "ARGUS_SKILL_FRONTDOOR_CLASSIFY_EFFORT",
+            "low",
+        ).value.strip() or "low"
+        prewarm_classifier(
+            run_label="manager-frontdoor-classify",
+            model=resolve_manager_classify_model(
+                backend=classifier_backend_name,
+            ),
             reasoning_effort=classify_effort,
             lean=True,
             cwd=cwd,
             front_door_session=True,
         )
-        prewarm(
-            model=resolve_manager_reply_model(),
+        prewarm_reply(
+            run_label="simple-1",
+            model=resolve_manager_reply_model(backend=reply_backend_name),
             reasoning_effort=resolve_role_reasoning_effort(
                 "ARGUS_SKILL_SELF_REASONING_EFFORT",
-                default="xhigh",
+                default="high",
             ),
             lean=False,
             cwd=cwd,
-            read_only=True,
-            add_dirs=([str(mem.project_root)] if str(mem.project_root) != cwd else None),
+            add_dirs=(
+                [str(mem.project_root)]
+                if str(mem.project_root) != cwd
+                else None
+            ),
         )
+        if not _is_manager_prewarm_owner(sid):
+            _release_manager_state(sid)
+            return
         state["_manager_acp_prewarmed"] = True
 
 
-def _manager_context_is_prewarmed(sid: str) -> bool:
-    with _lock_for(sid):
-        state = _STATES.get(sid)
-        return bool(state and state.get("_manager_acp_prewarmed"))
+def _is_manager_prewarm_owner(sid: str) -> bool:
+    with _MANAGER_PREWARMING_LOCK:
+        return _MANAGER_PREWARM_OWNER == sid
+
+
+def _claim_manager_prewarm_owner(sid: str) -> None:
+    """Make the latest explicit active-project request the sole prewarm owner."""
+    global _MANAGER_PREWARM_OWNER
+
+    with _MANAGER_PREWARMING_LOCK:
+        _MANAGER_PREWARM_OWNER = sid
+
+
+def _mark_manager_activity(sid: str) -> None:
+    _claim_manager_prewarm_owner(sid)
 
 
 def schedule_manager_prewarm(
@@ -143,20 +218,20 @@ def schedule_manager_prewarm(
     *,
     global_root: Path | str | None = None,
 ) -> None:
-    """Warm exactly one project's private Manager ACP pool in background."""
-    if _manager_context_is_prewarmed(sid):
+    """Best-effort prewarm for the one project currently open in the Web UI."""
+    _claim_manager_prewarm_owner(sid)
+    state = _STATES.get(sid)
+    if state and state.get("_manager_acp_prewarmed"):
         return
     with _MANAGER_PREWARMING_LOCK:
         if sid in _MANAGER_PREWARMING:
-            return
-        if _manager_context_is_prewarmed(sid):
             return
         _MANAGER_PREWARMING.add(sid)
 
     def _run() -> None:
         try:
             _prewarm_manager_context(sid, global_root=global_root)
-        except Exception:  # noqa: BLE001 - project selection must stay available
+        except Exception:  # noqa: BLE001 - page reads must stay available
             pass
         finally:
             with _MANAGER_PREWARMING_LOCK:
@@ -220,10 +295,18 @@ def _evict_stale_manager_states(*, exclude_sid: str) -> None:
             lock.release()
 
 
-def _chat_state_for(sid: str) -> dict[str, Any]:
+def _chat_state_for(
+    sid: str,
+    *,
+    manager_activity: bool = True,
+) -> dict[str, Any]:
+    if manager_activity:
+        _mark_manager_activity(sid)
     _evict_stale_manager_states(exclude_sid=sid)
     st = _STATES.get(sid)
     if st is not None:
+        if manager_activity:
+            st["_manager_activity_seen"] = True
         st["last_access_monotonic"] = time.monotonic()
         return st
     from ..agent_cli.runner_backend import normalize_runner_backend
@@ -244,6 +327,7 @@ def _chat_state_for(sid: str) -> dict[str, Any]:
         "needs_startup_handoff": True,
         "session_started_s": time.monotonic(),
         "last_access_monotonic": time.monotonic(),
+        "_manager_activity_seen": manager_activity,
         "mission_count": 0,
         "config": dict(DEFAULT_MANAGER_CONFIG),
         "continuous_objective": "",
@@ -285,10 +369,16 @@ def reset_manager_context(
 
 def shutdown_manager_bridge() -> None:
     """Release warm Manager runners and Copilot ACP children on Web shutdown."""
+    global _MANAGER_PREWARM_OWNER
+
     with _REGISTRY_LOCK:
         states = list(_STATES.values())
         _STATES.clear()
         _LOCKS.clear()
+        _CONTROL_GENERATIONS.clear()
+    with _MANAGER_PREWARMING_LOCK:
+        _MANAGER_PREWARMING.clear()
+        _MANAGER_PREWARM_OWNER = None
     for state in states:
         runner = state.get("manager_runner")
         if runner is not None and hasattr(runner, "reset_chat_session"):

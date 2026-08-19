@@ -4,7 +4,7 @@ import json
 
 from argus_skill.apps._runtime import _workflow_mode_for_project_root
 from argus_skill.manager import Manager
-from argus_skill.manager.domain_author import build_fast_vertical_decision_prompt
+from argus_skill.manager.domain_author import build_vertical_decision_prompt
 from argus_skill.reviewer import Reviewer, ReviewerConfig
 from argus_skill.skills.vertical_select import (
     VERTICAL_PURPOSES,
@@ -47,6 +47,7 @@ def test_manager_can_commit_software_with_direct_workflow(tmp_path) -> None:
         )
         agent_messages = [last_agent_message]
         thread_id = "manager-direct"
+        tool_activity_observed = True
 
     class _Runner:
         def run_exec(self, **kwargs):
@@ -65,25 +66,25 @@ def test_manager_can_commit_software_with_direct_workflow(tmp_path) -> None:
 
 
 def test_manager_prompt_separates_capability_from_execution_mode() -> None:
-    prompt = build_fast_vertical_decision_prompt(
+    prompt = build_vertical_decision_prompt(
         "创作一篇《秋江赋》，语言典雅但可读，给我最终成品。",
         verticals_with_purpose=VERTICAL_PURPOSES,
     )
 
-    assert "`vertical` is the workflow/capability" in prompt
-    assert "workflow_mode=direct" in prompt
-    assert "expand the task" in prompt
-    assert "execution_task" not in prompt
+    assert "capability VERTICAL and independent execution WORKFLOW" in prompt
+    assert "`direct` for one coherent Engineer work package" in prompt
+    assert "no task work or Live View" in prompt
+    assert "Omit `execution_task` for a standalone existing route" in prompt
 
 
 def test_manager_prompt_routes_short_repair_to_software_direct() -> None:
-    prompt = build_fast_vertical_decision_prompt(
+    prompt = build_vertical_decision_prompt(
         "Fix the gRPC middleware bug in this repository; the existing tests define success.",
         verticals_with_purpose=VERTICAL_PURPOSES,
     )
 
     assert "software" in prompt
-    assert "workflow_mode=direct" in prompt
+    assert "`direct` for one coherent Engineer work package" in prompt
 
 
 def test_direct_reviewer_receives_skill_library_paths(tmp_path) -> None:

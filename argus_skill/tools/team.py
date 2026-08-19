@@ -5,7 +5,7 @@ module only exposes the lead's durable control-plane operations: form/refresh a
 backlog, inspect it, change pool intent, and dissolve the campaign.  It does not
 provide a second manual spawn/reap path.
 
-Verbs: form / status / dissolve / pool-set.
+Verbs: form / status / resume / dissolve / pool-set.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from ..team import pool, registry, roster, task_board
+from ..team import formation, pool, roster, task_board
 
 
 def _load_tasks(path: Path) -> list[dict]:
@@ -42,24 +42,14 @@ def cmd_form(a: argparse.Namespace) -> int:
 
     root = Path(a.root)
     tasks = _load_tasks(Path(a.tasks))
-    roster.create(
-        root,
+    formation.form_team(
+        project_root=Path(project_root),
+        root=root,
         team_id=a.team_id,
         mission=a.mission,
         lead=a.lead,
-        now=time.time(),
-    )
-    task_board.form(root, tasks)
-    # Publish a new campaign paused, so the lead's explicit pool-set cannot race
-    # the Curator's default-width refill. Re-forming preserves existing intent.
-    if not (root / "pool.json").exists():
-        pool.update(root, width=0, state="running")
-    # The registry marker is the sole handoff to the resident Curator.
-    registry.write_marker(
-        Path(project_root),
-        team_id=a.team_id,
-        team_root=root,
         cwd=(a.cwd or os.getcwd()),
+        tasks=tasks,
         now=time.time(),
     )
     return 0
@@ -86,6 +76,11 @@ def cmd_dissolve(a: argparse.Namespace) -> int:
     # The Curator stops refilling and removes the marker once owned children
     # have exited.  It remains the only process reaper.
     pool.update(root, state="dissolved")
+    return 0
+
+
+def cmd_resume(a: argparse.Namespace) -> int:
+    task_board.resume(Path(a.root), a.task_id, answer=a.answer)
     return 0
 
 
@@ -122,6 +117,15 @@ def _build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="show roster and task-board state")
     status.add_argument("--root", required=True)
     status.set_defaults(fn=cmd_status)
+
+    resume = sub.add_parser(
+        "resume",
+        help="answer and requeue one task waiting for operator input",
+    )
+    resume.add_argument("--root", required=True)
+    resume.add_argument("--task-id", required=True)
+    resume.add_argument("--answer", required=True)
+    resume.set_defaults(fn=cmd_resume)
 
     dissolve = sub.add_parser(
         "dissolve",

@@ -1,0 +1,267 @@
+\documentclass[10pt,letterpaper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{mathptmx}
+\usepackage[scaled=0.92]{helvet}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage[letterpaper,top=0.65in,bottom=0.72in,left=0.78in,right=0.78in,
+  headheight=14pt]{geometry}
+\usepackage[protrusion=true,expansion=true]{microtype}
+\usepackage{xspace}
+\usepackage[table]{xcolor}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{colortbl}
+\usepackage{etoolbox}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage[most]{tcolorbox}
+\usepackage[round,authoryear]{natbib}
+\usepackage[colorlinks=true,allcolors=argusblue]{hyperref}
+
+% Anime-editorial paper palette derived from the mountain illustration: navy
+% linework, cream paper, restrained blue, sand, and sage accents.
+\definecolor{sjtuRed}{HTML}{C8161D}
+\definecolor{argusblue}{HTML}{315BCE}
+\definecolor{argusdeep}{HTML}{24465D}
+\definecolor{ink}{HTML}{24465D}
+\definecolor{muted}{HTML}{66717D}
+\definecolor{papercream}{HTML}{FBF7EE}
+\definecolor{papersand}{HTML}{F5E6C8}
+\definecolor{papersage}{HTML}{6F9B86}
+\definecolor{papergold}{HTML}{D9C58F}
+\definecolor{mist}{HTML}{F8F2E7}
+\definecolor{rulegray}{HTML}{D8E0E8}
+\definecolor{softgray}{HTML}{FFFDF8}
+
+% Canonical product name; use \MakeUppercase{\systemname} only where the
+% surrounding typography requires all caps.
+\newcommand{\systemname}{Argus\xspace}
+
+\hypersetup{
+  pdftitle={\systemname: A General-Purpose Agentic Reasoning Runtime for Long-Horizon Tasks: Evidence-Governed Progressive Evolution over Durable State},
+  pdfauthor={Argus Team},
+  pdfsubject={\systemname Technical Report},
+  pdfkeywords={objective revision, verification-gated review, long-horizon research, general-purpose agentic runtime, persistent state}
+}
+
+\color{ink}
+\setlength{\parindent}{1.05em}
+\setlength{\parskip}{0pt}
+\setlength{\textfloatsep}{12pt plus 2pt minus 2pt}
+\setlength{\intextsep}{9pt plus 2pt minus 2pt}
+\setlength{\floatsep}{8pt plus 2pt minus 2pt}
+\setlength{\abovecaptionskip}{4pt}
+\setlength{\belowcaptionskip}{0pt}
+\renewcommand{\arraystretch}{1.10}
+\setlist{leftmargin=1.45em,itemsep=1.5pt,topsep=3pt,parsep=0pt}
+\setlength{\emergencystretch}{2.5em}
+\AtBeginEnvironment{table}{\rowcolors{2}{papercream}{white}\arrayrulecolor{rulegray}}
+\AtEndEnvironment{table}{\rowcolors{2}{white}{white}\arrayrulecolor{black}}
+
+\titleformat{\section}
+  {\sffamily\Large\bfseries\color{ink}}
+  {\color{argusblue}\thesection}{0.65em}{}
+\titleformat{\subsection}
+  {\sffamily\large\bfseries\color{ink}}
+  {\thesubsection}{0.55em}{}
+\titleformat{\subsubsection}
+  {\sffamily\normalsize\bfseries\color{ink}}
+  {\thesubsubsection}{0.5em}{}
+\titlespacing*{\section}{0pt}{1.15em}{0.45em}
+\titlespacing*{\subsection}{0pt}{0.85em}{0.28em}
+\titlespacing*{\subsubsection}{0pt}{0.65em}{0.2em}
+
+\captionsetup{
+  font=small,
+  labelfont={bf,sf,color=ink},
+  textfont={color=ink},
+  labelsep=period
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0.35pt}
+\fancyhead[L]{\footnotesize\rmfamily\color{muted}\systemname}
+\fancyhead[R]{\footnotesize\rmfamily\color{muted}Evidence-Governed Progressive Evolution}
+\fancyfoot[C]{\footnotesize\sffamily\color{muted}\thepage}
+\newcommand{\linkitem}[3]{%
+  \raisebox{-0.18\height}{\includegraphics[height=8.5pt]{#1}}\,\href{#2}{#3}}
+\fancypagestyle{firstpage}{
+  \fancyhf{}
+  \renewcommand{\headrulewidth}{0pt}
+  \fancyfoot[C]{%
+    \small\sffamily\color{argusblue}
+    \linkitem{assets/icon-web.png}{https://argusbot.cn/}{argusbot.cn}%
+    \hspace{0.34in}%
+    \linkitem{assets/icon-github.png}{https://github.com/lbx154/Argus}{github.com/lbx154/Argus}%
+    \hspace{0.34in}%
+    \linkitem{assets/icon-youtube.png}{https://www.youtube.com/watch?v=i8Qy9HCboQE}{youtu.be/i8Qy9HCboQE}%
+    \\[3pt]
+    \footnotesize\color{muted}\thepage}
+}
+
+\newtcolorbox{abstractbox}{
+  enhanced,
+  colback=papercream,
+  colframe=papergold,
+  boxrule=0pt,
+  arc=1.5pt,
+  left=9pt,right=9pt,top=7pt,bottom=7pt,
+  before skip=7pt,after skip=6pt
+}
+
+\newtcolorbox{paperbox}[1]{
+  enhanced,
+  colback=softgray,
+  colframe=papergold,
+  boxrule=0.45pt,
+  arc=1.5pt,
+  left=8pt,right=8pt,top=6pt,bottom=6pt,
+  before skip=6pt,after skip=6pt,
+  fonttitle=\sffamily\bfseries\small\color{argusdeep},
+  title={#1}
+}
+
+\newcommand{\code}[1]{\texttt{\small #1}}
+\newcommand{\strong}[1]{\textbf{#1}}
+\input{figures/swebench_metrics}
+\input{figures/reviewer_metrics}
+\input{figures/paper_case_study_metrics}
+
+\begin{document}
+\thispagestyle{firstpage}
+
+\vspace{0.04in}
+
+\noindent{\sffamily\small\bfseries\color{muted}
+  \MakeUppercase{\systemname} TECHNICAL REPORT \enspace\textperiodcentered\enspace AUG 2026}\par
+\vspace{0.085in}
+
+\noindent{\raggedright\sffamily\fontsize{23}{26}\selectfont\bfseries\color{ink}
+  \systemname: A General-Purpose Agentic Reasoning Runtime for Long-Horizon Tasks}\par
+\vspace{0.055in}
+\noindent{\raggedright\sffamily\fontsize{13}{16}\selectfont\bfseries\color{argusdeep}
+  Evidence-Governed Progressive Evolution over Durable State}\par
+\vspace{0.06in}
+\noindent{\raggedright\sffamily\normalsize\bfseries\color{ink}
+  \systemname Team}\par
+\vspace{0.085in}
+
+\noindent\hbox to\linewidth{%
+  \raisebox{-0.5\height}{\includegraphics[height=0.227in]{assets/logo-microsoft.png}}\hfill
+  \raisebox{-0.5\height}{\includegraphics[height=0.30in]{assets/logo-sjtu.png}}\hfill
+  \raisebox{-0.5\height}{\includegraphics[height=0.30in]{assets/logo-fudan.png}}\hfill
+  \raisebox{-0.5\height}{\includegraphics[height=0.30in]{assets/logo-nju.png}}\hfill
+  \raisebox{-0.5\height}{\includegraphics[height=0.30in]{assets/logo-thu.png}}%
+}
+\vspace{0.07in}
+
+\noindent\hbox to\linewidth{%
+  \raisebox{-0.5\height}{\includegraphics[height=0.227in]{assets/logo-hku.png}}\hfill
+  \raisebox{-0.5\height}{\includegraphics[height=0.30in]{assets/logo-pku.png}}\hfill
+  \raisebox{-0.5\height}{\includegraphics[height=0.196in]{assets/logo-cuhk-shenzhen.png}}\hfill
+  \raisebox{-0.5\height}{\includegraphics[height=0.30in]{assets/logo-donghua.png}}%
+}
+\vspace{0.10in}
+
+\begin{abstractbox}
+\small
+\textbf{Abstract.}
+Recursive self-improvement currently works where the supervision signal is dense.
+Kernel optimization, competitive benchmarks, and any task with a fast numeric score
+give an agent something to climb, and agents that climb them improve. The tasks that
+matter most in research supply no such signal: the objective is underdefined at the
+start, the right measurement is itself part of the problem, and the only available
+feedback is sparse, delayed, and contested. A system tuned to a dense score is a
+student who can only answer exam questions. We present \systemname, a persistent
+agentic runtime built for the other case, in which an expert and the system
+\emph{co-evolve} a problem statement: the runtime carries a campaign long enough to
+turn an underdefined goal into a defined one, and surfaces the specific contradiction
+that requires a human decision instead of guessing past it. Manager, Planner,
+Engineer, and Reviewer execute bounded missions over durable project state, and the
+working contract separates stable user intent from the operational objective,
+constraints, and verification criteria that evidence may refine. Verification-gated
+admission makes refinement cumulative rather than ad hoc: candidate memories, skills,
+procedures, verifiers, routing decisions, and rejected routes become reusable only
+after role-owned review and, where available, task-native verifier evidence. Model
+weights remain fixed, so self-evolution occurs in the persistent runtime state and
+control policy, and ordinary rounds run unattended between operator-owned escalation
+points.
+
+In benchmark runs with autonomous mission execution, the same harness remains effective across seven
+GPT-5.5 benchmark arenas. It reaches approximately \SWEProArgusAccuracy\% on
+SWE-Bench Pro versus \SWEProDirectAccuracy\% for Direct Copilot, while using
+\SWEProTokenRatio$\times$ the aggregate Tokens. After verification-gated runtime
+self-evolution, mature SWE-Bench Waves use \SWEProTokenReduction\% fewer solve input
+Tokens and \SWEProTimeReduction\% less active workflow time per task than startup
+Waves. This observational trajectory is not monotone; it also records
+\ReviewerVerifierRecovered{} verifier recoveries and \ReviewerStrictRescues{}
+strict review-loop rescues. Across the broader suite, \systemname reaches 76.8\% on
+AARRI-Bench research tasks and a 28.0 gap on mathematical data synthesis, alongside
+competitive GPU-kernel and language-model-training results. Its artifacts extend
+beyond benchmark endpoints: an optimized RWKV6 kernel was merged into the upstream
+Flash Linear Attention repository. A multi-day mathematical campaign retains one
+falsified route and six proof-backed frontier updates; six paper pipelines with
+autonomous mission execution
+span \PaperCaseMissions{} missions and \PaperCaseRollbacks{} Stage rollbacks before
+reaching submission completion. Two verticals close against external checkers the
+runtime does not own: an inference accelerator certified for its demonstrated scope,
+and a materials campaign in which the admitted method is simpler than the published
+one it replaces. These results show a general, self-evolving harness
+that can revise, recover, and accumulate verified approaches without forcing every
+long-horizon trajectory into a success claim. The retained trajectories also form
+structured data for future supervised and reinforcement learning.
+\end{abstractbox}
+
+\noindent{\footnotesize\color{muted}
+  \textbf{Keywords:} verified pivoting; runtime self-evolution; long-horizon
+  research; general-purpose agentic runtime; persistent state.\par}
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/argus_teaser.pdf}
+  \caption{\systemname runtime and breadth evidence. The central diagram shows
+  Manager authority over tasks, research verticals, and Stage transitions;
+  Planner, Engineer, and Reviewer operate over a shared workspace whose knowledge,
+  event log, artifacts, backlog, budget, daemon, and memory persist across bounded
+  missions. The surrounding cards report outcomes from seven task-native
+  evaluations. Their bars use independent scales and indicate comparison direction
+  with arrows; they are breadth evidence rather than a single normalized
+  leaderboard.}
+  \label{fig:overview}
+\end{figure}
+
+\input{sections/01_introduction}
+\input{sections/02_related_work}
+\input{sections/03_problem_formulation}
+\input{sections/04_argus_method}
+\input{sections/05_empirical_methodology}
+\input{sections/06_results}
+\input{sections/06b_vertical_trace}
+\input{sections/06c_paper_production_case_study}
+\input{sections/06d_silicon_vertical}
+\input{sections/06e_materials_vertical}
+\input{sections/07_discussion}
+\input{sections/08_limitations}
+\input{sections/09_conclusion}
+
+\clearpage
+\input{sections/95_contributors}
+
+\appendix
+\input{sections/90_appendix}
+
+\clearpage
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

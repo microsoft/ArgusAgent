@@ -12,9 +12,11 @@ import {
   faAnglesRight,
   faEllipsis,
   faGear,
+  faLanguage,
   faMoon,
   faSun,
 } from '@fortawesome/free-solid-svg-icons';
+import { useI18n } from '../i18n';
 
 type Scope = 'local' | 'all';
 
@@ -72,6 +74,7 @@ export function Sidebar({
   onCycleTheme: () => void;
   expandedWidth?: number;
 }) {
+  const { locale, setLocale, t } = useI18n();
   const [scope, setScope] = useState<Scope>('local');
   const initialScopeResolved = useRef(false);
   const [query, setQuery] = useState('');
@@ -94,7 +97,7 @@ export function Sidebar({
     if (scope === 'local') return visible.length > 0 ? [[normalizedLocalCwd || 'Local', visible] as const] : [];
     const groups = new Map<string, ProjectRow[]>();
     visible.forEach((project) => {
-      const path = project.launch_cwd?.trim() || 'Unassigned';
+      const path = project.launch_cwd?.trim() || t('common.unassigned');
       const rows = groups.get(path) ?? [];
       rows.push(project);
       groups.set(path, rows);
@@ -118,7 +121,7 @@ export function Sidebar({
         ) : (
           <>
             <Wordmark size={24} />
-            <button type="button" onClick={onToggleCollapse} aria-label="Collapse sessions" title="Collapse sessions · Ctrl/⌘ B" className="icon-control flex h-8 w-8 shrink-0 items-center justify-center">
+            <button type="button" onClick={onToggleCollapse} aria-label={t('sidebar.collapse')} title={`${t('sidebar.collapse')} · Ctrl/⌘ B`} className="icon-control flex h-8 w-8 shrink-0 items-center justify-center">
               <FontAwesomeIcon icon={faAnglesLeft} className="h-3.5 w-3.5" />
             </button>
           </>
@@ -126,7 +129,7 @@ export function Sidebar({
       </div>
       {slim ? (
         <div className="flex h-12 shrink-0 items-center justify-center">
-          <button type="button" onClick={onToggleCollapse} aria-label="Expand sessions" title="Expand sessions · Ctrl/⌘ B" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-line/50 bg-bg/40 text-ink-faint hover:border-blue/50 hover:text-ink">
+          <button type="button" onClick={onToggleCollapse} aria-label={t('sidebar.expand')} title={`${t('sidebar.expand')} · Ctrl/⌘ B`} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-line/50 bg-bg/40 text-ink-faint hover:border-blue/50 hover:text-ink">
             <FontAwesomeIcon icon={faAnglesRight} className="h-3.5 w-3.5" />
           </button>
         </div>
@@ -144,7 +147,7 @@ export function Sidebar({
                   scope === value ? 'bg-bg text-ink' : 'text-ink-faint hover:text-ink-dim'
                 }`}
               >
-                {value}
+                {t(`common.${value}`)}
                 <span className="ml-1.5 font-mono text-ink-faint">
                   {value === 'local' ? localProjects.length : projects.length}
                 </span>
@@ -154,8 +157,8 @@ export function Sidebar({
               type="button"
               onClick={onNew}
               disabled={creating}
-              aria-label="Create session"
-              title="Create session"
+              aria-label={t('sidebar.create')}
+              title={t('sidebar.create')}
               className="ml-auto flex h-8 w-8 items-center justify-center rounded-md text-lg text-blue hover:bg-bg disabled:opacity-40"
             >
               {creating ? '…' : '+'}
@@ -163,30 +166,30 @@ export function Sidebar({
           </div>
 
           <div className="px-3 py-2">
-            <label className="sr-only" htmlFor="daemon-search">Find a session</label>
+            <label className="sr-only" htmlFor="daemon-search">{t('sidebar.find')}</label>
             <div className="flex items-center rounded-md border border-line/60 bg-bg/60 px-2 focus-within:border-blue/60">
               <span aria-hidden="true" className="mr-1.5 text-xs text-ink-faint">/</span>
               <input
                 id="daemon-search"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Find a session"
+                placeholder={t('sidebar.find')}
                 className="h-8 min-w-0 flex-1 bg-transparent text-xs text-ink outline-none placeholder:text-ink-faint"
               />
               {query ? (
-                <button type="button" aria-label="Clear search" onClick={() => setQuery('')} className="px-1 text-sm text-ink-faint hover:text-ink">×</button>
+                <button type="button" aria-label={t('sidebar.clearSearch')} onClick={() => setQuery('')} className="px-1 text-sm text-ink-faint hover:text-ink">×</button>
               ) : null}
             </div>
           </div>
 
           <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-3 pb-3 scroll-thin">
-            {loading && projects.length === 0 ? <div className="px-1 py-3 text-xs text-ink-faint">Loading…</div> : null}
+            {loading && projects.length === 0 ? <div className="px-1 py-3 text-xs text-ink-faint">{t('common.loading')}</div> : null}
             {error ? (
               <button type="button" onClick={onRetry} className="mb-2 w-full rounded-md bg-err/5 px-3 py-2 text-left text-xs text-err">
-                Refresh failed · retry
+                {t('sidebar.refreshFailed')}
               </button>
             ) : null}
-            {!loading && !error && visible.length === 0 ? <div className="px-1 py-4 text-xs text-ink-faint">No sessions</div> : null}
+            {!loading && !error && visible.length === 0 ? <div className="px-1 py-4 text-xs text-ink-faint">{t('sidebar.noSessions')}</div> : null}
             {grouped.map(([path, rows]) => (
               <section key={path} className="mb-4 last:mb-0">
                 <div className="mb-1 truncate px-1 font-mono text-xs text-ink-faint" title={path}>{path}</div>
@@ -215,12 +218,12 @@ export function Sidebar({
                         className="w-full min-w-0 px-3 py-2.5 pr-10 text-left"
                       >
                         <div className="flex min-w-0 items-center gap-2">
-                          <StatusDot ok={project.daemon_alive} title={project.daemon_alive ? 'daemon alive' : 'stopped'} />
+                          <StatusDot ok={project.daemon_alive} title={project.daemon_alive ? t('sidebar.daemonAlive') : t('sidebar.stopped')} />
                           <span className="min-w-0 flex-1 truncate text-sm font-medium">{project.label || project.id}</span>
                         </div>
                         <div className="mt-1 flex min-w-0 items-center justify-between gap-2 pl-4 text-xs text-ink-faint">
                           <span className="min-w-0 truncate">
-                            {project.daemon_alive ? `running · ${uptime(project.uptime_seconds)}` : ago(project.last_active)}
+                            {project.daemon_alive ? t('sidebar.runningFor', { uptime: uptime(project.uptime_seconds) }) : ago(project.last_active)}
                           </span>
                           <DaemonSpendBadge
                             settledUsd={project.spend_usd}
@@ -235,8 +238,8 @@ export function Sidebar({
                       <button
                         type="button"
                         onClick={() => onManage(project.id)}
-                        aria-label={`Manage ${project.label || project.id}`}
-                        title="Rename, pause, or delete"
+                        aria-label={t('sidebar.manage', { name: project.label || project.id })}
+                        title={t('sidebar.manageHint')}
                         className="absolute right-1.5 top-1.5 flex h-8 w-8 items-center justify-center rounded-md text-ink-faint opacity-100 transition-opacity hover:bg-panel-raised hover:text-ink sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
                       >
                         <FontAwesomeIcon icon={faEllipsis} className="h-4 w-4" />
@@ -249,10 +252,19 @@ export function Sidebar({
           </div>
 
           <div className="flex min-h-14 items-center justify-between border-t border-line/50 px-4 py-2">
-            <button type="button" onClick={() => onOpenPanel('config')} className="icon-control flex h-8 w-8 items-center justify-center" aria-label="Open settings" title="Settings">
+            <button type="button" onClick={() => onOpenPanel('config')} className="icon-control flex h-8 w-8 items-center justify-center" aria-label={t('sidebar.openSettings')} title={t('common.settings')}>
               <FontAwesomeIcon icon={faGear} className="h-3.5 w-3.5" />
             </button>
-            <button type="button" onClick={onCycleTheme} title={`${themeMode} theme · switch to ${nextTheme}`} aria-label={`${themeMode} theme; switch to ${nextTheme}`} className="icon-control flex h-8 w-8 items-center justify-center">
+            <button
+              type="button"
+              onClick={() => setLocale(locale === 'zh-CN' ? 'en' : 'zh-CN')}
+              title={t('language.switchTo', { language: locale === 'zh-CN' ? t('language.english') : t('language.chinese') })}
+              aria-label={t('language.switchTo', { language: locale === 'zh-CN' ? t('language.english') : t('language.chinese') })}
+              className="icon-control flex h-8 w-8 items-center justify-center"
+            >
+              <FontAwesomeIcon icon={faLanguage} className="h-3.5 w-3.5" />
+            </button>
+            <button type="button" onClick={onCycleTheme} title={t('sidebar.theme', { current: themeMode, next: nextTheme })} aria-label={t('sidebar.theme', { current: themeMode, next: nextTheme })} className="icon-control flex h-8 w-8 items-center justify-center">
               <FontAwesomeIcon icon={themeIcon} className="h-3.5 w-3.5" />
             </button>
           </div>

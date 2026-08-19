@@ -17,11 +17,11 @@ from argus_skill.skills.stage_machine import (
 
 
 def _project(tmp_path: Path, venue: str | None) -> Path:
-    (tmp_path / "research").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".argus").mkdir(parents=True, exist_ok=True)
     payload = {"current_stage": "draft"}
     if venue is not None:
         payload["target_venue"] = venue
-    (tmp_path / "research" / "PIPELINE_STATE.json").write_text(
+    (tmp_path / ".argus" / "PIPELINE_STATE.json").write_text(
         json.dumps(payload), encoding="utf-8"
     )
     return tmp_path
@@ -34,7 +34,8 @@ def test_missing_venue_blocks_instead_of_defaulting_to_emnlp(
         "draft", role="reviewer", project_root=_project(tmp_path / "a", None)
     )
     assert "`venue.profile`" in unresolved
-    assert "CCF-A" in unresolved
+    assert "do not infer or search for one" in unresolved
+    assert "CCF-A" not in unresolved
     assert "Anonymous EMNLP Submission" not in unresolved
 
 

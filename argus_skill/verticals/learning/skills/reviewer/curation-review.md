@@ -19,7 +19,8 @@ adversarial) document and Argus's durable memory.
   review).
 
 ## How to solve
-Judge the proposed Skill maintenance and direct wiki edits (and the CHANGE_PLAN) against these,
+Judge the proposed Skill maintenance and direct wiki edits (and
+`learning/CHANGE_PLAN.json`) against these,
 and pass ONLY what clears every relevant one:
 1. EVIDENCE PRESENT AND REAL. Every create/update carries at least one evidence
    span `{source_id, locator, quote}`, and each cited quote actually appears

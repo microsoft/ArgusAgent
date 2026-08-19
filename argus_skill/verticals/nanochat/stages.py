@@ -1,13 +1,9 @@
 """NanoChat Autoresearch vertical — Recursive "First Steps" **Task 1**.
 
-Objective: MINIMIZE the mean validation bits-per-byte (``val_bpb``) of a small
-GPT trained from scratch under a FIXED 300-second single-GPU budget (B200),
-scored by the frozen harness over N seeds. Reference scores to beat (Recursive,
-single B200, 10-seed mean):
-
-    vanilla_transformer       1.0587   (the naive baseline / start point)
-    optimized_from_vanilla    0.9344   (first target to beat)
-    optimized_from_karpathy   0.9109   (Recursive's best — the bar)
+Objective: MINIMIZE the mean validation bits-per-byte (``val_bpb``) under the
+current project's frozen time, hardware, and scorer protocol. Protocol metadata
+is not resource inventory: Argus must observe the configured runner and GPU
+identity before claiming hardware access.
 
 This is its OWN vertical, DISTINCT from the nanoGPT *speedrun* (minimize wall
 TIME to a target loss) and KernelBench/SOL (maximize a Speed-of-Light score)
@@ -23,24 +19,25 @@ import re
 import statistics
 from pathlib import Path
 
-# Reuse the BPB-shaped structure + flat-workspace checks from the generic
-# optimization vertical. This is code reuse, not identity: this module is its
-# OWN named vertical (so the nanochat task is never classified as "speedrun"),
-# free to diverge from speedrun's checklists later.
-from ..speedrun.stages import (  # noqa: F401  (re-exported as this vertical's contract)
-    CHECKLIST_ITEMS,
-    CHECKLIST_STAGE_ORDER,
-    REVIEWER_CHECKLISTS,
-    STAGE_CHECKS,
-    STAGE_ORDER,
-)
+# Reuse the generic optimization contract through the explicit base facade.
+# Containers are copied so this specialization can diverge without mutating
+# the concrete speedrun provider.
+from ..optimization_base import speedrun_base_contract
+
+_BASE = speedrun_base_contract()
+STAGE_ORDER = list(_BASE.stage_order)
+CHECKLIST_STAGE_ORDER = _BASE.stage_order
+STAGE_CHECKS = _BASE.stage_checks
+REVIEWER_CHECKLISTS = _BASE.reviewer_checklists
+CHECKLIST_ITEMS = _BASE.checklist_items
 
 #: Mechanical metric gate (not a paper); the supervisor stops when the metric
 #: stops improving rather than on paper-completeness.
 completion_gate = "metric"
+MISSION_KIND = "optimize"
 
 
-#: The productive, mechanism-CHANGING optimization axes for the 300s-budget
+#: Productive, mechanism-changing optimization axes for a fixed-budget run.
 #: from-scratch LM task, biggest-lever-first. The planner is steered to spend
 #: candidates here instead of re-sweeping a saturated scalar knob.
 _CATEGORY_AXES = (
@@ -81,10 +78,10 @@ def role_banner(role: str) -> str:
         "MISSION — NanoChat Autoresearch (Recursive Task 1). This is NOT a\n"
         "speedrun and NOT a paper. The single objective: LOWER the mean\n"
         "validation bits-per-byte (val_bpb) of a small GPT trained FROM SCRATCH\n"
-        "in a FIXED 300-second single-GPU budget on B200. Historical anchors are\n"
-        "0.9344 (optimized_from_vanilla) and 0.9109 (Recursive's best); when a\n"
-        "live collaborative swarm exists, its current best supersedes stale\n"
-        "anchors. Detect the actual scaffold: in autoresearch-at-home edit ONLY\n"
+        "under the CURRENT PROJECT'S frozen time, hardware, and scorer protocol.\n"
+        "The protocol is not evidence that its GPU is accessible: observe the\n"
+        "configured runner and GPU identity before any hardware claim. Detect the\n"
+        "actual scaffold: in autoresearch-at-home edit ONLY\n"
         "train.py and freeze prepare.py; in the legacy scaffold edit the named\n"
         "solution/train artifact and freeze lib.py. Never require a file from\n"
         "the other scaffold. The metric, budget, held-out shard, and detected\n"
@@ -127,10 +124,10 @@ def role_banner(role: str) -> str:
             "DIAGNOSE BEFORE YOU PROPOSE — every candidate is a TEST OF A HYPOTHESIS "
             "about the binding constraint, never plausible-guessing. Maintain a "
             "CURRENT diagnosis (re-measure it when the floor moves or after a couple "
-            "of regressions): WHERE does the 300s budget land on the loss curve (still "
+            "of regressions): WHERE does the fixed budget land on the loss curve (still "
             "steep = sample-efficiency-bound; flattening = capacity/throughput-bound), "
             "what is the per-step bottleneck (profile a step — torch.profiler/timing, "
-            "the B200 hardware perf counters are blocked), and which lever CLASS the "
+            "device-level hardware perf counters are blocked), and which lever CLASS the "
             "current floor is most STARVED on. EVERY candidate (single lever OR bundle) "
             "MUST name that diagnosed constraint and explain MECHANISTICALLY why this "
             "change addresses IT — 'these levers should combine well' is NOT a reason. "
@@ -142,7 +139,7 @@ def role_banner(role: str) -> str:
             "is worth AT MOST one value. If the recent screens are single-knob "
             "tweaks clustering within the LOCALLY MEASURED run/seed noise of the "
             "verified floor, that basin is SATURATED: do NOT propose another value of "
-            "an already-swept knob — that is wasted 300s budget.\n"
+            "an already-swept knob — that is a wasted benchmark run.\n"
             "NOISE GATE: a keep/reject decided on a val_bpb delta SMALLER than the "
             "LOCALLY MEASURED noise is a COIN FLIP, not a win. Distinguish same-seed "
             "fresh-process repeat variance from cross-seed variance; neither may be "
@@ -177,13 +174,9 @@ def role_banner(role: str) -> str:
             "bundle; (b) after a bundle WINS, the next candidates ABLATE within it "
             "(one lever off at a time) to find who carries the gain and drop dead "
             "weight. Bundles are first-class candidates, not a fallback.\n"
-            "The gap to 0.9344 is the last leg of a COORDINATED STRUCTURE, not "
-            "one more standalone trick — single-knob noise will never close it "
-            "(see the live Search-altitude facts for the current distance). "
-            "Name the lever(s) each candidate explores. (Method: skills 'NanoChat "
-            "Autoresearch Hands-on Trace' / 'NanoChat Autoresearch SOTA Optimization' "
-            "— learn the loop, but do NOT copy any reference recipe; derive and "
-            "measure your own.)\n"
+            "Treat any gap as a measured property of the current protocol, not a "
+            "portable historical target. Name the lever(s), derive the hypothesis "
+            "from current evidence, and measure it without importing an old recipe.\n"
         )
     if role == "engineer":
         return common + (
@@ -226,7 +219,7 @@ def role_banner(role: str) -> str:
             "from cross-seed variance. In collaborative mode verify CLAIM + result + "
             "insight + next-hypothesis publication. If secret scrubbing rewrites logs, "
             "refresh the manifest's source-log metadata against the scrubbed artifacts; "
-            "stale provenance metadata needs record repair, not another 300-second scorer run.\n"
+            "stale provenance metadata needs record repair, not another scorer run.\n"
             "Do NOT demand multi-seed repeats for an ordinary screen: one clean real "
             "run is enough to discard a regression or choose the next hypothesis. Ask "
             "for a small confirmation set only when the candidate is clearly promising "
@@ -241,8 +234,8 @@ def role_banner(role: str) -> str:
 # The planner/reviewer banners forbid greedy single-lever search, but the agent
 # was found re-running "A237 + one knob -> reject -> restore A237" for 25+
 # attempts because it had NO live view of its own search state: the prompt never
-# carried the live floor, the distance to target, how long the floor had been
-# frozen, or which levers it had already recombined. This surfaces exactly those
+# carried the live floor, how long it had been frozen, or which levers it had
+# already recombined. This surfaces exactly those
 # facts — re-read from the AGENT's own recorded ``attempts/*/summary.json`` — so
 # the agent's OWN judgment ("is this basin saturated? change regime?") finally
 # has the data to bite on. It asserts no threshold and makes no keep/reject
@@ -252,10 +245,6 @@ def role_banner(role: str) -> str:
 # so the cross-vertical harness stays metric-blind.
 # ---------------------------------------------------------------------------
 
-#: Recursive single-B200 10-seed reference scores (see module docstring).
-_REF_VANILLA = 1.0587
-_REF_OPTIMIZED_FROM_VANILLA = 0.9344  # first target to beat
-_REF_BEST = 0.9109  # Recursive's best — the bar
 _ALTITUDE_RECENT_N = 8
 _ALTITUDE_TOKEN_WINDOW = 25
 _ALTITUDE_TOKEN_TOP = 12
@@ -378,7 +367,7 @@ def _is_promote(promoted_flag: object, decision: str) -> bool:
     Prefer the AGENT's structured ``promoted`` boolean; only when it is absent
     (legacy attempts) fall back to an ANCHORED decision check that excludes
     restore/reject context — never a bare ``"promote" in decision`` substring,
-    which the live nanochat-B200 mission proved re-anchors the floor onto a
+    which a prior mission proved can re-anchor the floor onto a
     rejected, *regressed* candidate ("...restored to promoted A374...").
     """
     if promoted_flag is True:
@@ -585,8 +574,7 @@ def _training_dynamics_block(project_root: object, attempts: list) -> str:
             lines.append(f"- Sustained MFU during training: ~{mfu:.1f}%")
         if vram is not None:
             lines.append(
-                f"- Peak VRAM used: ~{vram / 1024:.1f} GB (against the full device "
-                "memory of the B200 you train on)"
+                f"- Peak VRAM used: ~{vram / 1024:.1f} GB on the observed device"
             )
         lines.append(
             "These are curve-position / throughput / capacity facts only. Whether "
@@ -621,7 +609,7 @@ def _no_score_facts(project_root: object) -> str:
     gate (``val_rg_all_weighted_delta``, >0 = worse than the floor).
 
     The altitude block above only lists SCORED attempts, so the proxy-gate budget
-    sink — runs that trained on the B200 but never got an official number — was
+    sink — runs that trained but never got an official number — was
     invisible to the agent and the reviewer. This surfaces WHERE the budget went
     without a score so the agent can judge whether a gated regime (e.g. a fresh
     regime still in its valley) deserved a real score anyway. Facts only — the
@@ -664,7 +652,7 @@ def _no_score_facts(project_root: object) -> str:
             shown = f"{wd:+.6f}" if wd is not None else "(not recorded)"
             lines.append(f"    {name} | proxy Δ {shown}")
         lines.append(
-            "This is where B200 budget went without an official number. Whether a "
+            "This is where benchmark budget went without an official number. Whether a "
             "gated regime deserved a real score anyway (e.g. a fresh regime still in "
             "its initial-regression valley) is YOUR research call — not the "
             "harness's.\n"
@@ -678,8 +666,8 @@ def search_altitude_context(project_root: object) -> str:
     """Return a NO-VERDICT 'search altitude' fact block, or ``""``.
 
     Pure visibility re-surfaced from ``attempts/*/summary.json``: the live
-    floor, distance to the two reference targets, the count of consecutive
-    non-improving attempts, the last few attempt deltas, and an APPROXIMATE
+    floor, the count of consecutive non-improving attempts, the last few attempt
+    deltas, and an APPROXIMATE
     attempt-name token frequency (what has been recombined). It states no
     threshold and makes no keep/reject decision. Fail-soft: any error / no
     scored attempts → empty string, so prompt building never breaks on it.
@@ -727,9 +715,6 @@ def search_altitude_context(project_root: object) -> str:
                 "above is your promoted best.\n"
             )
 
-        d_target = floor - _REF_OPTIMIZED_FROM_VANILLA
-        d_best = floor - _REF_BEST
-
         recent_lines = []
         for t in attempts[-_ALTITUDE_RECENT_N:]:
             recent_lines.append(f"    {t[1]} | {t[2]:.6f} | {t[2] - floor:+.6f}")
@@ -754,9 +739,6 @@ def search_altitude_context(project_root: object) -> str:
             f"- Live verified FLOOR (your latest PROMOTED best): {floor:.6f}  "
             f"(from `{floor_name}`)\n"
             f"{raw_note}"
-            f"- Distance to go: to optimized_from_vanilla {_REF_OPTIMIZED_FROM_VANILLA} "
-            f"= {d_target:+.4f}; to Recursive best {_REF_BEST} = {d_best:+.4f}  "
-            f"(start point: vanilla {_REF_VANILLA})\n"
             f"- Consecutive attempts since the FLOOR last improved: {since_improve}\n"
             f"- Last {len(recent_lines)} attempts (name | mean_val_bpb | Δ vs floor):\n"
             + "\n".join(recent_lines)

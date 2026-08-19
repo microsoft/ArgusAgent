@@ -74,8 +74,8 @@ def test_present_but_failing_surfaces_failures_and_repair_loop(tmp_path: Path) -
 def test_review_stage_role_banner_injects_the_repair_block(tmp_path: Path) -> None:
     """End-to-end: with the gate failing, the physics review-stage role_banner
     embeds the deterministic failures (this is exactly what was missing before)."""
-    (tmp_path / "research").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "research" / "PIPELINE_STATE.json").write_text(
+    (tmp_path / ".argus").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".argus" / "PIPELINE_STATE.json").write_text(
         '{"current_stage": "review", "vertical": "physics"}', encoding="utf-8"
     )
     _write_partial_paper(tmp_path)

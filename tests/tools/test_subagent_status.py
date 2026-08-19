@@ -71,3 +71,32 @@ def test_reconcile_ignores_exit_sidecar_from_previous_run(tmp_path, monkeypatch)
 
     assert reconciled["state"] == "crashed"
     assert "no exit sidecar" in reconciled["error"]
+
+
+def test_reconcile_prefers_current_exit_sidecar_over_live_pid(tmp_path, monkeypatch):
+    monkeypatch.setattr(subagent._registry, "REGISTRY_DIR", tmp_path)
+    monkeypatch.setattr(subagent._registry, "_is_pid_alive", lambda pid: True)
+    sidecar = subagent._registry._exit_status_path("job7", "current-run")
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text("0\n", encoding="utf-8")
+    stdout = tmp_path / "stdout.log"
+    stderr = tmp_path / "stderr.log"
+    stdout.write_text("survived", encoding="utf-8")
+    stderr.write_text("", encoding="utf-8")
+    task = {
+        "state": "running",
+        "task_id": "job7",
+        "run_id": "current-run",
+        "pid": 4321,
+        "worker_pid": 4322,
+        "stdout_log": str(stdout),
+        "stderr_log": str(stderr),
+    }
+    subagent._write_task("job7", task)
+
+    reconciled = subagent._registry.reconcile_terminal_task("job7", task)
+
+    assert reconciled["state"] == "done"
+    assert reconciled["exit_code"] == 0
+    assert reconciled["terminal_owner"] == "exit_sidecar_reconciler"
+    assert reconciled["stdout_tail"] == "survived"

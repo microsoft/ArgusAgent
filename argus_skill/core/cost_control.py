@@ -7,26 +7,26 @@ daemons. Calls do not receive or consume a fixed per-call USD hold.
 
 from __future__ import annotations
 
+import calendar
 import json
 import os
 import tempfile
 import threading
 import time
 import uuid
+import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
+import portalocker
+
+from .daemon_lock import is_pid_running
 from .event_catalog import EventType, new_event
 from .knobs import resolve_budget_caps, resolve_knob
 from .paths import session_states_root
 from .usage import UsageLedger, UsageRecord
-
-try:  # pragma: no cover - production daemons are POSIX
-    import fcntl
-except ImportError:  # pragma: no cover
-    fcntl = None  # type: ignore[assignment]
 
 COST_CONTROL_STATE_FILE = "cost-control.json"
 COST_CONTROL_LOCK_FILE = "cost-control.lock"
@@ -34,7 +34,9 @@ COST_CONTROL_AUDIT_FILE = "cost-control.jsonl"
 
 _STATE_VERSION = 1
 _CALL_STATE_LOCK_TIMEOUT_SECONDS = 0.25
-_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_THREAD_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = (
+    weakref.WeakValueDictionary()
+)
 _THREAD_LOCKS_GUARD = threading.Lock()
 class CostControlStateError(RuntimeError):
     pass
@@ -51,9 +53,19 @@ def _local_day(timestamp: float) -> str:
 
 def _local_day_start(timestamp: float) -> float:
     local = time.localtime(timestamp)
-    return time.mktime(
-        (local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, -1)
-    )
+    midnight = (local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, -1)
+    try:
+        return time.mktime(midnight)
+    except (OverflowError, OSError, ValueError):
+        offset = getattr(local, "tm_gmtoff", None)
+        if offset is None:
+            offset = -(
+                time.altzone if local.tm_isdst > 0 else time.timezone
+            )
+        utc_midnight = calendar.timegm(
+            (local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0)
+        )
+        return float(utc_midnight - int(offset))
 
 
 def _global_root(value: Path | str | None) -> Path:
@@ -158,46 +170,37 @@ def _locked(
     try:
         fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            if fcntl is not None:
-                if timeout_seconds is None:
-                    fcntl.flock(fd, fcntl.LOCK_EX)
-                else:
-                    deadline = time.monotonic() + max(0.0, timeout_seconds)
-                    while True:
-                        try:
-                            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                            break
-                        except BlockingIOError as exc:
-                            remaining = deadline - time.monotonic()
-                            if remaining <= 0:
-                                raise CostControlLockBusyError(
-                                    f"cost control lock busy: {path}"
-                                ) from exc
-                            time.sleep(min(0.01, remaining))
+            if timeout_seconds is None:
+                portalocker.lock(fd, portalocker.LOCK_EX)
+            else:
+                deadline = time.monotonic() + max(0.0, timeout_seconds)
+                while True:
+                    try:
+                        portalocker.lock(
+                            fd,
+                            portalocker.LOCK_EX | portalocker.LOCK_NB,
+                        )
+                        break
+                    except portalocker.exceptions.LockException as exc:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise CostControlLockBusyError(
+                                f"cost control lock busy: {path}"
+                            ) from exc
+                        time.sleep(min(0.01, remaining))
             yield
         finally:
-            if fcntl is not None:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-                except OSError:
-                    pass
+            try:
+                portalocker.unlock(fd)
+            except (OSError, portalocker.exceptions.LockException):
+                pass
             os.close(fd)
     finally:
         thread_lock.release()
 
 
 def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+    return is_pid_running(pid)
 
 
 def _prune_reservations(

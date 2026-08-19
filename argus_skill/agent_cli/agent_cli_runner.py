@@ -1,4 +1,4 @@
-"""Vendored low-level codex/claude/copilot/opencode/pi CLI driver.
+"""Vendored low-level codex/claude/copilot/opencode/pi/grok/dsh CLI driver.
 
 ``AgentCliRunner`` and ``RunnerOptions`` are the two public names callers
 import from this module (``argus_skill.adapters.agent_cli_backend`` wraps
@@ -63,6 +63,10 @@ class RunnerOptions:
     # ``--dangerously-bypass-approvals-and-sandbox``. None = legacy behaviour
     # (dangerous_yolo / full_auto flags), so existing callers are unaffected.
     sandbox_mode: str | None = None
+    # Force the requested sandbox policy for this invocation without mutating
+    # the process-wide ARGUS_SKILL_SAFE_MODE setting.
+    force_safe_mode: bool = False
+    disable_tools: bool = False
     isolate_workdir: bool = False
     skip_git_repo_check: bool = False
     # Enable codex's native live web_search tool (``-c web_search="live"``).
@@ -75,6 +79,7 @@ class RunnerOptions:
     inactivity_callback: InactivityCallback | None = None
     external_interrupt_reason_provider: ExternalInterruptProvider | None = None
     add_dirs: list[str] | None = None
+    skill_paths: list[str] | None = None
     plugin_dirs: list[str] | None = None
     file_specs: list[str] | None = None
     worktree_name: str | None = None
@@ -94,7 +99,7 @@ class AgentCliRunner(
     OpenCodeRecoveryMixin,
     ProcessControlMixin,
 ):
-    """Drives one codex/claude/copilot/opencode/pi CLI turn.
+    """Drives one codex/claude/copilot/opencode/pi/grok/dsh CLI turn.
 
     This class itself only owns construction and ACP-scope state; every other
     behavior comes from the mixins above (each documented in its own module):

@@ -13,6 +13,24 @@ it is an artifact. You will think you found a 5x win when you found nothing. Pai
 Knowledge & Retrieval` (roofline of the kernel; this skill is the roofline of the
 *measurement*).
 
+## Preflight shape identity before allocating
+
+A benchmark row name is part of the evidence. Before a long compile or
+allocation, verify that names such as `L32_B1_T8K_D2K` match the actual tensor
+arguments and inspect the minimum input footprint:
+
+```bash
+python -m argus_skill.verticals.kernel_engineering.benchmark_preflight \
+  --shape-id L32_B1_T8K_D2K --L 64 --B 1 --T 8192 --D 8192 \
+  --dtype bf16 --gpu-memory-gib 192
+```
+
+Exit code 2 means the label and tensors disagree. Fix or rename the shape before
+collecting evidence; never compensate for a mislabeled oversized row by merely
+raising its timeout. If the footprint warning fires, first run one isolated row
+with zero warmups and one repeat, record allocation/compile/run phases
+separately, then choose a bounded measurement plan.
+
 ## The trap, as it actually happened
 
 A 24-kernel fleet optimized in parallel, each kernel's engineer running its own

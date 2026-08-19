@@ -68,19 +68,22 @@ KNOBS: tuple[Knob, ...] = (
     ),
     Knob("ARGUS_SKILL_RUNNER_BIN", "(agent CLI on PATH)", "absolute path to the agent CLI binary", "backend"),
     Knob("ARGUS_SKILL_PI_SESSION_DIR", "(~/.argus-skill/pi-sessions)", "Argus-owned Pi session storage, separate from interactive Pi history", "backend"),
-    Knob("ARGUS_SKILL_PI_PROVIDER", "github-copilot", "provider prefix for bare model ids passed to the Pi backend", "backend"),
+    Knob("ARGUS_SKILL_PI_PROVIDER", "(unset — Pi resolves the id itself)", "provider prefix for bare model ids on the Pi backend; set it only to disambiguate an id two authenticated Pi catalogs both carry", "backend", cockpit=True),
+    Knob("ARGUS_SKILL_OPENCODE_PROVIDER", "(unset — model is dropped)", "provider prefix for bare model ids on the OpenCode backend; `opencode run --model` needs provider/id, so without this the configured model has no effect", "backend", cockpit=True),
     Knob("ARGUS_SKILL_ENGINEER_BACKEND", "(=LIFE_BACKEND)", "per-role backend override for the engineer", "backend", cockpit=True),
     Knob("ARGUS_SKILL_REVIEWER_BACKEND", "(=LIFE_BACKEND)", "per-role backend override for the reviewer", "backend", cockpit=True),
     Knob("ARGUS_SKILL_PLANNER_BACKEND", "(=LIFE_BACKEND)", "per-role backend override for the planner", "backend", cockpit=True),
     Knob("ARGUS_SKILL_MANAGER_BACKEND", "(=LIFE_BACKEND)", "per-role backend override for the manager", "backend", cockpit=True),
+    Knob("ARGUS_SKILL_SUPERVISOR_BACKEND", "(=LIFE_BACKEND)", "per-role backend override for the subagent supervisor", "backend", cockpit=True),
     Knob("ARGUS_SKILL_ENGINEER_RUNNER_BIN", "(=RUNNER_BIN)", "per-role CLI binary for the engineer", "backend"),
     Knob("ARGUS_SKILL_REVIEWER_RUNNER_BIN", "(=RUNNER_BIN)", "per-role CLI binary for the reviewer", "backend"),
     Knob("ARGUS_SKILL_PLANNER_RUNNER_BIN", "(=RUNNER_BIN)", "per-role CLI binary for the planner", "backend"),
     Knob("ARGUS_SKILL_MANAGER_RUNNER_BIN", "(=RUNNER_BIN)", "per-role CLI binary for the manager", "backend"),
+    Knob("ARGUS_SKILL_SUPERVISOR_RUNNER_BIN", "(=RUNNER_BIN)", "per-role CLI binary for the subagent supervisor", "backend"),
     # --- team Curator (resident pool + leaderboard strategy) ---
     Knob("ARGUS_SKILL_CURATOR_BACKEND", "(=LIFE_BACKEND)", "per-role backend override for the team Curator", "backend"),
     Knob("ARGUS_SKILL_CURATOR_RUNNER_BIN", "(=RUNNER_BIN)", "per-role CLI binary for the team Curator", "backend"),
-    Knob("ARGUS_SKILL_CURATOR_MODEL", "gpt-5.5", "model for Curator strategy distillation", "models"),
+    Knob("ARGUS_SKILL_CURATOR_MODEL", "auto", "model for Curator strategy distillation; auto uses the selected backend's default", "models"),
     Knob("ARGUS_SKILL_CURATOR_REASONING_EFFORT", "high", "Curator distillation reasoning effort", "reasoning"),
     Knob("ARGUS_SKILL_CURATOR_DISTILL_INTERVAL_S", "1260", "minimum seconds between Curator strategy updates", "team"),
     # --- resident teammate pool, time-box, and deterministic leaderboard ---
@@ -89,25 +92,33 @@ KNOBS: tuple[Knob, ...] = (
     Knob("ARGUS_TEAMMATE_MAX_ROUNDS", "200", "max engineer rounds per teammate mission", "team"),
     Knob("ARGUS_TEAMMATE_RESULT_FILE", "(unset)", "path the mission writes {metric,mechanism} to → the leaderboard shard", "team"),
     Knob("ARGUS_LEADERBOARD_LOWER_IS_BETTER", "off (higher-is-better)", "global leaderboard direction; a task's lower_is_better overrides it per target", "team"),
+    Knob("ARGUS_TEAM_MAX_WIDTH", "64", "hard safety ceiling for one campaign's requested teammate width", "team"),
+    Knob("ARGUS_TEAM_MAX_ACTIVE_CAMPAIGNS", "8", "hard safety ceiling for active Team campaigns in one project", "team"),
+    Knob("ARGUS_TEAM_MAX_TASKS_PER_FORMATION", "256", "hard safety ceiling for tasks admitted by one Team formation", "team"),
+    Knob("ARGUS_TEAM_MAX_TOTAL_IN_FLIGHT", "32", "hard Curator ceiling across all live teammates in one daemon", "team"),
+    Knob("ARGUS_SKILL_ALLOW_NESTED_TEAM", "off", "expert override permitting a teammate to form another Team", "team"),
     # --- models ---
-    Knob("ARGUS_SKILL_MODEL", "gpt-5.5", "shared default model for roles without a role-specific model", "models", cockpit=True),
-    Knob("ARGUS_SKILL_MANAGER_MODEL", "gpt-5.5", "model for the Manager", "models", cockpit=True),
-    Knob("ARGUS_SKILL_ENGINEER_MODEL", "gpt-5.5", "model for the L1 engineer", "models", cockpit=True),
-    Knob("ARGUS_SKILL_REVIEWER_MODEL", "gpt-5.5", "model for the L2 reviewer", "models", cockpit=True),
-    Knob("ARGUS_SKILL_PLAN_MODEL", "gpt-5.5", "model for the L4 planner", "models", cockpit=True),
-    Knob("ARGUS_SKILL_PLAN_PREVIEW_MODEL", "auto", "interactive /plan model: gpt-5.4-mini on codex/copilot/pi, planner model otherwise; set an id to override", "models"),
-    Knob("ARGUS_SKILL_REWRITE_MODEL", "gpt-5.5", "interactive prompt rewrite model", "models"),
+    Knob("ARGUS_SKILL_MODEL", "auto", "shared model override; auto uses the selected backend's default", "models", cockpit=True),
+    Knob("ARGUS_SKILL_MANAGER_MODEL", "auto", "model for the Manager; auto uses the selected backend's default", "models", cockpit=True),
+    Knob("ARGUS_SKILL_ENGINEER_MODEL", "auto", "model for the L1 engineer; auto uses the selected backend's default", "models", cockpit=True),
+    Knob("ARGUS_SKILL_REVIEWER_MODEL", "auto", "model for the L2 reviewer; auto uses the selected backend's default", "models", cockpit=True),
+    Knob("ARGUS_SKILL_SUPERVISOR_MODEL", "auto", "model for supervised subagent health decisions; auto uses the selected backend's default", "models", cockpit=True),
+    Knob("ARGUS_SKILL_PLAN_MODEL", "auto", "model for the L4 planner; auto uses the selected backend's default", "models", cockpit=True),
+    Knob("ARGUS_SKILL_PLAN_PREVIEW_MODEL", "auto", "interactive /plan model: gpt-5.4-mini on codex/copilot, planner model otherwise; set an id to override", "models"),
+    Knob("ARGUS_SKILL_REWRITE_MODEL", "auto", "interactive prompt rewrite model: gpt-5.5 on codex/copilot, Manager model otherwise; set an id to override", "models"),
     Knob("ARGUS_SKILL_MANAGER_REPLY_MODEL", "inherit", "operator-facing Manager SELF model; inherit uses the configured Manager/shared route model", "models", cockpit=True),
-    Knob("ARGUS_SKILL_FRONTDOOR_MODEL", "auto", "cheap front-door classification model: gpt-5.4-mini on codex/copilot/pi, Manager model otherwise", "models"),
+    Knob("ARGUS_SKILL_FRONTDOOR_MODEL", "auto", "cheap front-door classification model: gpt-5.4-mini on codex/copilot, Manager model otherwise", "models"),
+    Knob("ARGUS_SKILL_FRONTDOOR_CLASSIFY_EFFORT", "low", "reasoning effort for the LLM-only front-door and STEER confirmation", "models"),
     # --- reasoning effort ---
-    Knob("ARGUS_SKILL_MANAGER_REASONING_EFFORT", "xhigh", "manager reasoning effort", "reasoning", cockpit=True),
-    Knob("ARGUS_SKILL_PLANNER_REASONING_EFFORT", "xhigh", "planner reasoning effort", "reasoning", cockpit=True),
-    Knob("ARGUS_SKILL_SELF_REASONING_EFFORT", "xhigh", "foreground Manager SELF chat/read-only reply effort", "reasoning"),
+    Knob("ARGUS_SKILL_MANAGER_REASONING_EFFORT", "high", "manager reasoning effort", "reasoning", cockpit=True),
+    Knob("ARGUS_SKILL_PLANNER_REASONING_EFFORT", "high", "planner reasoning effort", "reasoning", cockpit=True),
+    Knob("ARGUS_SKILL_SELF_REASONING_EFFORT", "high", "foreground Manager SELF chat/read-only reply effort", "reasoning"),
     Knob("ARGUS_SKILL_PLAN_PREVIEW_REASONING_EFFORT", "low", "interactive /plan preview effort; execution planning keeps the planner setting", "reasoning"),
     Knob("ARGUS_SKILL_REWRITE_REASONING_EFFORT", "high", "interactive prompt rewrite reasoning effort", "reasoning"),
     Knob("ARGUS_SKILL_ENGINEER_INITIAL_REASONING_EFFORT", "high", "direct-task first-round Engineer effort; later rounds use the Engineer effort", "reasoning", cockpit=True),
     Knob("ARGUS_SKILL_ENGINEER_REASONING_EFFORT", "xhigh", "engineer reasoning effort: low|medium|high|xhigh", "reasoning", cockpit=True),
     Knob("ARGUS_SKILL_REVIEWER_REASONING_EFFORT", "high", "reviewer reasoning effort", "reasoning", cockpit=True),
+    Knob("ARGUS_SKILL_SUPERVISOR_REASONING_EFFORT", "low", "subagent supervisor reasoning effort", "reasoning", cockpit=True),
     # --- budget ---
     Knob("ARGUS_SKILL_GLOBAL_DAILY_CAP_USD", BUDGET_KNOB_DEFAULTS["ARGUS_SKILL_GLOBAL_DAILY_CAP_USD"], "host-global daily USD cap across all projects", "budget", cockpit=True),
     Knob("ARGUS_SKILL_COST_CONTROL", "on", "host-global settled-cost admission and reconciliation", "budget"),
@@ -123,26 +134,28 @@ KNOBS: tuple[Knob, ...] = (
     Knob("ARGUS_SKILL_SUBAGENT_FAMILY_FAILURE_STREAK_LIMIT", "3", "consecutive unresolved subagent-job failures (same experiment family) before the L4 planner circuit-breaks further retries", "budget"),
     Knob("ARGUS_SKILL_SUBAGENT_FAMILY_FAILURE_WINDOW_HOURS", "72.0", "trailing window (hours) the subagent family failure streak is computed over", "budget"),
     # --- mission / lifecycle ---
-    Knob("ARGUS_SKILL_MAX_ROUNDS", "500", "max engineer rounds per mission", "mission"),
+    Knob(
+        "ARGUS_SKILL_AUTONOMY_MODE",
+        "pragmatic",
+        "operator interruption policy: cautious | pragmatic | autonomous",
+        "mission",
+        cockpit=True,
+    ),
+    Knob("ARGUS_SKILL_MAX_ROUNDS", "32", "max engineer rounds per mission", "mission"),
     Knob("ARGUS_SKILL_ROUND_CHECKPOINT", "off", "record private git refs for Reviewer-recommended round checkpoints", "mission"),
     Knob("ARGUS_SKILL_REQUIRE_POST_TASK_LEARNING", "1", "enable selective project-layer Skill maintenance for all four roles (default ON)", "mission"),
-    Knob("ARGUS_SKILL_ENGINEER_FILE_READ_BUDGET", "12", "soft first-pass relevant-file inspection budget", "mission"),
-    Knob("ARGUS_SKILL_ENGINEER_TEST_RUN_BUDGET", "3", "soft focused verification-run budget before the final verifier", "mission"),
-    Knob("ARGUS_SKILL_BOUNDED_DAG_MODEL", "auto", "compact model for decomposing Manager bounded tasks into backlog DAG nodes", "mission"),
+    Knob("ARGUS_SKILL_BOUNDED_DAG_MODEL", "auto", "compact model for decomposing Manager bounded tasks into backlog DAG nodes: gpt-5.4-mini on codex/copilot, planner model otherwise", "mission"),
     Knob("ARGUS_SKILL_BOUNDED_DAG_REASONING_EFFORT", "low", "reasoning effort for bounded DAG decomposition", "mission"),
     Knob("ARGUS_SKILL_ENGINEER_TURN_MAX_SECONDS", "0", "optional wall-clock cap for one Engineer turn; disabled by default", "mission"),
     Knob("ARGUS_SKILL_RUNNER_SOFT_IDLE_SECONDS", "600", "model stream inactivity before a diagnostic warning (0=off)", "mission"),
     Knob("ARGUS_SKILL_RUNNER_STALLED_IDLE_SECONDS", "1800", "model stream inactivity before likely-stalled alerting (0=off)", "mission"),
     Knob("ARGUS_SKILL_RUNNER_HARD_IDLE_SECONDS", "2700", "model stream inactivity before terminating only the current provider process group (0=off)", "mission"),
-    Knob("ARGUS_SKILL_SHIFT_ROUND_LIMIT", "1", "compatibility knob; autonomous Engineer/Reviewer sessions are always fresh", "mission"),
-    Knob("ARGUS_SKILL_THREAD_TOKEN_LIMIT", "0", "compatibility knob; autonomous role threads are never resumed", "mission"),
     Knob("ARGUS_SKILL_DECISION_PROGRESS_TIMEOUT_SECONDS", "1800", "safe round-boundary seconds without reviewer-classified decision/evidence progress (0=off)", "mission"),
     Knob("ARGUS_SKILL_MANAGER_LOCK_TIMEOUT_S", "120", "bounded wait for the shared Manager session lock before failing open to a no-session call", "mission"),
     Knob("ARGUS_SKILL_CHECKPOINT_PERSIST", "true", "persist the reviewer checkpoint across missions/restarts", "mission"),
     Knob("ARGUS_SKILL_COMPACT_CONTINUATION_PROMPTS", "true", "send the full Engineer task/skill contract only on round 1; later rounds use reviewer guidance plus CHECKPOINT.md", "mission"),
     Knob("ARGUS_SKILL_AUTOCOMMIT_SKILLS", "off", "compatibility gate for explicitly operator-approved source promotions such as generated data-domain verticals", "lifecycle"),
     Knob("ARGUS_SKILL_CROSS_PROJECT_PROPAGATION", "on", "Manager-promote changed reviewed Skills into shared global/vertical runtime layers after each successful mission", "lifecycle"),
-    Knob("ARGUS_SKILL_SKILL_OPS", "on", "compatibility replay for legacy reviewer skill_ops; current roles edit the project layer directly", "lifecycle"),
     Knob("ARGUS_SKILL_WIKI", "on", "enable the shared direct-edit project knowledge wiki", "lifecycle"),
     Knob("ARGUS_SKILL_AUTO_INIT_WIKI", "on", "bootstrap a project wiki before the first SkillLoop mission", "lifecycle"),
     Knob("ARGUS_SKILL_AUTO_COMPACT", "off", "run LLM skill/wiki compaction after every mission (default OFF; use explicit maintenance)", "lifecycle"),
@@ -153,7 +166,7 @@ KNOBS: tuple[Knob, ...] = (
     Knob("ARGUS_SKILL_METRICS_MAX_ARCHIVES", "14", "maximum number of rotated metrics archives to retain", "telemetry"),
     Knob("ARGUS_SKILL_AGENT_IO_MODE", "full", "agent I/O persistence: full saves prompt and every raw stream frame exactly once plus a summary; compact stores summary only", "telemetry"),
     Knob("ARGUS_SKILL_SAFE_MODE", "off", "extra-conservative guardrails", "lifecycle", cockpit=True),
-    Knob("ARGUS_SKILL_ENGINEER_SANDBOX", "off", "codex sandbox for builder roles (engineer/reviewer/planner/subagent): set 'workspace-write' to confine writes to the project workdir + a writable allowlist (excludes ~/.argus-skill, the package, ~/.codex) and scrub VCS creds, instead of --dangerously-bypass. Default OFF — verify on the box (network/cache/B200) before enabling", "lifecycle"),
+    Knob("ARGUS_SKILL_ENGINEER_SANDBOX", "off", "codex sandbox for builder roles (engineer/reviewer/planner/subagent): set 'workspace-write' to confine writes to the project workdir + a writable allowlist (excludes ~/.argus-skill, the package, ~/.codex) and scrub VCS creds, instead of --dangerously-bypass. Default OFF — verify required network, cache, and remote accelerator access before enabling", "lifecycle"),
     Knob("ARGUS_SKILL_MEASURED_MODE", "off", "measured-mode evaluation gating", "lifecycle"),
     Knob("ARGUS_SKILL_SKIP_VAULT_PREFLIGHT", "off", "bypass the capability-vault preflight on daemon start", "lifecycle"),
     Knob("ARGUS_SKILL_REQUIRE_RELEASE_MATCH", "off", "refuse daemon/WebAPI startup when source and built release artifacts differ", "lifecycle"),
@@ -161,6 +174,12 @@ KNOBS: tuple[Knob, ...] = (
     Knob("ARGUS_SKILL_ENABLE_TELEGRAM", "off", "enable the Telegram inbound/outbound bridge", "telemetry", cockpit=True),
     Knob("ARGUS_SKILL_TELEGRAM_BOT_TOKEN", "(unset)", "Telegram bot token", "telemetry"),
     Knob("ARGUS_SKILL_TELEGRAM_CHAT_ID", "(unset)", "Telegram chat id to notify", "telemetry"),
+    Knob("ARGUS_SKILL_ENABLE_FEISHU", "off", "enable the Feishu/Lark bridge (WebSocket long connection; no public URL needed)", "telemetry", cockpit=True),
+    Knob("ARGUS_SKILL_FEISHU_APP_ID", "(unset)", "Feishu app id (cli_...)", "telemetry"),
+    Knob("ARGUS_SKILL_FEISHU_APP_SECRET", "(unset)", "Feishu app secret", "telemetry"),
+    Knob("ARGUS_SKILL_FEISHU_CHAT_ID", "(unset)", "Feishu chat id to notify", "telemetry"),
+    Knob("ARGUS_SKILL_FEISHU_ALLOWED_USERS", "(unset)", "comma-separated Feishu open_ids allowed to drive the daemon; unset allows everyone the bot can see", "telemetry"),
+    Knob("ARGUS_SKILL_FEISHU_DOMAIN", "feishu", "Feishu open-platform host: 'feishu' (mainland), 'lark' (international), or a full URL", "telemetry"),
     Knob("ARGUS_SKILL_SHOW_REASONING", "0", "stream the agent's reasoning to the cockpit", "telemetry", cockpit=True),
 )
 
@@ -169,6 +188,13 @@ KNOBS: tuple[Knob, ...] = (
 # ``--model <text>``, so every call by that role fails until it is unset.
 _MODEL_KNOBS = frozenset(knob.name for knob in KNOBS if knob.group == "models")
 _MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,63}$")
+_PROVIDER_KNOBS = frozenset(
+    {
+        "ARGUS_SKILL_PI_PROVIDER",
+        "ARGUS_SKILL_OPENCODE_PROVIDER",
+    }
+)
+_PROVIDER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
 _BACKEND_KNOBS = frozenset(
     {
         "ARGUS_SKILL_RUNNER_BACKEND",
@@ -176,6 +202,7 @@ _BACKEND_KNOBS = frozenset(
         "ARGUS_SKILL_REVIEWER_BACKEND",
         "ARGUS_SKILL_PLANNER_BACKEND",
         "ARGUS_SKILL_MANAGER_BACKEND",
+        "ARGUS_SKILL_SUPERVISOR_BACKEND",
     }
 )
 _EFFORT_KNOBS = frozenset(
@@ -186,12 +213,12 @@ _EFFORT_KNOBS = frozenset(
         "ARGUS_SKILL_PLAN_PREVIEW_REASONING_EFFORT",
         "ARGUS_SKILL_ENGINEER_REASONING_EFFORT",
         "ARGUS_SKILL_REVIEWER_REASONING_EFFORT",
+        "ARGUS_SKILL_SUPERVISOR_REASONING_EFFORT",
     }
 )
 _TOGGLE_KNOBS = frozenset(
     {
         "ARGUS_SKILL_COST_CONTROL",
-        "ARGUS_SKILL_SKILL_OPS",
         "ARGUS_SKILL_WIKI",
         "ARGUS_SKILL_AUTO_INIT_WIKI",
         "ARGUS_SKILL_CROSS_PROJECT_PROPAGATION",
@@ -202,6 +229,7 @@ _TOGGLE_KNOBS = frozenset(
         "ARGUS_SKILL_SAFE_MODE",
         "ARGUS_SKILL_SHOW_REASONING",
         "ARGUS_SKILL_ENABLE_TELEGRAM",
+        "ARGUS_SKILL_ENABLE_FEISHU",
     }
 )
 _NON_NEGATIVE_INT_KNOBS = frozenset(
@@ -382,6 +410,13 @@ def normalize_cockpit_knob_value(name: str, value: str) -> str:
         if policy not in {"block", "allow"}:
             raise ValueError(f"{name} must be block or allow")
         return policy
+    if name == "ARGUS_SKILL_AUTONOMY_MODE":
+        mode = raw.lower()
+        if mode not in {"cautious", "pragmatic", "autonomous"}:
+            raise ValueError(
+                f"{name} must be cautious, pragmatic, or autonomous"
+            )
+        return mode
     if name in BUDGET_KNOB_DEFAULTS:
         number = _parse_budget_value(name, raw.removeprefix("$"))
         return f"{number:g}"
@@ -400,9 +435,18 @@ def normalize_cockpit_knob_value(name: str, value: str) -> str:
         backend = raw.lower()
         if backend == "opencod":
             backend = "opencode"
-        if backend not in {"codex", "claude", "copilot", "opencode", "pi"}:
+        if backend not in {
+            "codex",
+            "claude",
+            "copilot",
+            "opencode",
+            "pi",
+            "grok",
+            "qoder",
+            "dsh",
+        }:
             raise ValueError(
-                f"{name} must be codex, claude, copilot, opencode, or pi"
+                f"{name} must be codex, claude, copilot, opencode, pi, grok, qoder, or dsh"
             )
         return backend
     if name in _EFFORT_KNOBS:
@@ -410,6 +454,17 @@ def normalize_cockpit_knob_value(name: str, value: str) -> str:
         if effort not in {"low", "medium", "high", "xhigh", "max"}:
             raise ValueError(f"{name} must be low, medium, high, xhigh, or max")
         return effort
+    if name in _PROVIDER_KNOBS:
+        # A provider is one catalog name as the backend CLI spells it
+        # (``deepseek``, ``anthropic``, ``copilot-forward``) — never a
+        # provider/model pair, which would produce ``a/b/model`` downstream.
+        provider = raw.strip("/")
+        if not _PROVIDER_ID_RE.match(provider):
+            raise ValueError(
+                f"{name} must be a single provider id such as deepseek, "
+                f"not {raw!r}"
+            )
+        return provider
     if name in _MODEL_KNOBS:
         # Natural-language cockpit requests often omit separators
         # (``gpt5.6sol``). Canonicalize only the unambiguous GPT family while
@@ -489,6 +544,7 @@ def resolve_role_model(
     route: str,
     *,
     role_env: str = "",
+    backend: str | None = None,
     env: Mapping[str, str] | None = None,
 ) -> str:
     """Resolve a role model using Argus's runtime model precedence.
@@ -505,27 +561,43 @@ def resolve_role_model(
     if role_env:
         explicit = str(env_map.get(role_env, "") or "").strip()
         if explicit:
-            return explicit
+            return "" if explicit.lower() in _AUTO_MODEL_SENTINELS else explicit
     shared = str(env_map.get("ARGUS_SKILL_MODEL", "") or "").strip()
     if shared:
-        return shared
+        return "" if shared.lower() in _AUTO_MODEL_SENTINELS else shared
     from .knob_store import read_persisted_knobs
 
     persisted = read_persisted_knobs()
     if role_env:
         persisted_role = persisted.get(role_env, "").strip()
         if persisted_role:
-            return persisted_role
+            return (
+                ""
+                if persisted_role.lower() in _AUTO_MODEL_SENTINELS
+                else persisted_role
+            )
     persisted_shared = persisted.get("ARGUS_SKILL_MODEL", "").strip()
     if persisted_shared:
-        return persisted_shared
+        return (
+            ""
+            if persisted_shared.lower() in _AUTO_MODEL_SENTINELS
+            else persisted_shared
+        )
+    from ..agent_cli.runner_backend import normalize_runner_backend
+
+    backend_name = normalize_runner_backend(
+        backend or resolve_role_backend(route, env=env_map)
+    )
+    if backend_name not in _OPENAI_CATALOG_BACKENDS:
+        return ""
     from ..tools.capability_vault import resolve_route_model
 
     return resolve_route_model(route, env_map)
 
 
 def resolve_role_backend(role: str, *, env: Mapping[str, str] | None = None) -> str:
-    """Resolve a role's agent-CLI backend (codex / claude / copilot / opencode / pi / memory)
+    """Resolve a role's agent-CLI backend
+    (codex / claude / copilot / opencode / pi / grok / memory)
     using Argus's runtime precedence.
 
     Precedence: role-specific override (``ARGUS_SKILL_<ROLE>_BACKEND``) ->
@@ -557,7 +629,11 @@ def resolve_role_backend(role: str, *, env: Mapping[str, str] | None = None) -> 
     return "codex"
 
 
-def resolve_manager_reply_model(*, env: Mapping[str, str] | None = None) -> str:
+def resolve_manager_reply_model(
+    *,
+    backend: str | None = None,
+    env: Mapping[str, str] | None = None,
+) -> str:
     """Resolve the high-quality operator-facing Manager SELF model."""
     env_map = env if env is not None else os.environ
     configured = resolve_knob(
@@ -570,29 +646,82 @@ def resolve_manager_reply_model(*, env: Mapping[str, str] | None = None) -> str:
     return resolve_role_model(
         "manager",
         role_env="ARGUS_SKILL_MANAGER_MODEL",
+        backend=backend,
         env=env_map,
     )
 
 
-def resolve_manager_classify_model(*, env: Mapping[str, str] | None = None) -> str:
-    """Resolve the cheap stateless front-door classification model."""
+#: Backends whose model catalog IS the OpenAI catalog, so Argus may name a
+#: specific OpenAI id for its cheap control-plane routes without asking the
+#: operator. ``codex`` and ``copilot`` qualify by construction. ``pi`` /
+#: ``opencode`` / ``claude`` deliberately do NOT: they are provider-agnostic
+#: fronts whose catalog is whatever the operator authenticated (DeepSeek,
+#: Anthropic, a local vLLM), so naming an OpenAI id there misses on every call.
+_OPENAI_CATALOG_BACKENDS = frozenset({"codex", "copilot"})
+
+#: Knob values that mean "decide for me" rather than naming a model.
+_AUTO_MODEL_SENTINELS = frozenset({"", "auto", "inherit", "default"})
+
+
+def resolve_cheap_route_model(
+    *,
+    knob: str,
+    catalog_default: str,
+    role: str,
+    role_env: str,
+    backend: str | None = None,
+    env: Mapping[str, str] | None = None,
+) -> str:
+    """Resolve one cheap control-plane route's model.
+
+    Four routes want a small model rather than the role's full-strength one:
+    Manager front-door classify, bounded-DAG decomposition, ``/plan`` preview,
+    and interactive prompt rewrite. Each used to carry its own copy of this
+    rule, and the copies agreed on the wrong thing — they counted ``pi`` as an
+    OpenAI-catalog backend. A Pi fronting DeepSeek therefore asked its provider
+    for ``gpt-5.4-mini`` and all four routes hard-failed, no matter how
+    carefully the operator had configured Argus's documented model knobs.
+
+    Precedence: an explicit knob value wins; an OpenAI-catalog backend gets
+    ``catalog_default`` (each route passes its own historical id, so codex and
+    copilot behaviour is unchanged); every other backend falls back to the
+    role's own model — the only id an arbitrary provider is known to carry.
+
+    中文：四条「廉价路由」原先各自硬编码 ``gpt-5.4-mini``，并把 ``pi`` 误当作
+    OpenAI 目录后端；此处统一规则，非 OpenAI 目录的后端回落到角色 model。
+    """
     env_map = env if env is not None else os.environ
-    configured = resolve_knob(
-        "ARGUS_SKILL_FRONTDOOR_MODEL",
-        "auto",
-        env=env_map,
-    ).value.strip()
-    if configured.lower() not in {"", "auto", "inherit", "default"}:
+    configured = resolve_knob(knob, "auto", env=env_map).value.strip()
+    if configured.lower() not in _AUTO_MODEL_SENTINELS:
         return configured
     from ..agent_cli.runner_backend import normalize_runner_backend
 
-    backend = normalize_runner_backend(resolve_role_backend("manager", env=env_map))
-    if backend in {"codex", "copilot", "pi"}:
-        return "gpt-5.4-mini"
+    backend_name = normalize_runner_backend(
+        backend or resolve_role_backend(role, env=env_map)
+    )
+    if backend_name in _OPENAI_CATALOG_BACKENDS:
+        return catalog_default
     return resolve_role_model(
-        "manager",
-        role_env="ARGUS_SKILL_MANAGER_MODEL",
+        role,
+        role_env=role_env,
+        backend=backend_name,
         env=env_map,
+    )
+
+
+def resolve_manager_classify_model(
+    *,
+    backend: str | None = None,
+    env: Mapping[str, str] | None = None,
+) -> str:
+    """Resolve the cheap stateless front-door classification model."""
+    return resolve_cheap_route_model(
+        knob="ARGUS_SKILL_FRONTDOOR_MODEL",
+        catalog_default="gpt-5.4-mini",
+        role="manager",
+        role_env="ARGUS_SKILL_MANAGER_MODEL",
+        backend=backend,
+        env=env,
     )
 
 

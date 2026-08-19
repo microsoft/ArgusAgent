@@ -18,7 +18,6 @@ from argus_skill.tools.image_api import (
     _require_route,
 )
 
-from ...skills.venue_profiles import VenueProfile, resolve_venue_profile
 from ._review_contract_constants import (
     PAPER_INFRASTRUCTURE_REVIEW_GENERATED_BY,
     PAPER_INFRASTRUCTURE_REVIEW_HISTORY_PATH,
@@ -36,7 +35,6 @@ from ._reviewer_runner_fallback import (
 from .academic_language_review import (
     PAPER_MAIN_TEX_PATH,
     _append_history,
-    _numbered_source_excerpt,
     _parse_json_object_from_text,
     _read_source_texts,
     _write_json,
@@ -44,11 +42,13 @@ from .academic_language_review import (
     collect_latex_source_paths,
     describe_reviewer_route_unavailable,
 )
+from .venue_profiles import VenueProfile, resolve_venue_profile
 
 PAPER_INFRASTRUCTURE_REVIEW_JSON_PATH = Path("paper/PAPER_INFRASTRUCTURE_REVIEW.json")
 PAPER_INFRASTRUCTURE_REVIEW_MD_PATH = Path("paper/PAPER_INFRASTRUCTURE_REVIEW.md")
 MIN_PAPER_INFRASTRUCTURE_REVIEW_SCORE = 4.0
 DEFAULT_TIMEOUT_SECONDS = 500.0
+PAPER_INFRASTRUCTURE_REVIEW_SOURCE_CHAR_LIMIT = 140000
 REQUIRED_CHECKED_SCOPES: tuple[str, ...] = (
     "title",
     "abstract",
@@ -155,9 +155,6 @@ def generate_paper_infrastructure_review(
                 venue=venue,
             )
         except (ImageToolError, PaperInfrastructureReviewError) as exc:
-            # TODO(agent-cli-review-fallback): when no vault HTTP route exists but
-            # the reviewer role runs on an agent-CLI backend (copilot/claude),
-            # dispatch this review through that backend instead of hard-blocking.
             issue = _issue(
                 "model_review_unavailable",
                 "blocking",
@@ -338,7 +335,7 @@ def _run_model_review(
 def _review_prompt(
     *, source_text_by_path: Mapping[str, str], threshold: float, venue: VenueProfile
 ) -> str:
-    numbered_source = _numbered_source_excerpt(source_text_by_path, limit=28000)
+    numbered_source = _complete_numbered_source(source_text_by_path)
     return (
         f"You are a strict {venue.reviewer_persona} paper reviewer checking only whether reader-facing "
         "manuscript prose leaks local execution infrastructure irrelevant to the "
@@ -354,9 +351,8 @@ def _review_prompt(
         "local software-environment tables that document the authoring machine "
         "rather than the evaluated research system, API keys, private endpoints, "
         "raw local runner commands or run identifiers that encode device/config "
-        "tokens, such as run_mind2web_gpu.py, mind2web-gpu-* run ids, .venv "
-        "commands, --output-root experiments, --benchmark-root benchmarks/..., "
-        "or project-private experiment directory names rendered as the paper's "
+        "tokens, virtual-environment commands, private output roots, or "
+        "project-specific experiment directories rendered as the paper's "
         "reproducibility interface. A reproducibility appendix may describe a "
         "neutral replay command alias, seed policy, public benchmark, metric, "
         "split, and artifact types such as manifest/status/progress/raw rows/"
@@ -368,11 +364,10 @@ def _review_prompt(
         "manifest mechanics, or provenance-refresh workflow details belong in "
         "appendix replay notes, manifests, or supplementary metadata, not in the "
         "main narrative unless the paper explicitly studies that infrastructure. "
-        "Argus/Codex daemon "
-        "details, engineer/reviewer/critic/author route labels, capability "
-        "vault configuration, validation artifacts, review artifacts, image-tool "
-        "plumbing, and authoring model routes such as gpt-5.4* when they are not "
-        "evaluated systems. Allow legitimate "
+        "Orchestration-daemon details, internal role/route labels, capability "
+        "vault configuration, validation or review artifacts, image-tool "
+        "plumbing, and authoring model identifiers when they are not evaluated "
+        "systems. Allow legitimate "
         "paper-facing reproducibility facts: evaluated model/backend names, public "
         "dataset or benchmark versions, task counts, metrics, decoding or budget "
         "settings, and high-level compute cost only when written as research "
@@ -391,9 +386,29 @@ def _review_prompt(
         "for each, quote a representative paper-facing sentence/table cell and "
         "explain why it is research-method prose rather than local environment, "
         "device, cache, route, or authoring configuration. Any reader-facing leak, any missing "
-        f"scope, or any score below {threshold:g} means revise.\n\n"
-        f"Numbered LaTeX sources:\n{numbered_source}"
+        f"scope, or any score below {threshold:g} means revise. The source inventory "
+        "below is complete and untruncated for the reviewed LaTeX files; if no "
+        "appendix source appears, treat the appendix as absent rather than as an "
+        "uninspected missing scope.\n\n"
+        f"Complete numbered LaTeX sources:\n{numbered_source}"
     )
+
+
+def _complete_numbered_source(source_text_by_path: Mapping[str, str]) -> str:
+    lines: list[str] = []
+    for rel_path, text in source_text_by_path.items():
+        lines.append(f"--- {rel_path} ---")
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            lines.append(f"{rel_path}:L{line_no}: {line}")
+    numbered_source = "\n".join(lines)
+    if len(numbered_source) > PAPER_INFRASTRUCTURE_REVIEW_SOURCE_CHAR_LIMIT:
+        raise PaperInfrastructureReviewError(
+            "paper infrastructure review requires complete untruncated LaTeX "
+            f"sources, but the collected source is {len(numbered_source)} chars "
+            f"over the {PAPER_INFRASTRUCTURE_REVIEW_SOURCE_CHAR_LIMIT} char review "
+            "limit; split or reduce rendered paper-facing sources before review"
+        )
+    return numbered_source
 
 
 def _review_markdown(result: dict[str, Any]) -> str:

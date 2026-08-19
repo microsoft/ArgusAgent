@@ -1,9 +1,4 @@
-"""Core dataclasses shared across the loop.
-
-Provenance: most types here are vendored or adapted from
-``ArgusBot/agent_cli/models.py``. Trimmed to what argus-skill actually
-uses (no planner snapshots — argus-skill is reviewer-only for v0.1).
-"""
+"""Core dataclasses shared by runners, reviewers, and mission loops."""
 
 from __future__ import annotations
 
@@ -50,18 +45,15 @@ LoopStatus = Literal[
 
 @dataclass
 class RunnerOptions:
-    """Per-call knobs for an LLM runner backend.
-
-    Vendored shape from ArgusBot's RunnerOptions. Watchdog hooks are
-    optional and only honoured by backends that wrap a real subprocess
-    (e.g. ``AgentCliBackend``); ``MemoryBackend`` and other
-    deterministic backends ignore them.
-    """
+    """Per-call options for an LLM runner backend."""
 
     model: str | None = None
     reasoning_effort: str | None = None
     working_dir: str | None = None
     add_dirs: list[str] | None = None
+    # Role-owned Skill paths for backends with an explicit native loader. Other
+    # backends use the path-only discovery block in the prompt.
+    skill_paths: list[str] | None = None
     extra_args: list[str] | None = None
     skip_git_repo_check: bool = False
     # Enable codex's native live web_search tool for this call (``codex exec
@@ -73,6 +65,12 @@ class RunnerOptions:
     # inspect project state without granting write access; None preserves each
     # backend's existing default behavior.
     sandbox_mode: str | None = None
+    # Preserve the requested sandbox mode for this call even when the process
+    # default keeps legacy full-access behavior for normal runtime roles.
+    force_safe_mode: bool = False
+    # Remove all model-visible tools for prompts that contain untrusted
+    # diagnostic text. Unsupported backends must fail closed before spawning.
+    disable_tools: bool = False
     # Strong process-level confinement used by daemon self-maintenance. Unlike
     # backend-native sandbox flags, this applies to every CLI backend and fails
     # closed when the host cannot provide isolation.
@@ -113,11 +111,7 @@ class RunnerOptions:
 
 @dataclass
 class RunnerResult:
-    """Result returned by a RunnerBackend.run_exec call.
-
-    A slim version of ArgusBot's AgentRunResult — we keep only the parts
-    the loop / reviewer / parsers actually look at.
-    """
+    """Result returned by a ``RunnerBackend.run_exec`` call."""
 
     exit_code: int
     agent_messages: list[str] = field(default_factory=list)
@@ -168,6 +162,7 @@ class RunnerResult:
     # private process group; the runner attempted cleanup by that exact PGID.
     orphan_process_group_id: int = 0
     orphan_process_group_cleanup_succeeded: bool = False
+    role_decisions: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def last_agent_message(self) -> str:
@@ -189,15 +184,16 @@ class ReviewDecision:
     reason: str
     next_action: str
     operator_question: str = ""
+    operator_options: list[dict[str, Any]] = field(default_factory=list)
     checkpoint_recommended: bool = False
     # Strategic judgment is separate from bounded implementation acceptance.
     # A round may be correctly ``done`` yet still fail to move the operator's
     # objective; LifeSupervisor uses this signal to surface repeated hollow work.
     planner_report: dict[str, Any] = field(default_factory=dict)
-    # Read-only compatibility for Reviewer verdicts already in flight against
-    # the retired JSON schema. New prompts do not request skill_ops; when an old
-    # verdict supplies them, the opt-in legacy replay path may still apply them.
-    skill_ops: list[dict[str, Any]] = field(default_factory=list)
+    # Runtime-owned semantic transition and explicit role-session signal. The
+    # model states these on tolerant named lines; no JSON schema is required.
+    frontier_report: dict[str, Any] = field(default_factory=dict)
+    session_signal: dict[str, str] = field(default_factory=dict)
     review_source: str = "reviewer"
     prompt_block_stats: dict[str, dict[str, int]] = field(default_factory=dict)
     input_tokens: int = 0
@@ -207,10 +203,12 @@ class ReviewDecision:
     premium_requests: float = 0.0
     thread_id: str | None = None
     static_fingerprint: str = ""
+    session_resumed: bool = False
     backend_unavailable: bool = False
     backend_fatal_error: str = ""
     backend_exit_code: int | None = None
     backend_stop_kind: StopKind | None = None
+    research_result: dict[str, Any] | None = None
 
     @property
     def final_submission_certified(self) -> bool:
@@ -225,6 +223,11 @@ class ReviewDecision:
             "reason": self.reason,
             "next_action": self.next_action,
             "operator_question": self.operator_question or "",
+            "operator_options": [
+                dict(option)
+                for option in (self.operator_options or [])
+                if isinstance(option, dict)
+            ],
             "checkpoint_recommended": bool(self.checkpoint_recommended),
             "review_source": self.review_source or "reviewer",
             "prompt_block_stats": {
@@ -243,6 +246,31 @@ class ReviewDecision:
             "stop_kind": self.backend_stop_kind,
             "usage_scope": "delta",
         }
+        report = self.planner_report if isinstance(self.planner_report, dict) else {}
+        forward_progress = report.get("forward_progress")
+        if isinstance(forward_progress, bool):
+            payload["forward_progress"] = forward_progress
+        plan_signal = str(report.get("plan_signal") or "").strip()
+        if plan_signal:
+            payload["plan_signal"] = plan_signal
+        for source_key, event_key in (
+            ("challenge", "plan_challenge"),
+            ("alternative", "plan_alternative"),
+            ("authority_impact", "authority_impact"),
+        ):
+            value = str(report.get(source_key) or "").strip()
+            if value:
+                payload[event_key] = value
+        frontier = self.frontier_report if isinstance(self.frontier_report, dict) else {}
+        frontier_change = str(frontier.get("change") or "").strip()
+        if frontier_change:
+            payload["frontier_change"] = frontier_change
+            payload["frontier_summary"] = str(frontier.get("summary") or "")[:2000]
+        signal = self.session_signal if isinstance(self.session_signal, dict) else {}
+        if str(signal.get("kind") or "").strip():
+            payload["session_signal"] = dict(signal)
+        if self.research_result is not None:
+            payload["research_result"] = dict(self.research_result)
         payload.update(extras)
         return payload
 

@@ -9,7 +9,13 @@ from argus_skill.skills.builtins import (
 )
 from argus_skill.skills.layered import LayeredSkillStore
 
-ROOT = Path(__file__).resolve().parents[2] / "argus_skill" / "builtin_skills"
+ROOT = (
+    Path(__file__).resolve().parents[2]
+    / "argus_skill"
+    / "verticals"
+    / "research"
+    / "skills"
+)
 
 
 def _front_and_body(text: str) -> tuple[dict, str]:
@@ -62,6 +68,6 @@ def test_agents_receive_visual_library_paths_without_matcher(tmp_path: Path) -> 
     seed_vertical_skills(project_dir, "research", overwrite=True)
     store = LayeredSkillStore(project_dir=project_dir, global_dir=global_dir)
 
-    paths = store.list_paths()
+    paths = [path.replace("\\", "/") for path in store.list_paths()]
     assert any(path.endswith("engineer/research-visualization-router.md") for path in paths)
     assert any(path.endswith("engineer/presentation-master.md") for path in paths)

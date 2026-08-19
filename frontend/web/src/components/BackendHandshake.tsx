@@ -1,10 +1,12 @@
 import { useRef } from 'react';
+import { useI18n } from '../i18n';
 import { useGsapMotion } from '../lib/motion';
 import { ArgusMark } from './Wordmark';
 
 const STEPS = ['API', 'Protocol', 'Workspace'];
 
 export function BackendHandshake() {
+  const { t } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
   useGsapMotion(rootRef, (gsap, reduceMotion) => {
     if (reduceMotion) {
@@ -49,7 +51,7 @@ export function BackendHandshake() {
   });
 
   return (
-    <div ref={rootRef} role="status" aria-label="Connecting to Argus backend" className="w-full max-w-xl px-6 text-center">
+    <div ref={rootRef} role="status" aria-label={t('handshake.connecting')} className="w-full max-w-xl px-6 text-center">
       <div data-handshake-mark className="handshake-mark glass-card mx-auto flex h-16 w-16 items-center justify-center rounded-3xl text-blue shadow-glow sm:h-20 sm:w-20">
         <ArgusMark size={48} className="text-blue" />
       </div>

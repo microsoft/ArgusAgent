@@ -13,43 +13,38 @@ from argus_skill.verticals._base import (
 )
 
 
-def test_kernel_engineering_is_known_metric_vertical(tmp_path: Path) -> None:
+def test_kernel_engineering_is_known_direct_vertical(tmp_path: Path) -> None:
     assert "kernel_engineering" in VERTICALS
     assert require_vertical("kernel_engineering") == "kernel_engineering"
     persist_vertical(tmp_path, "kernel_engineering")
 
     mod = load_vertical("kernel_engineering")
-    assert vertical_completion_gate(mod) == "metric"
-    assert vertical_workflow_mode(mod) == "staged"
-    assert tuple(mod.STAGE_ORDER) == (
-        "scope",
-        "environment",
-        "baseline",
-        "optimize",
-        "validate",
-        "report",
-    )
+    assert vertical_completion_gate(mod) == "none"
+    assert vertical_workflow_mode(mod) == "direct"
+    assert tuple(mod.STAGE_ORDER) == ("optimize",)
+    assert mod.STAGE_PRIMARY_DELIVERABLES == {}
 
 
-def test_kernel_engineering_banner_makes_environment_a_hard_gate() -> None:
+def test_kernel_engineering_banner_prioritizes_direct_measured_work() -> None:
     mod = load_vertical("kernel_engineering")
     engineer = vertical_role_banner(mod, "engineer")
     reviewer = vertical_role_banner(mod, "reviewer")
 
-    assert "ENVIRONMENT IS PART OF THE ALGORITHM" in engineer
-    assert "audit" in engineer.lower()
-    assert "missing" in reviewer.lower()
-    assert "never a failed kernel" in engineer.lower()
+    assert "improve the real kernel" in engineer
+    assert "one coherent implementation" in engineer
+    assert "never fail work merely because" in reviewer
+    assert "process documents" in engineer
 
 
-def test_kernel_engineering_checklist_is_not_paper_pipeline(tmp_path: Path) -> None:
+def test_kernel_engineering_checklist_has_no_process_artifact_stages(tmp_path: Path) -> None:
     persist_vertical(tmp_path, "kernel_engineering")
     text = format_full_pipeline_checklist(role="reviewer", project_root=tmp_path)
 
-    assert "### environment" in text
-    assert "environment.capability_audit" in text
-    assert "environment.specialized_catalog" in text
-    assert "environment.infrastructure_reuse" in text
+    assert "### optimize" in text
+    assert "optimize.measured_change" in text
+    assert "KERNEL_SCOPE.md" not in text
+    assert "ALGORITHM_PLAN.md" not in text
+    assert "ENVIRONMENT_AUDIT" not in text
     assert "### submission" not in text
     assert "at least 10 recent high-quality papers" not in text
 
@@ -67,24 +62,16 @@ def test_kernel_engineering_vertical_skills_are_packaged(tmp_path: Path) -> None
     assert reviewer.is_file()
     engineer_text = engineer.read_text(encoding="utf-8").lower()
     reviewer_text = reviewer.read_text(encoding="utf-8").lower()
-    assert "missing compiler" in engineer_text
-    assert "hard environment gate" in reviewer_text
-    assert "leverage.json" in engineer_text
-    assert "leverage.json" in reviewer_text
-    assert "selected kernel's timeline duration" in engineer_text
-    assert "multi-pass" in engineer_text
-    assert "ncu counter replay" in engineer_text
-    assert "low-overhead timeline" in reviewer_text
-    assert "focused ncu sections after the leverage gate" in reviewer_text
-    assert "reviewer-controlled try recall" in reviewer_text
-    assert "before the final round" in reviewer_text
-    assert "replan_requested" in reviewer_text
+    assert "without framework paperwork" in engineer_text
+    assert "do not create scope documents" in engineer_text
+    assert "without requiring process documents" in reviewer_text
+    assert "never block completion" in reviewer_text
 
 
-def test_kernel_optimize_stage_requires_leverage_gate() -> None:
+def test_kernel_optimize_stage_has_no_framework_file_gate() -> None:
     mod = load_vertical("kernel_engineering")
     commands = "\n".join(command for _label, command in mod.STAGE_CHECKS["optimize"])
-    assert "leverage_gate check" in commands
+    assert commands == ""
 
 
 def test_reviewer_checklist_skill_paths_exist() -> None:

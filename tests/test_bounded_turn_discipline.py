@@ -31,17 +31,16 @@ def _prompt(task: str, *, paper_mission: bool = False) -> str:
     )
 
 
-def test_bounded_turn_discipline_present_for_paper_mission():
+def test_checkpoint_handoff_discipline_present_for_paper_mission():
     out = _prompt(
         "Work the benchmark stage of the EMNLP paper: build the dataset "
         "evidence package and resolve all readiness blockers.",
         paper_mission=True,
     )
     assert "## This turn" in out
-    # Must tell the engineer to stop after a bounded increment and yield.
-    assert "yield" in out.lower()
-    assert "one coherent, verifiable increment" in out.lower()
     assert "pure reading" in out.lower()
+    assert "CHECKPOINT.md is the only role-maintained cross-round handoff file" in out
+    assert "one coherent, verifiable increment" not in out
 
 
 def test_turn_discipline_present_even_for_nonpaper_task():
@@ -53,6 +52,7 @@ def test_turn_discipline_present_even_for_nonpaper_task():
     assert "initialize git" in out.lower()
     assert "commit" in out.lower()
     assert "spawn subagents" in out.lower()
+    assert "operator-requested parallelism" in out.lower()
 
 
 def test_long_experiment_protocol_is_in_every_engineer_turn():
@@ -65,11 +65,12 @@ def test_long_experiment_protocol_is_in_every_engineer_turn():
     )
 
     for out in (full, compact):
-        assert "docs/LIVE_EXPERIMENT_PROTOCOL.md" in out
-        assert "supervised subagent" in out.lower()
-        assert "foreground bash" in out.lower()
-        assert "`read_bash`" in out
-        assert "polling" in out.lower()
+        assert "argus_skill.tools.subagent submit" in out
+        assert "--mode direct" in out
+        assert "--mode supervised" in out
+        assert "launch a supervised subagent" not in out
+        assert "session-owned background shell" in out.lower()
+        assert "do not poll in the foreground" in out.lower()
 
 
 def test_engineer_must_not_spawn_a_subagent_to_impersonate_reviewer():
@@ -80,18 +81,51 @@ def test_engineer_must_not_spawn_a_subagent_to_impersonate_reviewer():
     )
 
     assert "reviewer subagent" in out.lower()
-    assert "fresh reviewer" in out.lower()
+    assert "host invokes reviewer only when required" in out.lower()
     assert "yield" in out.lower()
 
 
-def test_engineer_does_not_treat_empty_git_diff_as_untracked_evidence():
-    out = _prompt("Update an untracked research report and verify it.")
+def test_performance_tasks_require_causal_attribution() -> None:
+    full = _prompt("Diagnose the data throughput bottleneck.")
+    compact = SkillLoop._build_engineer_prompt(
+        task="Diagnose the data throughput bottleneck.",
+        skill_text="",
+        next_action="Continue the causal diagnosis.",
+        include_static=False,
+    )
 
-    assert "git ls-files --error-unmatch" in out
-    assert "untracked" in out.lower()
-    assert "verify their direct content" in out.lower()
-    assert "hashes" not in out.lower()
+    for out in (full, compact):
+        assert "## Performance diagnosis" in out
+        assert "live resource/wait state" in out
+        assert "phase timing/profiling or a controlled A/B" in out
+        assert "threshold miss only shows that this run missed its target" in out
+        assert "do not promote the hypothesis into a Skill" in out
+
+
+def test_engineer_does_not_create_extra_handoff_packets():
+    out = _prompt("Continue the implementation across rounds.")
+
+    assert "only role-maintained cross-round handoff file" in out
+    assert "do not create handoff or evidence packets" in out
+    assert "compile/type-check" not in out
+    assert "git ls-files --error-unmatch" not in out
+
+
+def test_engineer_surfaces_operator_only_blockers_to_host():
+    full = _prompt("Continue until an operator-owned choice is required.")
+    compact = SkillLoop._build_engineer_prompt(
+        task="Continue until an operator-owned choice is required.",
+        skill_text="",
+        next_action="Ask only if the operator owns the decision.",
+        include_static=False,
+    )
+
+    for out in (full, compact):
+        assert "operator_question" in out
+        assert "operator_options" in out
+        assert "ARGUS_ROLE_DECISION=" in out
+        assert "parks the task" in out or "Never keep opening fresh rounds" in out
 
 
 def test_engineer_fixed_prompt_stays_token_efficient():
-    assert len(_prompt("Refactor the data loader and add unit tests.")) < 2_300
+    assert len(_prompt("Refactor the data loader and add unit tests.")) < 2_500

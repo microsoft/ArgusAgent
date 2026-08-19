@@ -9,12 +9,9 @@ pass every anti-fraud gate while the "novel method" is, by construction,
 identical to the baseline — a real run, real data, real matrix, but the
 treatment changes nothing.
 
-Concrete failure this gate targets (observed in the wild): a "CV-GRPO" reward
-``compute_score_cv = base_score * confidence`` where ``confidence`` is ~always
-``1.0`` on the benchmark, so the proposed reward equalled the vanilla reward on
-~100% of rollouts. The two conditions differed only by the reward-function
-*name* in the config; their reward outcomes were statistically
-indistinguishable. Days of GPU time were spent training a no-op.
+The gate targets treatments that change only a label or configuration selector
+while leaving the executed objective and measured outcomes effectively
+unchanged. Such runs consume real compute but provide no intervention contrast.
 
 What this gate computes (robust + general)
 ------------------------------------------
@@ -111,9 +108,8 @@ _BASELINE_NAME_RE = re.compile(
 # resume tagged ``...preflightfix`` that actually trained 1000+ steps).
 _PROBE_MAX_STEPS = 50
 
-# The reward-function-name config key (the exact knob the observed no-op
-# swapped). Kept explicit so "differs only by reward-function name" is a
-# first-class shape rather than a generic diff.
+# Keep the reward-function selector explicit so a label-only treatment remains
+# distinguishable from a substantive configuration change.
 _REWARD_FN_NAME_KEY = "reward.custom_reward_function.name"
 
 

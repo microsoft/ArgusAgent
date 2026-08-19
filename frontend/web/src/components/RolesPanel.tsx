@@ -1,4 +1,5 @@
 import type { Role } from '../api';
+import { useI18n } from '../i18n';
 import { theme, effortColor } from '../lib/theme';
 import { PanelHeader } from './primitives';
 
@@ -18,6 +19,7 @@ function ageLabel(age: number | null): string {
  * remains readable as operational data instead of four glowing cards.
  */
 export function RolesPanel({ roles }: { roles: Role[] }) {
+  const { t } = useI18n();
   const byRole = new Map(roles.map((r) => [r.role, r]));
   const ordered = ORDER.map((r) => byRole.get(r)).filter(Boolean) as Role[];
   const extra = roles.filter((r) => !ORDER.includes(r.role));
@@ -25,7 +27,7 @@ export function RolesPanel({ roles }: { roles: Role[] }) {
 
   return (
     <section className="card">
-      <PanelHeader title="Roles" />
+      <PanelHeader title={t('panel.roles')} />
       <div>
         {all.map((r) => {
           const hue = theme.role[r.role] ?? theme.info;

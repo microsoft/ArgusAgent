@@ -149,13 +149,21 @@ def test_planner_enqueued_goal_gate_keeps_the_standing_objective(tmp_path: Path)
         def _artifact_root(self) -> Path:
             return tmp_path
 
-        def _effective_full_paper_gate(self, _root: Path) -> bool:
+        def _budget_global_root(self) -> Path:
+            return tmp_path
+
+        def _effective_final_certification_gate(self, _root: Path) -> bool:
             return False
 
         def _normalize_planner_scope(self, scope: str) -> str:
             return str(scope or "bounded").strip().lower().replace("-", "_")
 
     state = _PlanCycleState(None)
+    state.manager_intent = {
+        "vertical": "argus_maintenance",
+        "stage": "change",
+        "workflow_mode": "direct",
+    }
     state.verdict = PlannerVerdict(
         project_done=False,
         reason="close the current stage",
@@ -180,3 +188,9 @@ def test_planner_enqueued_goal_gate_keeps_the_standing_objective(tmp_path: Path)
     item = state.pending_items[0][1]
     assert item.objective == "Goal Gate mission for the active staged project."
     assert item.original_objective == "start fixing the best Argus optimization"
+    assert item.manager_decision == {
+        "routed": True,
+        "vertical": "argus_maintenance",
+        "stage": "change",
+        "workflow_mode": "direct",
+    }

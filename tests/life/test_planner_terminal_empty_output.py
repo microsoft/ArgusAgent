@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from argus_skill.core.event_catalog import EventType
 from argus_skill.core.models import RunnerResult
 from argus_skill.life.context_packet import (
     create_mission_context,
@@ -16,11 +17,13 @@ from argus_skill.life.context_packet import (
 from argus_skill.life.memory import BacklogItem, LifeMemory, MemoryBundle
 from argus_skill.life.supervisor._config import LifeSupervisorConfig
 from argus_skill.life.supervisor._constants import (
+    PLAN_AWAITING,
     PLAN_ERROR,
     PLAN_RETRY,
     PLAN_TERMINAL_IDLE,
 )
 from argus_skill.life.supervisor._core import LifeSupervisor
+from argus_skill.manager import Manager
 from argus_skill.planner import NO_CONCRETE_TASKS_ERROR
 
 
@@ -71,7 +74,11 @@ class _EmptyPlannerThenManagerRunner:
             agent_messages=[json.dumps(payload) if isinstance(payload, dict) else payload],
             stdout_lines=[],
             stderr_lines=[],
-            thread_id=None,
+            thread_id=(
+                "planner-thread"
+                if run_label.startswith("planner.cycle")
+                else None
+            ),
             fatal_error=None,
             input_tokens=0,
             cached_input_tokens=0,
@@ -87,7 +94,11 @@ class _ContentFilterPlannerRunner(_EmptyPlannerThenManagerRunner):
             agent_messages=[],
             stdout_lines=[],
             stderr_lines=[],
-            thread_id=None,
+            thread_id=(
+                "planner-thread"
+                if run_label.startswith("planner.cycle")
+                else None
+            ),
             fatal_error=(
                 "Copilot content filtering blocked the response; the identical "
                 "prompt must not be retried"
@@ -118,6 +129,10 @@ class _EmptyThenTaskPlannerRunner(_EmptyPlannerThenManagerRunner):
                             "TASK_OBJECTIVE=Update planner lifecycle handling and "
                             "run the focused tests."
                         ),
+                        "TASK_HYPOTHESIS=Empty verdict recovery loses concrete next work.",
+                        "TASK_GOAL_CONTRIBUTION=Restore reliable Planner continuation.",
+                        "TASK_EXPECTED_REGRESSIONS=Planner retry status may remain noisy during repair.",
+                        "TASK_DECISION_RULE=Replan if the empty output comes from provider failure.",
                         "TASK_ACCEPTANCE_CHECK=pytest tests/planner/test_planner.py",
                         "TASK_SCOPE=bounded",
                         "TASK_STAGE_CLOSING=false",
@@ -138,7 +153,11 @@ class _EmptyThenTaskPlannerRunner(_EmptyPlannerThenManagerRunner):
             agent_messages=[json.dumps(payload) if isinstance(payload, dict) else payload],
             stdout_lines=[],
             stderr_lines=[],
-            thread_id=None,
+            thread_id=(
+                "planner-thread"
+                if run_label.startswith("planner.cycle")
+                else None
+            ),
             fatal_error=None,
             input_tokens=0,
             cached_input_tokens=0,
@@ -162,8 +181,10 @@ def _write_software_state(project: Path, *, done: bool) -> None:
     """
     research = project / "research"
     research.mkdir(parents=True, exist_ok=True)
+    state_path = project / ".argus" / "PIPELINE_STATE.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
     record: dict = {"status": "done" if done else "in_progress"}
-    (research / "PIPELINE_STATE.json").write_text(
+    state_path.write_text(
         json.dumps(
             {
                 "vertical": "software",
@@ -190,7 +211,7 @@ def _write_software_state(project: Path, *, done: bool) -> None:
     record["completion_contract_sha256"] = completion_contract_fingerprint(
         project, "delivery", version=version
     )
-    (research / "PIPELINE_STATE.json").write_text(
+    state_path.write_text(
         json.dumps(
             {
                 "vertical": "software",
@@ -205,13 +226,16 @@ def _write_software_state(project: Path, *, done: bool) -> None:
 def _write_reviewed_math_scope_state(project: Path) -> None:
     research = project / "research"
     research.mkdir(parents=True, exist_ok=True)
-    (research / "PIPELINE_STATE.json").write_text(
+    state_path = project / ".argus" / "PIPELINE_STATE.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
         json.dumps(
             {
                 "vertical": "math",
                 "current_stage": "scope",
                 "research_target_level": "doctoral",
                 "workflow_mode": "staged",
+                "math_objective_mode": "exploratory",
             }
         ),
         encoding="utf-8",
@@ -261,15 +285,21 @@ def _make_supervisor(
         memory = LifeMemory.open(tmp_path / "life")
     sink = _RecordingSink()
     backend = backend or _EmptyPlannerThenManagerRunner()
+    runner = _NullRunner()
+    runner.manager = Manager(
+        project_root=project,
+        execution_workdir=project,
+        runner=backend,
+    )
     supervisor = LifeSupervisor(
         memory=memory,
-        runner=_NullRunner(),
+        runner=runner,
         sink=sink,
         config=LifeSupervisorConfig(
             continuous=True,
             continuous_objective="finish the private framework repair",
             paper_mission=False,
-            full_paper_gate=False,
+            final_certification_gate=False,
             open_ended=True,
             project_worktree=project,
             artifact_root=project,
@@ -283,9 +313,61 @@ def _make_supervisor(
     monkeypatch.setattr(supervisor, "_render_journal_for_planner", lambda: "")
     monkeypatch.setattr(supervisor, "_recent_no_progress_failures", lambda: {})
     monkeypatch.setattr(supervisor, "_recent_subagent_family_failures", lambda: {})
-    monkeypatch.setattr(supervisor, "_effective_full_paper_gate", lambda *_a, **_k: False)
+    monkeypatch.setattr(supervisor, "_effective_final_certification_gate", lambda *_a, **_k: False)
     monkeypatch.setattr(supervisor, "_planner_runtime_with_idle_note", lambda: "")
     return supervisor, backend, sink
+
+
+def test_bounded_completed_campaign_stops_before_planner_cycle(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    supervisor, _backend, sink = _make_supervisor(
+        tmp_path,
+        monkeypatch,
+        terminal_stage_done=True,
+    )
+    supervisor.config.open_ended = False
+    monkeypatch.setattr(
+        supervisor,
+        "_plan_next_work",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("completed bounded campaign must not enter Planner")
+        ),
+    )
+
+    result = supervisor.run()
+
+    assert result["stopped_by"] == "project_done"
+    assert result["planning_cycles"] == 0
+    assert not any(
+        event.get("type") == EventType.LIFE_PLANNER_START
+        for event in sink.events
+    )
+
+
+def test_standing_campaign_is_not_stopped_by_bounded_completion_certificate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    supervisor, _backend, _sink = _make_supervisor(
+        tmp_path,
+        monkeypatch,
+        terminal_stage_done=True,
+    )
+    planner_calls = 0
+
+    def plan_once(*args, **kwargs):
+        nonlocal planner_calls
+        planner_calls += 1
+        return PLAN_TERMINAL_IDLE
+
+    monkeypatch.setattr(supervisor, "_plan_next_work", plan_once)
+
+    result = supervisor.run()
+
+    assert result["stopped_by"] == PLAN_TERMINAL_IDLE
+    assert planner_calls == 1
 
 
 def test_content_filtered_planner_disarms_campaign_instead_of_retrying(
@@ -381,7 +463,7 @@ def test_nonterminal_empty_plan_repairs_into_concrete_backlog_task(
     )
 
 
-def test_nonterminal_empty_plan_repair_exhaustion_fails_with_planner_error(
+def test_nonterminal_empty_plan_repair_exhaustion_asks_operator(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -391,23 +473,33 @@ def test_nonterminal_empty_plan_repair_exhaustion_fails_with_planner_error(
         terminal_stage_done=False,
     )
 
-    assert supervisor._plan_next_work() == PLAN_ERROR
+    assert supervisor._plan_next_work() == PLAN_AWAITING
 
     assert backend.planner_calls == 2
     assert backend.manager_calls == 0
-    assert supervisor.memory.backlog.pending() == []
+    paused = [
+        item for item in supervisor.memory.backlog.all()
+        if item.status == "paused_operator"
+    ]
+    assert len(paused) == 1
+    assert "cannot identify a concrete next task" in paused[0].pending_question
     error_event = next(
         event for event in sink.events if event.get("type") == "life.planner.error"
     )
     assert str(error_event.get("error", "")).startswith(NO_CONCRETE_TASKS_ERROR)
     assert "repair exhausted after 1 attempt" in str(error_event.get("error", ""))
+    assert error_event["operator_alert"] is True
+    assert any(
+        event.get("type") == "life.operator_question.pending"
+        for event in sink.events
+    )
     assert not any(
         event.get("type") == "life.planner.verdict" and event.get("status") == "completed"
         for event in sink.events
     )
 
 
-def test_nonterminal_empty_plan_repair_exhaustion_stops_run_with_planner_error(
+def test_nonterminal_empty_plan_repair_exhaustion_stops_for_operator_input(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -419,7 +511,7 @@ def test_nonterminal_empty_plan_repair_exhaustion_stops_run_with_planner_error(
 
     summary = supervisor.run()
 
-    assert summary["stopped_by"] == "planner_error"
+    assert summary["stopped_by"] == PLAN_AWAITING
     assert backend.planner_calls == 2
     error_event = next(
         event for event in sink.events if event.get("type") == "life.planner.error"
@@ -428,7 +520,7 @@ def test_nonterminal_empty_plan_repair_exhaustion_stops_run_with_planner_error(
     assert "repair exhausted after 1 attempt" in str(error_event.get("error", ""))
 
 
-def test_nonterminal_empty_plan_replays_unassessed_current_stage_review(
+def test_nonterminal_planning_replays_unassessed_current_stage_review_first(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -483,9 +575,9 @@ def test_nonterminal_empty_plan_replays_unassessed_current_stage_review(
 
     assert supervisor._plan_next_work() == PLAN_RETRY
 
-    assert backend.planner_calls == 2
+    assert backend.planner_calls == 0
     assert backend.manager_calls == 1
-    state = json.loads((project / "research" / "PIPELINE_STATE.json").read_text(encoding="utf-8"))
+    state = json.loads((project / ".argus" / "PIPELINE_STATE.json").read_text(encoding="utf-8"))
     assert state["current_stage"] == "solve"
     assert state["research_target_level"] == "doctoral"
     assert _candidate_artifact_paths(project) == []
@@ -493,6 +585,179 @@ def test_nonterminal_empty_plan_replays_unassessed_current_stage_review(
     assert stored.outcome["stage_certification"] == "certified"
     assert supervisor.memory.backlog.pending() == []
     assert not any(event.get("type") == "life.planner.error" for event in sink.events)
+    assert any(
+        event.get("type") == "life.manager.stage_decision"
+        and event.get("action") == "advance"
+        and event.get("trigger") == "reviewed_stage_empty_plan_reconciliation"
+        and event.get("recovered_item_id") == item.id
+        for event in sink.events
+    )
+
+
+def test_newer_replan_review_blocks_older_stage_replay(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    backend = _EmptyThenTaskPlannerRunner()
+    supervisor, backend, _sink = _make_supervisor(
+        tmp_path,
+        monkeypatch,
+        terminal_stage_done=False,
+        backend=backend,
+        split_memory=True,
+    )
+    project = Path(supervisor.config.project_worktree)
+    _write_reviewed_math_scope_state(project)
+    older = supervisor.memory.backlog.add(
+        BacklogItem.new(
+            title="Define the mathematical scope",
+            objective="State the admissible conjecture class and completion bar.",
+            tags=["planner", "scope:bounded", "stage:scope"],
+        )
+    )
+    older_mission = create_mission_context(
+        life_dir=supervisor.memory.project_root,
+        mission_id=older.id,
+        stage="scope",
+        objective=older.objective,
+        scope="bounded",
+    )
+    record_reviewed_handoff(
+        mission_context_path=older_mission,
+        round_index=1,
+        engineer_summary="",
+        review=SimpleNamespace(
+            status="done",
+            reason="The previous scope evidence passed.",
+            next_action="",
+            operator_question="",
+        ),
+        checkpoint_path=None,
+    )
+    supervisor.memory.backlog.mark_done(
+        older.id,
+        outcome={
+            "execution_status": "completed",
+            "review_status": "done",
+            "stage_certification": "deferred",
+            "interruption_kind": "none",
+            "resumable": False,
+        },
+    )
+    newer = supervisor.memory.backlog.add(
+        BacklogItem.new(
+            title="Challenge the mathematical scope",
+            objective="Test whether the accepted scope evidence remains valid.",
+            tags=["planner", "scope:bounded", "stage:scope"],
+        )
+    )
+    newer_mission = create_mission_context(
+        life_dir=supervisor.memory.project_root,
+        mission_id=newer.id,
+        stage="scope",
+        objective=newer.objective,
+        scope="bounded",
+    )
+    record_reviewed_handoff(
+        mission_context_path=newer_mission,
+        round_index=1,
+        engineer_summary="",
+        review=SimpleNamespace(
+            status="continue",
+            reason="The newer evidence invalidates the previous scope decision.",
+            next_action="Repair the scope evidence.",
+            operator_question="",
+        ),
+        checkpoint_path=None,
+    )
+    supervisor.memory.backlog.update(
+        newer.id,
+        status="failed",
+        finished_ts=time.time() + 1,
+        outcome={
+            "execution_status": "ended",
+            "review_status": "continue",
+            "stage_certification": "deferred",
+            "interruption_kind": "none",
+            "resumable": False,
+        },
+    )
+
+    assert supervisor._plan_next_work() is True
+
+    assert backend.planner_calls == 2
+    assert backend.manager_calls == 0
+    state = json.loads((project / ".argus" / "PIPELINE_STATE.json").read_text(encoding="utf-8"))
+    assert state["current_stage"] == "scope"
+
+
+def test_bounded_continuous_campaign_replays_deferred_stage_review(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A bounded staged campaign still traverses stages.
+
+    ``open_ended`` decides whether a Planner ``project_done`` is honoured, not
+    whether stages may advance; gating the replay on it meant no vertical whose
+    completion gate is not ``certified`` could ever leave its first stage. The
+    item carries ``stage_certification="deferred"`` — a Planner node that held
+    the stage rather than closing it — which is precisely the reviewed evidence
+    this replay exists to recover.
+    """
+    supervisor, backend, sink = _make_supervisor(
+        tmp_path,
+        monkeypatch,
+        terminal_stage_done=False,
+        split_memory=True,
+    )
+    supervisor.config.open_ended = False
+    backend.manager_action = "advance"
+    backend.manager_target_stage = "solve"
+    project = Path(supervisor.config.project_worktree)
+    _write_reviewed_math_scope_state(project)
+    item = supervisor.memory.backlog.add(
+        BacklogItem.new(
+            title="Define the mathematical scope",
+            objective="State the admissible conjecture class and completion bar.",
+            tags=["planner", "scope:bounded", "bounded_dag_node"],
+        )
+    )
+    mission_path = create_mission_context(
+        life_dir=supervisor.memory.project_root,
+        mission_id=item.id,
+        stage="scope",
+        objective=item.objective,
+        scope="bounded",
+    )
+    record_reviewed_handoff(
+        mission_context_path=mission_path,
+        round_index=1,
+        engineer_summary="",
+        review=SimpleNamespace(
+            status="done",
+            reason="The scope checklist is satisfied by the current artifacts.",
+            next_action="",
+            operator_question="",
+        ),
+        checkpoint_path=None,
+    )
+    supervisor.memory.backlog.mark_done(
+        item.id,
+        outcome={
+            "execution_status": "completed",
+            "review_status": "done",
+            "stage_certification": "deferred",
+            "interruption_kind": "none",
+            "resumable": False,
+        },
+    )
+
+    assert supervisor._plan_next_work() == PLAN_RETRY
+
+    state = json.loads((project / ".argus" / "PIPELINE_STATE.json").read_text(encoding="utf-8"))
+    assert state["current_stage"] == "solve"
+    stored = next(row for row in supervisor.memory.backlog.all() if row.id == item.id)
+    assert stored.outcome["stage_certification"] == "certified"
     assert any(
         event.get("type") == "life.manager.stage_decision"
         and event.get("action") == "advance"
@@ -558,7 +823,7 @@ def test_review_only_item_is_never_replayed_into_stage_writer(
 
     assert supervisor._latest_unassessed_review_for_current_stage() is None
     state = json.loads(
-        (project / "research" / "PIPELINE_STATE.json").read_text(encoding="utf-8")
+        (project / ".argus" / "PIPELINE_STATE.json").read_text(encoding="utf-8")
     )
     assert state["current_stage"] == "scope"
 

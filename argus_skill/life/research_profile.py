@@ -16,8 +16,6 @@ from ..tools.capability_vault import (
 
 _PROFILE_ENV = "ARGUS_SKILL_RESEARCH_PROFILE"
 _PROFILE_PATH_ENV = "ARGUS_SKILL_RESEARCH_PROFILE_PATH"
-_EMNLP2026_PROFILE = "emnlp2026-tierharness"
-_AAAI2026_PROFILE = "aaai2026-tierharness"
 _NANOCHAT_PROFILE = "nanochat-autoresearch"
 _DEFAULT_TEXT_MODELS = "gpt-5.5,gpt-5.5"
 _DEFAULT_IMAGE_MODEL = "gpt-image-2"
@@ -207,149 +205,10 @@ def _capability_context(env: Mapping[str, str]) -> str:
         "or Torch checkpoints into project directories. Reuse the shared host "
         "cache paths above for every project and experiment subprocess.\n"
         "- Manuscript boundary: capability-vault paths, cache paths, local device "
-        "IDs, daemon configuration, and Argus/Codex route names are agent-only "
+        "IDs, daemon configuration, and internal route names are agent-only "
         "runtime facts. Keep them out of rendered paper prose, captions, tables, "
         "and appendix text; use paper-facing evaluated system facts instead.\n"
     )
-
-
-def _default_emnlp2026_profile() -> str:
-    return """## Research profile: EMNLP 2026 TierHarness project
-
-Long-horizon goal:
-- Produce an EMNLP 2026 paper and supporting artifacts for TierHarness, the
-  agent system currently implemented in this repository as argus-skill.
-- Treat the desired paper claims as hypotheses until backed by reproducible
-  evidence. Do not write or summarize any benchmark number as fact unless a raw
-  artifact path proves it.
-
-Paper hypotheses to test:
-1. There is a hierarchy SLM -> LLM -> HUMAN where each tier is more capable but
-   more expensive in money, latency, and human attention.
-2. TierHarness uses this hierarchy through budgeted escalation: cheap model
-   work first, LLM/reviewer repair only after objective verifier failure, and
-   human attention only after autonomous repair is exhausted.
-3. Current agent benchmarks under-report human interaction. The project must
-   define and measure zero-touch success, human turns after assignment, active
-   attention minutes, manual commands, intervention severity, and rescue rate.
-4. Multi-agent structure is necessary where single-agent loops self-satisfy,
-   ignore verifier evidence, or fail to repair hard tasks.
-5. The planner can propose trivial objectives; prevent that by requiring every
-   planned task to create or improve a concrete artifact under benchmarks/,
-   experiments/, paper/, figures/, docs/, or tests/, with measurable acceptance.
-
-Evidence and anti-fabrication rules:
-- Every experimental claim must cite a local artifact path containing raw
-  reward, model id, token counters, prompt/config hash, command, commit or
-  working-tree manifest, started/ended timestamps, and logs.
-- New research-paper missions must target frontier-domain gaps grounded in
-  current literature and official benchmark evidence. Do not accept a
-  synthetic proxy benchmark, local generated task set, hand-written oracle, or
-  tiny custom scorer as the main proposed paper system when real benchmarks and
-  GPU-scale training/adaptation are available.
-- Paper-facing benchmark results must come from existing real benchmarks or
-  official task/data releases with documented ground truth/evaluation. Synthetic
-  or local tasks are smoke-only unless the operator explicitly changes the
-  deliverable away from a submission-quality empirical paper.
-- If evidence is missing, create a task to collect it; never fill gaps with
-  estimates or optimistic prose.
-- Final EMNLP completion is a separate `final_submission` scope. The project is
-  not done until the L2 reviewer certifies the full pipeline checklist (research
-  → submission) as `done` — every checklist item satisfied with concrete
-  evidence — and that certified verdict is present in journal evidence.
-- Passing a single stage's checklist, a pilot run, or an existing
-  PDF is not enough for project_done. If the full checklist is not certified,
-  queue bounded blocker tasks for the reported experiment, baseline, ablation,
-  paper-contract, assurance, manifest, or submission-state gaps.
-- For positive EMNLP paper objectives, final readiness requires a structured
-  `paper/PAPER_QUALITY_CALIBRATION.json.paper_contribution` claim in the
-  research.md form: "We propose X. We show X improves Y by Z because W." The
-  proposed artifact/protocol must beat the strongest nontrivial baseline on the
-  declared primary metric and on any held-out/public-validation split, with a
-  local statistical-support artifact. Do not let Reflexion or another baseline
-  winning over a trivial direct/no-skill baseline stand in for the proposed
-  contribution winning.
-- If experiments reject the method-positive thesis, do not relabel the package
-  as a negative-result paper and declare success. Queue bounded repair or pivot
-  tasks for the method, benchmark, metric, or objective unless the operator has
-  explicitly requested a negative-result paper.
-- Use `scope: bounded` for intermediate missions even when they mention EMNLP;
-  reserve `scope: final_submission` for the single project-final readiness proof.
-
-Autonomy and background-experiment rules:
-- Long experiments must be launched as background jobs with a unique run_id.
-  Write experiments/<run_id>/manifest.json, pid, stdout.log, stderr.log, and a
-  status file before returning from the mission.
-- Any experiment with more than 5 model/API calls or expected runtime above
-  roughly 60 seconds must implement the Live Experiment Protocol:
-  progress.jsonl, status.json, per-trial stdout progress, flush/fsync after each
-  trial, STOP-file cancellation, and early-stop invariant checks.
-- Do not block a mission waiting for a long experiment if independent paper,
-  analysis, plotting, or user-study work is available. Record how to resume.
-- Later missions should inspect experiments/*/pid and status files, collect
-  completed results, then summarize them into reproducible tables.
-- While an experiment is running, keep accepting operator guidance and continue
-  independent work. If the user says the design is wrong, cancel via STOP/PID
-  rather than letting the run spend the full budget.
-- If API credentials are already present in the process environment, use them;
-  do not ask the human to paste model keys. If credentials are missing, record a
-  blocked status with the exact env var needed.
-
-Self-architecture rules:
-- The agent may modify its own harness, daemon, reviewer, critic, planner,
-  benchmark, or tool architecture when the current architecture measurably
-  prevents progress on experiments, evidence collection, paper writing, figure
-  generation, or user-study design.
-- Self-architecture changes must be driven by observed bottlenecks (e.g. task
-  execution keeps stalling, reviewer/critic accepts the wrong evidence, long
-  experiments block unrelated work, missing tools prevent paper artifacts).
-  Cosmetic refactors, renames, or generic cleanup are invalid.
-- Every self-architecture mission must include acceptance criteria and run
-  targeted tests or a smoke scenario proving the blocked class of tasks now
-  works. Daemon/runtime code changes only take effect once the operator
-  restarts the daemon at a clean mission boundary — the running process keeps
-  the previously-imported architecture until then. Land the change with passing
-  tests and record that a restart is required; do not assume an automatic
-  handoff will swap in the new code mid-flight.
-
-Planning discipline:
-- Prefer high-impact tasks in this order: fix reward/cost measurement bugs,
-  launch reproducible benchmark runs, analyze failures, design user-study
-  metrics/protocol, generate figures/tables, draft paper sections.
-- A valid planner objective must include acceptance criteria and a command or
-  artifact path that proves completion.
-- Avoid vanity work: renames, comment polish, and generic "improve docs" tasks
-  are invalid unless they directly support the paper or experiment protocol.
-"""
-
-
-_AAAI2026_FORMAT_ADDENDUM = """
-
-AAAI 2026 format rules (override the venue defaults above):
-- Use the official AAAI Press style (aaai2026.sty + aaai2026.bst), two-column,
-  with `\\documentclass[letterpaper]{article}` + `\\usepackage[submission]{aaai2026}`
-  (camera-ready uses `\\usepackage{aaai2026}`), the mandatory `\\pdfinfo` block,
-  and Times font. Do NOT use acl.sty / acl-style-files.
-- Body is 7 pages of technical content; References and the Reproducibility
-  Checklist go on additional, uncounted pages (Conclusion by page 7, References
-  on page 8 or later, no cap after the body).
-- AAAI has no mandatory Limitations or Ethics sections; a Reproducibility
-  Checklist IS required, placed after the References.
-- Never emit `\\bibliographystyle` — aaai2026.sty sets it and a manual command
-  errors. Do not load hyperref or navigator, and never use `\\nocopyright`.
-- The anonymous author block renders as "Anonymous submission" via the
-  `[submission]` option; AAAI has no official abstract word limit.
-"""
-
-
-def _default_aaai2026_profile() -> str:
-    base = (
-        _default_emnlp2026_profile()
-        .replace("EMNLP 2026 TierHarness project", "AAAI 2026 TierHarness project")
-        .replace("Produce an EMNLP 2026 paper", "Produce an AAAI 2026 paper")
-        .replace("even when they mention EMNLP", "even when they mention AAAI")
-    )
-    return base + _AAAI2026_FORMAT_ADDENDUM
 
 
 def _default_nanochat_profile() -> str:
@@ -370,17 +229,16 @@ Research target and metric:
   a FIXED wall-clock budget. The whole game is squeezing the best held-out
   language-modeling quality out of a tightly bounded training run, not building
   the largest possible model.
-- The primary metric is the MEAN val bpb across N random seeds. Recursive used
-  N=10; while iterating, use N=3-5 for fast signal and re-run a larger N for any
-  number that goes into a final comparison. A recipe that only wins on one lucky
-  seed has not won.
+- Use the seed count and aggregation rule declared by the frozen scorer. A
+  cheaper exploratory screen is provisional and cannot replace the official
+  protocol; a recipe that only wins on one lucky seed has not won.
 
 Fixed scaffold and harness (do not modify):
-- The contest runs on a GPU node under
-  /scratch/recursive/nanochat_autoresearch. A shared harness `lib.py` provides
-  the tokenizer, the dataloader, and `evaluate_bpb`, which scores held-out
-  text on shard_06542 with TIME_BUDGET=300s. Every candidate under
-  solutions/<name>.py imports this shared library.
+- The operator-provided benchmark workspace contains a shared `lib.py` with the
+  tokenizer, dataloader, `evaluate_bpb`, held-out shard, and time budget. Read
+  the workspace path and launch command from the current mission manifest or
+  environment; never assume a host, mount point, SSH alias, GPU SKU, or Python
+  interpreter from this profile.
 - The agent's deliverable is exactly ONE self-contained training script,
   solution.py, that imports the shared lib.py. The agent may change only the
   training recipe inside solution.py: model architecture, optimizer, schedule,
@@ -393,46 +251,45 @@ Fixed scaffold and harness (do not modify):
   shared code.
 
 Budget and runtime contract:
-- 300 seconds of wall-clock per run on ONE A100. Every recipe must fit useful
-  tokenizer setup, model construction, and as much effective training as
-  possible inside that window, then stop cleanly and evaluate. Spending the
-  budget on a model too large to converge, or leaving the budget unused, are both
-  failures.
-- The SEED environment variable selects the seed for a run. The script must print
-  its result on a line containing "val_bpb:" so the harness and verifier can
-  parse it. Evaluation is the MEAN of these val bpb values across the N seeds.
+- Read the time limit, device constraint, and setup/evaluation accounting from
+  the current frozen harness. This profile does not define hardware inventory
+  or a portable time budget. Every recipe must stop cleanly and evaluate inside
+  the observed protocol; a model too large to converge or unused budget both
+  require measured diagnosis.
+- Read seed injection and result formatting from the active runner rather than
+  assuming an environment variable or output line. The official scorer owns the
+  aggregation across seeds.
 
 Hardware and execution rules:
-- GPU access is via `ssh ds "<cmd>"`; the node is an 8xA100-40GB host named
-  dashing-stork. The Python interpreter on the node is
-  /opt/conda/envs/ptca/bin/python and the data is already wired at /data. Do not
-  re-download weights or datasets; reuse the on-node data path.
-- A100 is Ampere, not Hopper, so flash-attn-3 cannot run there. Either write
-  solution.py against torch SDPA attention directly, or launch it through
-  /scratch/run_with_shim.py <solution.py>, which transparently swaps an
-  FA3 call for torch SDPA. Assume FA3 is unavailable and design attention
-  accordingly.
+- Probe the actual device and software stack before choosing kernels. A profile
+  name or historical result is not evidence that a particular GPU is available.
+- Proceed only when the active benchmark runner verifies the hardware and time
+  constraints declared by its frozen protocol. A different device or budget is
+  a different benchmark, not a substitute result.
+- Use only the operator-provided remote command, interpreter, data mount, and
+  compatibility shim. If the detected GPU cannot run a candidate attention
+  implementation, use a supported path such as torch SDPA or record an
+  infrastructure blocker; do not invent benchmark results.
 
 Baseline to beat:
-- The baseline is Recursive's released solutions, re-measured ON OUR harness and
-  hardware rather than trusting their published figures. Their best released
-  recipe is optimized_from_karpathy.py, published at 0.9109 val bpb on a B200;
-  we re-measure it on our A100 harness and the number that matters is that
-  re-measured mean val bpb.
-- Success means the argus-skill solution.py achieves a lower mean val bpb than
-  the re-measured optimized_from_karpathy.py baseline under the identical
-  protocol (same N seeds, same 300s budget, same held-out validation). Beating
-  the published B200 number while losing to the re-measured A100 baseline does
-  not count.
+- The baseline is the reference artifact named by the current benchmark,
+  re-measured on the active frozen harness rather than trusting published
+  figures. The number that matters is its re-measured val bpb under the same
+  active protocol as the candidate.
+- Success means the candidate achieves a lower official val bpb than that
+  re-measured active baseline under the identical
+  protocol (same seeds, budget, device constraints, and held-out validation).
+  Beating a published number from different hardware while losing to the re-measured
+  local baseline does not count.
 
 Anti-cheat and reward rules:
 - The ONLY reward that counts is the val bpb produced by the VERIFIER re-running
-  the agent's solution.py under the identical protocol: N seeds, 300s budget,
-  the held-out validation shard. The agent's self-reported "val_bpb:" line is
+  the agent's solution.py under the identical frozen protocol: seeds, budget,
+  hardware constraints, and held-out validation shard. The agent's self-reported "val_bpb:" line is
   never the reward; it is only a hint to be confirmed.
 - Any gap between a self-reported number and the verifier's number is resolved in
   favor of the verifier. Do not tune against the held-out validation set, do not
-  special-case shard_06542, and do not leak validation bytes into training.
+  special-case the held-out shard, and do not leak validation bytes into training.
   Recipes that inspect, memorize, or otherwise contaminate the val set are
   disqualified even if they print a low number.
 - Treat the held-out split as untouchable: select hyperparameters using only
@@ -452,7 +309,7 @@ Evidence and anti-fabrication rules:
   relabel a loss as a win or fill gaps with optimistic prose.
 
 Autonomy and background-experiment rules:
-- Training runs are short (300s each) but the search over recipes and seeds is
+- Individual runs are bounded, but the search over recipes and seeds is
   long. Launch sweeps as background jobs with a unique run_id and write
   experiments/<run_id>/manifest.json, pid, stdout.log, stderr.log, and a status
   file before returning from the mission.
@@ -480,8 +337,6 @@ Planning discipline:
 # Registry mapping a profile name to its built-in prose builder. Unknown names
 # fall back to the generic "use ARGUS_SKILL_RESEARCH_PROFILE_PATH" message.
 _PROFILE_REGISTRY = {
-    _EMNLP2026_PROFILE: _default_emnlp2026_profile,
-    _AAAI2026_PROFILE: _default_aaai2026_profile,
     _NANOCHAT_PROFILE: _default_nanochat_profile,
 }
 

@@ -32,6 +32,7 @@ from ..core.session import (
 from ..daemon.life_worker import (
     LifeWorkerConfig,
     _acquire_daemon_spawn_lock,
+    _launcher_failure_message,
     _release_daemon_spawn_lock,
     _workspace_start_error,
 )
@@ -117,6 +118,33 @@ def _worker_config_from_env(life_dir: Path, global_root: Path) -> LifeWorkerConf
 
 
 _UNFINISHED_BACKLOG_STATUSES = {"pending", "running", "in_progress", "claimed"}
+_TRANSIENT_WINDOWS_SPAWN_MARKERS = (
+    "winerror 32",
+    "winerror 33",
+    "sharing violation",
+    "lock violation",
+    "resource temporarily unavailable",
+)
+
+
+def _running_on_windows() -> bool:
+    """Return the host platform without requiring tests to mutate global ``os``."""
+    return os.name == "nt"
+
+
+def _retryable_windows_spawn_failure(rc: int, diagnostic: str) -> bool:
+    """Retry only an unexpected, explicitly transient Windows bootstrap error.
+
+    Exit codes 2 and 3 are deliberate admission/workspace failures.  An rc=1
+    can also be deterministic (bad auth, a missing module, or invalid startup
+    code), so blindly replaying every rc=1 would repeat login prompts and other
+    side effects.  The bounded retry is reserved for the Win32 sharing/locking
+    failures that can clear between two CreateProcess attempts.
+    """
+    if not _running_on_windows() or rc != 1:
+        return False
+    lowered = diagnostic.casefold()
+    return any(marker in lowered for marker in _TRANSIENT_WINDOWS_SPAWN_MARKERS)
 
 
 def list_running_daemons(
@@ -251,6 +279,7 @@ def start_project_daemon(
         if continuous.enabled:
             config.continuous_objective = continuous.objective
             config.resume_continuous = True
+            config.continuous_open_ended = continuous.open_ended
     daemon_limit = _srv()._max_active_daemons(config)
     active_count = _srv()._active_daemon_count(config)
     if daemon_limit > 0 and active_count >= daemon_limit:
@@ -286,9 +315,39 @@ def start_project_daemon(
             ),
             "daemon": _daemon_dict(_srv().read_daemon_status(life_dir)),
         }
+    startup_diagnostic = ""
+    startup_recovery_diagnostic = ""
     try:
         rc = _srv().spawn_detached_daemon(config, quiet=True)
+        startup_diagnostic = str(
+            getattr(config, "last_spawn_error", "") or ""
+        ).strip()
+        if _retryable_windows_spawn_failure(rc, startup_diagnostic):
+            # The first launcher can finish just as its runtime publishes
+            # status. Never create a second worker if that happened; otherwise
+            # retry one known-transient Win32 sharing/lock failure exactly once.
+            after_first = _srv().read_daemon_status(life_dir)
+            if after_first.alive:
+                startup_recovery_diagnostic = startup_diagnostic
+                startup_diagnostic = ""
+                rc = 0
+            else:
+                log.warning(
+                    "retrying one transient Windows executor startup for session %s: %s",
+                    sid,
+                    startup_diagnostic,
+                )
+                rc = _srv().spawn_detached_daemon(config, quiet=True)
+                second_diagnostic = str(
+                    getattr(config, "last_spawn_error", "") or ""
+                ).strip()
+                if rc == 0:
+                    startup_recovery_diagnostic = startup_diagnostic
+                    startup_diagnostic = ""
+                else:
+                    startup_diagnostic = second_diagnostic or startup_diagnostic
     except Exception as exc:  # noqa: BLE001 — return an actionable API result
+        log.exception("background executor raised during startup for session %s", sid)
         return {
             "rc": 2,
             "already_alive": False,
@@ -300,9 +359,30 @@ def start_project_daemon(
         "already_alive": False,
         "daemon": _daemon_dict(_srv().read_daemon_status(life_dir)),
     }
+    if startup_diagnostic:
+        result["startup_diagnostic"] = startup_diagnostic
+    if startup_recovery_diagnostic:
+        result["startup_retried"] = True
     if rc == 3:
-        result["error"] = _workspace_start_error(config) or (
+        # ``startup_diagnostic`` first, because rc=3 is an admission refusal and
+        # the refusal itself names what is holding the directory — the owning
+        # pid, its session and project, and the three ways out. The generic
+        # strings below say only that *something* owns it, which is the half of
+        # the answer the operator cannot act on. ``_launcher_failure_message``
+        # keeps a framework-formatted refusal whole rather than collapsing it to
+        # its last line, which for the lease message left "- or start this
+        # objective in a different directory" and nothing else.
+        result["error"] = (
+            _launcher_failure_message(startup_diagnostic, rc)
+            if startup_diagnostic
+            else ""
+        ) or _workspace_start_error(config) or (
             "workdir changed or is already owned by another active session"
+        )
+        log.error(
+            "background executor rejected session %s: %s",
+            sid,
+            startup_diagnostic or result["error"],
         )
         return result
     if rc != 0:
@@ -319,6 +399,14 @@ def start_project_daemon(
                 "daemon": _daemon_dict(_srv().read_daemon_status(life_dir)),
             }
         result["error"] = f"background executor failed to start (rc={rc})"
+        if startup_diagnostic:
+            result["error"] += f": {startup_diagnostic}"
+        log.error(
+            "background executor failed to start for session %s (rc=%s): %s",
+            sid,
+            rc,
+            startup_diagnostic or "no launcher diagnostic was captured",
+        )
     else:
         _clear_daemon_admission(life_dir)
     return result
@@ -502,7 +590,7 @@ def create_daemon(
     start_result: dict[str, Any] | None = None
     obj = requested_objective
     if obj:
-        from .manager_bridge import manager_continuous_handoff
+        from .manager_dispatch import manager_continuous_handoff
 
         obj = manager_continuous_handoff(
             sid,

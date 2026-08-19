@@ -23,6 +23,12 @@ _INLINE_IMAGE_MIMES = {"image/gif", "image/jpeg", "image/png", "image/webp"}
 _GIT_DIFF_LIMIT = 128 * 1024
 
 
+def _effective_workspace(state_dir: Path, workspace: Path) -> Path:
+    from ..core.campaign_workdir import active_campaign_workdir
+
+    return active_campaign_workdir(state_dir, workspace) or workspace
+
+
 def project_workspace(
     sid: str,
     *,
@@ -34,7 +40,10 @@ def project_workspace(
     if state_dir is None:
         return None
     try:
-        workspace = resolve_session_workdir(meta, state_dir=state_dir)
+        workspace = _effective_workspace(
+            state_dir,
+            resolve_session_workdir(meta, state_dir=state_dir),
+        )
     except (OSError, RuntimeError):
         return None
     return workspace if workspace.is_dir() else None
@@ -45,17 +54,17 @@ def artifact_workspace(
     *,
     global_root: Path | str | None = None,
 ) -> Path | None:
-    """Return the workspace where this session's agent writes artifacts.
-
-    Artifact reads use the exact same persisted workdir as all agent roles.
-    """
+    """Return the repository where this campaign's agent writes artifacts."""
     root = resolve_global_root(global_root)
     meta = read_session_meta(root, sid)
     state_dir = project_life_dir(sid, global_root=root)
     if state_dir is None:
         return None
     try:
-        workspace = resolve_session_workdir(meta, state_dir=state_dir)
+        workspace = _effective_workspace(
+            state_dir,
+            resolve_session_workdir(meta, state_dir=state_dir),
+        )
     except (OSError, RuntimeError):
         return None
     return workspace if workspace.is_dir() else None
@@ -143,6 +152,46 @@ def manager_live_view_files(
         }
         for path in view.paths
     ]
+
+
+def registered_delivery_artifacts(
+    sid: str,
+    *,
+    global_root: Path | str | None = None,
+) -> list[dict[str, str]]:
+    """Expose only the successful mission's receipt-selected outputs.
+
+    ``delivery`` was derived from existing safe workspace files at settlement,
+    but this read path still feeds every item through ``artifact_metadata`` so
+    a later delete/rename never becomes a stale or unsafe download link.
+    """
+    life_dir = project_life_dir(sid, global_root=global_root)
+    if life_dir is None:
+        return []
+    view = load_mission_view(life_dir)
+    delivery = view.get("delivery")
+    if not isinstance(delivery, dict):
+        return []
+    title = str(delivery.get("title") or "Delivered results").strip()
+    rows = delivery.get("targets")
+    if not isinstance(rows, list):
+        return []
+    results: list[dict[str, str]] = []
+    for target in rows:
+        if not isinstance(target, dict):
+            continue
+        path = str(target.get("path") or "").strip()
+        if not path:
+            continue
+        label = str(target.get("label") or "").strip()
+        why = str(target.get("why") or label or "Reviewed delivery output.").strip()
+        results.append({
+            "path": path,
+            "why": why,
+            "source": "delivery",
+            "group_title": title or "Delivered results",
+        })
+    return results
 
 
 def registered_research_artifacts(
@@ -234,6 +283,7 @@ def list_project_artifacts(
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     evidence_rows = [
+        *registered_delivery_artifacts(sid, global_root=global_root),
         *manager_live_view_files(sid, workspace, global_root=global_root),
         *registered_research_artifacts(sid, global_root=global_root),
     ]
@@ -370,6 +420,7 @@ __all__ = [
     "manager_live_view_files",
     "project_workspace",
     "project_git_diff",
+    "registered_delivery_artifacts",
     "registered_research_artifacts",
     "resolved_project_artifact",
     "safe_artifact_path",

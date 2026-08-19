@@ -1,7 +1,6 @@
 """An operator instruction is not spent by whichever consumer reads it first.
 
-Observed end to end on 2026-07-26
-(/tmp/argus-night/home/projects/f9a27b1c16a7/events.jsonl). A mission blocked
+Observed end to end on 2026-07-26 in a captured project event log. A mission blocked
 asking for a CUDA-visible GPU. The operator answered:
 
     "There is no NVIDIA GPU on this machine and none can be provisioned. Do not

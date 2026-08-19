@@ -23,6 +23,7 @@ def test_role_receives_path_without_matcher_call_or_content(tmp_path: Path) -> N
 
     assert str(root.resolve()) in result.block
     assert "PRIVATE BODY" not in result.block
+    assert "Your first action, before any repository tool" in result.block
     assert backend.history == []
 
 
@@ -39,8 +40,88 @@ def test_layered_roots_are_exposed_in_order(tmp_path: Path) -> None:
 
 def test_each_role_searches_same_library_independently(tmp_path: Path) -> None:
     store = SkillStore(tmp_path / "skills")
+    (store.skills_dir / "engineer").mkdir()
+    (store.skills_dir / "reviewer").mkdir()
     engineer = EngineerMission(store).libraries()
     reviewer = ReviewerMission(store).libraries()
     assert engineer.block != ""
     assert reviewer.block != ""
     assert engineer.library_roots == reviewer.library_roots
+    assert "OWN: engineer, root" in engineer.block
+    assert "REFERENCE only: reviewer, self" in engineer.block
+    assert "OWN: reviewer" in reviewer.block
+    assert "REFERENCE only: engineer, self" in reviewer.block
+    assert engineer.native_paths == [
+        store.skills_dir.resolve() / "engineer",
+        store.skills_dir.resolve() / "reviewer",
+    ]
+    assert reviewer.native_paths == [
+        store.skills_dir.resolve() / "reviewer",
+        store.skills_dir.resolve() / "engineer",
+    ]
+
+
+def test_self_and_team_role_libraries_are_cross_visible(tmp_path: Path) -> None:
+    store = SkillStore(tmp_path / "skills")
+    for role in ("self", "manager", "planner", "engineer", "reviewer"):
+        (store.skills_dir / role).mkdir()
+
+    self_path = store.skills_dir.resolve() / "self"
+    for role in ("manager", "planner", "engineer", "reviewer"):
+        libraries = role_skill_libraries(store, role=role)
+        assert self_path in libraries.reference_paths
+        assert self_path in libraries.native_paths
+
+    self_libraries = role_skill_libraries(store, role="self")
+    assert store.skills_dir.resolve() / "manager" in self_libraries.own_paths
+    assert store.skills_dir.resolve() / "engineer" in self_libraries.own_paths
+    assert store.skills_dir.resolve() / "planner" in self_libraries.reference_paths
+    assert store.skills_dir.resolve() / "reviewer" in self_libraries.reference_paths
+
+
+def test_general_native_root_requires_a_direct_skill(tmp_path: Path) -> None:
+    store = SkillStore(tmp_path / "skills")
+    assert role_skill_libraries(store, role="engineer").native_paths == []
+
+    (store.skills_dir / "general-guidance.md").write_text("guidance", encoding="utf-8")
+
+    assert role_skill_libraries(store, role="engineer").native_paths == [
+        store.skills_dir.resolve()
+    ]
+
+
+def test_role_library_event_exposes_precedence_without_skill_content(
+    tmp_path: Path,
+) -> None:
+    store = SkillStore(tmp_path / "skills")
+    (store.skills_dir / "planner").mkdir()
+    events: list[dict] = []
+
+    result = role_skill_libraries(store, role="planner", on_event=events.append)
+
+    assert result.own_paths == [store.skills_dir.resolve() / "planner"]
+    assert events[0]["precedence"] == "project,vertical,global"
+    assert events[0]["discovery"] == "native-or-path-fallback"
+    assert "Skill body" not in str(events[0])
+
+
+def test_required_skill_path_is_resolved_and_emitted_without_body(
+    tmp_path: Path,
+) -> None:
+    store = SkillStore(tmp_path / "skills")
+    required = store.skills_dir / "engineer" / "idea-discovery.md"
+    required.parent.mkdir()
+    required.write_text("PRIVATE REQUIRED BODY", encoding="utf-8")
+    events: list[dict] = []
+
+    result = role_skill_libraries(
+        store,
+        role="engineer",
+        on_event=events.append,
+        required_relative_paths=("engineer/idea-discovery.md",),
+    )
+
+    assert result.required_paths == [required.resolve()]
+    assert events[0]["required_paths"] == [str(required.resolve())]
+    assert str(required.resolve()) in result.block
+    assert "PRIVATE REQUIRED BODY" not in result.block

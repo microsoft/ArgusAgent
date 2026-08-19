@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from threading import Barrier
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -52,6 +55,7 @@ class _Outcome:
     had_follow_up: bool = False
     final_message: str = "done"
     operator_question: str = ""
+    operator_options: list[dict[str, Any]] = field(default_factory=list)
     research_result: dict[str, Any] | None = None
 
 
@@ -114,6 +118,117 @@ class _MaintenanceRunner:
         return outcome
 
 
+class _ParallelRunner:
+    def __init__(self, barrier: Barrier) -> None:
+        self.barrier = barrier
+        self.kwargs: dict[str, Any] = {}
+
+    def execute(self, **kwargs) -> _Outcome:
+        self.kwargs = kwargs
+        self.barrier.wait(timeout=5)
+        return _Outcome()
+
+
+def test_primary_and_auxiliary_supervisors_run_disjoint_tasks_together(
+    tmp_path,
+) -> None:
+    memory = LifeMemory.open(tmp_path / "life")
+    memory.init()
+    for name in ("a", "b"):
+        memory.backlog.add(BacklogItem.new(
+            title=name,
+            objective=f"write {name}",
+            tags=["scope:bounded"],
+            manager_decision={
+                "routed": True,
+                "vertical": "software",
+                "workflow_mode": "direct",
+            },
+            parallel_safe=True,
+            owns_paths=[f"outputs/{name}.txt"],
+        ))
+    barrier = Barrier(2)
+    primary_runner = _ParallelRunner(barrier)
+    helper_runner = _ParallelRunner(barrier)
+    primary = LifeSupervisor(
+        memory=memory,
+        runner=primary_runner,
+        sink=_RecordingSink(memory.root),
+        config=LifeSupervisorConfig(
+            project_worktree=tmp_path,
+            worker_id="primary",
+            coordinate_parallel_claims=True,
+        ),
+    )
+    helper = LifeSupervisor(
+        memory=memory,
+        runner=helper_runner,
+        sink=_RecordingSink(memory.root),
+        config=LifeSupervisorConfig(
+            project_worktree=tmp_path,
+            parallel_worker=True,
+            holds_stage_authority=False,
+            worker_id="parallel-1",
+        ),
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        primary_future = executor.submit(primary.tick)
+        deadline = time.time() + 2
+        while (
+            not any(item.status == "running" for item in memory.backlog.all())
+            and time.time() < deadline
+        ):
+            time.sleep(0.01)
+        futures = [primary_future, executor.submit(helper.tick)]
+        results = [future.result() for future in futures]
+
+    assert all(result and result["status"] == "done" for result in results)
+    assert primary_runner.kwargs["holds_stage_authority"] is True
+    assert helper_runner.kwargs["holds_stage_authority"] is False
+
+
+def test_crash_after_mission_claim_requeues_audit_and_reemits_started(
+    tmp_path,
+) -> None:
+    memory = LifeMemory.open(tmp_path / "life")
+    item = memory.backlog.add(BacklogItem.new(
+        title="recover claimed mission",
+        objective="finish after restart",
+        tags=["scope:bounded"],
+        manager_decision={
+            "routed": True,
+            "vertical": "software",
+            "workflow_mode": "direct",
+        },
+    ))
+    claimed = memory.backlog.claim_next()
+    assert claimed is not None and claimed.id == item.id
+    assert claimed.status == "running"
+
+    sink = _RecordingSink(memory.root)
+    restarted = LifeSupervisor(
+        memory=memory,
+        runner=_MaintenanceRunner(),
+        sink=sink,
+        config=LifeSupervisorConfig(
+            project_worktree=tmp_path,
+            artifact_root=tmp_path,
+        ),
+    )
+
+    assert sink.events[0]["type"] == "life.mission.requeued"
+    assert sink.events[0]["item_id"] == item.id
+    restarted._vertical_resolved = True
+    restarted.tick()
+    started = [
+        event for event in sink.events
+        if event["type"] == EventType.LIFE_MISSION_STARTED
+    ]
+    assert len(started) == 1
+    assert started[0]["item_id"] == item.id
+
+
 def test_framework_maintenance_uses_private_worktree_and_review(
     tmp_path,
 ) -> None:
@@ -138,6 +253,11 @@ def test_framework_maintenance_uses_private_worktree_and_review(
         objective="fix observed defect",
         tags=["framework_maintenance", "review:required", "scope:bounded"],
         execution_workdir=str(private),
+        manager_decision={
+            "routed": True,
+            "vertical": "argus_maintenance",
+            "workflow_mode": "direct",
+        },
     ))
 
     result = supervisor.tick()
@@ -146,7 +266,342 @@ def test_framework_maintenance_uses_private_worktree_and_review(
     assert result["review_status"] == "done"
     assert runner.kwargs["working_dir_override"] == str(private)
     assert runner.kwargs["maintenance_mission"] is True
+    assert runner.kwargs["vertical_override"] == "argus_maintenance"
     assert runner.kwargs["require_independent_review"] is True
+    assert runner.kwargs["allow_skill_changes"] is False
+
+
+def test_skill_changes_require_explicit_mission_permission(tmp_path) -> None:
+    from argus_skill.verticals._data_domain import (
+        promote_data_domain,
+        write_data_domain,
+    )
+
+    memory = LifeMemory.open(tmp_path / "life")
+    sink = _RecordingSink(memory.root)
+    runner = _MaintenanceRunner()
+    supervisor = LifeSupervisor(
+        memory=memory,
+        runner=runner,
+        sink=sink,
+        config=LifeSupervisorConfig(
+            project_worktree=tmp_path,
+            artifact_root=tmp_path,
+        ),
+    )
+    write_data_domain(
+        memory.root,
+        "device_tuning",
+        stages=("profile", "optimize"),
+        status="candidate",
+    )
+    assert promote_data_domain(
+        memory.root,
+        memory.root,
+        "device_tuning",
+    )
+    memory.backlog.add(BacklogItem.new(
+        title="author reusable capability",
+        objective="Create the explicitly requested reusable Skill.",
+        tags=["planner", "scope:bounded", "skill_changes:allowed"],
+        manager_decision={"routed": True, "vertical": "device_tuning"},
+    ))
+    supervisor._vertical_resolved = True
+
+    result = supervisor.tick()
+
+    assert result is not None and result["status"] == "done"
+    assert runner.kwargs["allow_skill_changes"] is True
+    assert runner.kwargs["vertical_override"] == "device_tuning"
+    assert supervisor._vertical_resolved is True
+
+
+def test_candidate_vertical_executes_from_session_state_with_separate_worktree(
+    tmp_path,
+) -> None:
+    from argus_skill.skills.vertical_select import persist_vertical
+    from argus_skill.verticals._data_domain import write_data_domain
+
+    memory = LifeMemory.open(tmp_path / "life")
+    sink = _RecordingSink(memory.root)
+    runner = _MaintenanceRunner()
+    project = tmp_path / "target-repo"
+    project.mkdir()
+    write_data_domain(
+        memory.root,
+        "embodied_eval_campaign",
+        stages=["runtime_gate", "task_coverage", "evaluation"],
+        status="candidate",
+        purpose="RoboTwin runtime and paired evaluation",
+        require_independent_review=True,
+    )
+    persist_vertical(
+        memory.root,
+        "embodied_eval_campaign",
+        workflow_mode="staged",
+    )
+    supervisor = LifeSupervisor(
+        memory=memory,
+        runner=runner,
+        sink=sink,
+        config=LifeSupervisorConfig(
+            project_worktree=project,
+            artifact_root=memory.root,
+        ),
+    )
+    memory.backlog.add(BacklogItem.new(
+        title="run candidate-domain mission",
+        objective="exercise the project-local vertical",
+        tags=["planner", "review:required", "scope:bounded"],
+        manager_decision={
+            "routed": True,
+            "vertical": "embodied_eval_campaign",
+            "workflow_mode": "staged",
+            "learned_vertical_status": "candidate",
+        },
+    ))
+    supervisor._vertical_resolved = True
+
+    result = supervisor.tick()
+
+    assert result is not None and result["status"] == "done"
+    assert runner.kwargs["vertical_override"] == "embodied_eval_campaign"
+    assert not (
+        project
+        / "research"
+        / "DOMAINS"
+        / "embodied_eval_campaign.json"
+    ).exists()
+
+
+def test_stale_item_vertical_falls_back_without_unknown_vertical_crash(
+    tmp_path,
+) -> None:
+    from argus_skill.skills.vertical_select import persist_vertical
+
+    memory = LifeMemory.open(tmp_path / "life")
+    sink = _RecordingSink(memory.root)
+    runner = _MaintenanceRunner()
+    project = tmp_path / "target-repo"
+    project.mkdir()
+    persist_vertical(memory.root, "software", workflow_mode="direct")
+    supervisor = LifeSupervisor(
+        memory=memory,
+        runner=runner,
+        sink=sink,
+        config=LifeSupervisorConfig(
+            project_worktree=project,
+            artifact_root=memory.root,
+        ),
+    )
+    memory.backlog.add(BacklogItem.new(
+        title="run stale routed mission",
+        objective="execute despite stale route metadata",
+        tags=["planner", "scope:bounded"],
+        manager_decision={
+            "routed": True,
+            "vertical": "missing_candidate",
+            "workflow_mode": "staged",
+        },
+    ))
+    supervisor._vertical_resolved = True
+
+    result = supervisor.tick()
+
+    assert result is not None and result["status"] == "done"
+    assert runner.kwargs["vertical_override"] == ""
+
+
+def test_manager_reselects_vertical_for_each_planned_mission(tmp_path) -> None:
+    from argus_skill.manager.directive import set_active_manager_directive
+    from argus_skill.skills.vertical_select import persist_vertical
+
+    memory = LifeMemory.open(tmp_path / "life")
+    sink = _RecordingSink(memory.root)
+    supervisor = LifeSupervisor(
+        memory=memory,
+        runner=_MaintenanceRunner(),
+        sink=sink,
+        config=LifeSupervisorConfig(
+            project_worktree=tmp_path,
+            artifact_root=tmp_path,
+            continuous=True,
+            continuous_objective="optimize the current project",
+        ),
+    )
+    calls: list[str] = []
+
+    class _Manager:
+        selected = "device_tuning"
+
+        def decide_vertical(self, objective: str):
+            calls.append(objective)
+            return SimpleNamespace(vertical=self.selected)
+
+        @staticmethod
+        def plan_stages(vertical: str) -> list[str]:
+            assert vertical == "device_tuning"
+            return ["profile", "optimize"]
+
+        @staticmethod
+        def commit_vertical_decision(
+            objective,
+            decision,
+            *,
+            ask_on_new_domain,
+            force_stage_reset,
+            _lock_held,
+        ):
+            assert objective == "optimize the current project"
+            assert decision.vertical == "device_tuning"
+            assert ask_on_new_domain is False
+            assert force_stage_reset is True
+            assert _lock_held is True
+            return SimpleNamespace(
+                vertical="device_tuning",
+                domain="",
+                kind="custom",
+                workflow_mode="staged",
+                learned_vertical_status="formal",
+                stages=("profile", "optimize"),
+            )
+
+        @staticmethod
+        def current_stage() -> str:
+            return "profile"
+
+    supervisor._bound_manager = lambda: _Manager()  # type: ignore[method-assign]
+    supervisor._artifact_root = lambda: memory.root  # type: ignore[method-assign]
+    persist_vertical(memory.root, "software", workflow_mode="direct")
+    set_active_manager_directive(
+        memory.root,
+        "Build the Apple-specific inference kernel.",
+    )
+
+    first = supervisor._resolve_vertical_once()
+    supervisor._vertical_resolved = False
+    second = supervisor._resolve_vertical_once()
+
+    assert calls == [
+        (
+            "optimize the current project\n\n"
+            "[ACTIVE MANAGER STEERING DIRECTIVE - persists until replaced or "
+            "cleared] Build the Apple-specific inference kernel."
+        ),
+        (
+            "optimize the current project\n\n"
+            "[ACTIVE MANAGER STEERING DIRECTIVE - persists until replaced or "
+            "cleared] Build the Apple-specific inference kernel."
+        ),
+    ]
+    assert first["vertical"] == second["vertical"] == "device_tuning"
+
+
+def test_regular_task_adopts_nested_repository_as_campaign_root(tmp_path) -> None:
+    import subprocess
+
+    from argus_skill.skills.vertical_select import persist_vertical, resolve_vertical
+
+    memory = LifeMemory.open(tmp_path / "life")
+    sink = _RecordingSink(memory.root)
+    runner = _MaintenanceRunner()
+    workspace = tmp_path / "workspace"
+    target = workspace / "target-repo"
+    workspace.mkdir()
+    subprocess.run(["git", "init", "-q", str(target)], check=True)
+    (target / "user.bin").write_bytes(b"\x00user-owned\xff")
+    before = {
+        path.relative_to(target): path.read_bytes()
+        for path in target.rglob("*")
+        if path.is_file() and ".git" not in path.relative_to(target).parts
+    }
+    persist_vertical(memory.root, "software", workflow_mode="direct")
+    supervisor = LifeSupervisor(
+        memory=memory,
+        runner=runner,
+        sink=sink,
+        config=LifeSupervisorConfig(
+            project_worktree=workspace,
+            artifact_root=memory.root,
+        ),
+    )
+    memory.backlog.add(BacklogItem.new(
+        title="work in cloned repository",
+        objective="make the bounded change",
+        tags=["planner", "review:required", "scope:bounded"],
+        execution_workdir="target-repo",
+    ))
+
+    result = supervisor.tick()
+
+    assert result is not None and result["status"] == "done"
+    assert runner.kwargs["working_dir_override"] == str(target.resolve())
+    assert runner.kwargs["maintenance_mission"] is False
+    assert supervisor._project_workdir() == target.resolve()
+    assert resolve_vertical(supervisor._artifact_root()) == "software"
+    after = {
+        path.relative_to(target): path.read_bytes()
+        for path in target.rglob("*")
+        if path.is_file() and ".git" not in path.relative_to(target).parts
+    }
+    assert after == before
+
+
+def test_kernel_baseline_mission_receives_clean_reference_without_revert(
+    tmp_path,
+) -> None:
+    import json
+    import subprocess
+
+    memory = LifeMemory.open(tmp_path / "life")
+    sink = _RecordingSink(memory.root)
+    runner = _MaintenanceRunner()
+    project = tmp_path / "kernel-project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=project, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=project,
+        check=True,
+    )
+    (project / "kernel.py").write_text("baseline\n", encoding="utf-8")
+    subprocess.run(["git", "add", "kernel.py"], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-qm", "baseline"], cwd=project, check=True)
+    pipeline = project / ".argus" / "PIPELINE_STATE.json"
+    pipeline.parent.mkdir()
+    pipeline.write_text(
+        json.dumps({
+            "vertical": "kernel_engineering",
+            "current_stage": "baseline",
+        }),
+        encoding="utf-8",
+    )
+    (project / "kernel.py").write_text("candidate\n", encoding="utf-8")
+    supervisor = LifeSupervisor(
+        memory=memory,
+        runner=runner,
+        sink=sink,
+        config=LifeSupervisorConfig(
+            project_worktree=project,
+            artifact_root=project,
+        ),
+    )
+    memory.backlog.add(BacklogItem.new(
+        title="capture baseline",
+        objective="measure the clean reference",
+        tags=["planner", "review:required", "scope:bounded"],
+    ))
+
+    result = supervisor.tick()
+
+    assert result is not None and result["status"] == "done"
+    prelude = runner.kwargs["prelude_context"]
+    assert "## Kernel baseline isolation" in prelude
+    assert "clean_reference_root" in prelude
+    assert (project / "kernel.py").read_text(encoding="utf-8") == "candidate\n"
+    reference = memory.root / "runtime-worktrees" / "kernel-baseline" / "kernel.py"
+    assert reference.read_text(encoding="utf-8") == "baseline\n"
 
 
 def _certified_research_result(result_class: str) -> dict[str, Any]:
@@ -456,6 +911,20 @@ class _BlockedQuestionRunner:
         return _Outcome(
             success=False, status="blocked", final_message="needs a decision",
             operator_question="fp16 精度损失可以接受吗，还是必须 fp32？",
+            operator_options=[
+                {
+                    "id": "allow-fp16",
+                    "label": "允许 fp16",
+                    "description": "接受精度损失并继续优化。",
+                    "requires_note": False,
+                },
+                {
+                    "id": "require-fp32",
+                    "label": "必须 fp32",
+                    "description": "保持 fp32 精度约束。",
+                    "requires_note": False,
+                },
+            ],
         )
 
 
@@ -489,6 +958,12 @@ def test_blocked_verdict_persists_operator_question_onto_backlog_item(
     # cascade-skip downstream DAG nodes before the answer can rewire them.
     assert rows[item.id].status == "paused_operator"
     assert rows[item.id].pending_question == "fp16 精度损失可以接受吗，还是必须 fp32？"
+    assert rows[item.id].operator_decision["project_id"] == mem.root.name
+    assert rows[item.id].operator_decision["options_source"] == "agent"
+    assert [
+        option["id"] for option in rows[item.id].operator_decision["options"]
+    ] == ["allow-fp16", "require-fp32"]
+    assert "campaign_generation" not in rows[item.id].operator_decision
     pending_events = [
         event
         for event in sink.events
@@ -496,6 +971,111 @@ def test_blocked_verdict_persists_operator_question_onto_backlog_item(
     ]
     assert pending_events[-1]["item_id"] == item.id
     assert pending_events[-1]["question"] == "fp16 精度损失可以接受吗，还是必须 fp32？"
+
+
+class _TechnicalQuestionRunner:
+    """A recoverable benchmark choice incorrectly phrased as a human question."""
+
+    def execute(self, **kwargs: Any) -> _Outcome:
+        outcome = _Outcome(
+            success=False,
+            status="blocked",
+            stop_reason="the largest benchmark row timed out",
+            operator_question="Should the benchmark use a smaller diagnostic shape?",
+        )
+        outcome.final_review_reason = "The largest benchmark row timed out."
+        outcome.final_review_next_action = (
+            "Validate one smaller row, then replan the full measurement."
+        )
+        outcome.final_planner_report = {
+            "forward_progress": False,
+            "plan_signal": "reconsider",
+            "authority_impact": "technical",
+        }
+        return outcome
+
+
+def test_pragmatic_autonomy_replans_technical_question_without_pausing(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ARGUS_SKILL_AUTONOMY_MODE", "pragmatic")
+    mem = LifeMemory.open(tmp_path / "life")
+    sink = _RecordingSink(mem.root)
+    sup = LifeSupervisor(
+        memory=mem,
+        runner=_TechnicalQuestionRunner(),
+        sink=sink,
+        config=LifeSupervisorConfig(
+            budget=LifeBudget(global_daily_cap_usd=0.0, max_missions=2),
+            poll_interval_seconds=0.01,
+        ),
+    )
+    item = mem.backlog.add(BacklogItem.new(
+        title="Measure the kernel", objective="compare baseline and candidate",
+    ))
+
+    result = sup.tick()
+
+    assert result is not None and result["status"] == "replan_requested"
+    stored = next(row for row in mem.backlog.all() if row.id == item.id)
+    assert stored.status == "pending"
+    assert stored.pending_question == ""
+    assert not stored.operator_decision
+    decisions = [
+        event
+        for event in sink.events
+        if event.get("type") == EventType.LIFE_MANAGER_PLAN_CHALLENGE_DECIDED
+        and event.get("source") == "pragmatic_autonomy_policy"
+    ]
+    assert decisions
+    assert decisions[-1]["authority_impact"] == "technical"
+
+
+def test_pending_wait_status_is_not_repeated_across_supervisor_restarts(
+    tmp_path,
+) -> None:
+    mem = LifeMemory.open(tmp_path / "life")
+    item = mem.backlog.add(BacklogItem.new(
+        title="Choose a dataset", objective="run the baseline",
+    ))
+    mem.backlog.update(
+        item.id,
+        status="paused_operator",
+        pending_question="Which dataset should the baseline use?",
+    )
+    config = LifeSupervisorConfig(
+        budget=LifeBudget(global_daily_cap_usd=0.0, max_missions=2),
+        poll_interval_seconds=0.01,
+        continuous=True,
+        continuous_objective="finish the benchmark",
+    )
+
+    first_sink = _RecordingSink(mem.root)
+    first = LifeSupervisor(
+        memory=mem,
+        runner=_BlockedQuestionRunner(),
+        sink=first_sink,
+        config=config,
+    ).run()
+    second_sink = _RecordingSink(mem.root)
+    second = LifeSupervisor(
+        memory=LifeMemory.open(tmp_path / "life"),
+        runner=_BlockedQuestionRunner(),
+        sink=second_sink,
+        config=config,
+    ).run()
+
+    assert first["stopped_by"] == "pending_operator_question"
+    assert second["stopped_by"] == "pending_operator_question"
+    assert [
+        event for event in first_sink.events
+        if event.get("type") == "life.planner.deferred"
+    ]
+    assert not [
+        event for event in second_sink.events
+        if event.get("type") == "life.planner.deferred"
+    ]
 
 
 def test_non_blocked_failure_does_not_set_pending_question(tmp_path) -> None:
@@ -710,6 +1290,50 @@ def test_consecutive_replans_are_bounded_and_escalated(tmp_path, monkeypatch) ->
     assert fourth is None
     assert runner.calls == 3
     assert _row().status == "failed"
+
+
+def test_replan_after_forward_progress_is_not_redispatched(tmp_path) -> None:
+    class _ProgressThenReplanRunner:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def execute(self, **kwargs: Any) -> _Outcome:
+            self.calls += 1
+            outcome = _Outcome(
+                success=False,
+                status="replan_requested",
+                stop_reason="bounded probe completed; redesign the next mission",
+            )
+            outcome.final_planner_report = {
+                "forward_progress": True,
+                "plan_signal": "reconsider",
+            }
+            return outcome
+
+    mem = LifeMemory.open(tmp_path / "life")
+    runner = _ProgressThenReplanRunner()
+    sup = LifeSupervisor(
+        memory=mem,
+        runner=runner,
+        sink=_RecordingSink(mem.root),
+        config=LifeSupervisorConfig(
+            budget=LifeBudget(global_daily_cap_usd=0.0, max_missions=2),
+            poll_interval_seconds=0.01,
+        ),
+    )
+    item = mem.backlog.add(BacklogItem.new(
+        title="bounded probe",
+        objective="measure the premise once, then choose replacement work",
+    ))
+
+    result = sup.tick()
+
+    assert result is not None and result["status"] == "replan_requested"
+    stored = next(row for row in mem.backlog.all() if row.id == item.id)
+    assert stored.status == "failed"
+    assert runner.calls == 1
+    assert sup.tick() is None
+    assert runner.calls == 1
 
 
 def test_large_replan_threshold_uses_persisted_streak(

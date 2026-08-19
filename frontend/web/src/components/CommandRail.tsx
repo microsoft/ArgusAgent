@@ -1,4 +1,5 @@
 import type { ThemeMode } from './TopBar';
+import { useI18n } from '../i18n';
 import { Wordmark } from './Wordmark';
 
 type IconName = 'sessions' | 'plus' | 'preview' | 'chat' | 'settings' | 'theme';
@@ -70,9 +71,10 @@ export function CommandRail({
   onConfig: () => void;
   onCycleTheme: () => void;
 }) {
+  const { t } = useI18n();
   return (
-    <nav className="flex h-full w-11 shrink-0 flex-col items-center border-r border-line/70 bg-surface py-2" aria-label="Workbench">
-      <button type="button" onClick={onSessions} aria-label="Open sessions" title="Sessions · Ctrl/⌘ P" className="mb-3 flex h-9 w-9 items-center justify-center">
+    <nav className="flex h-full w-11 shrink-0 flex-col items-center border-r border-line/70 bg-surface py-2" aria-label={t('rail.workbench')}>
+      <button type="button" onClick={onSessions} aria-label={t('topbar.openSessions')} title={t('rail.sessionsShortcut')} className="mb-3 flex h-9 w-9 items-center justify-center">
         <Wordmark size={18} compact />
       </button>
       <div className="flex flex-col gap-1">

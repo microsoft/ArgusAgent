@@ -64,10 +64,21 @@ test('achievement requires an explicit reviewer certification event', () => {
       item_id: 'task-1',
       title: 'Kernel v7',
       objective: 'Optimize kernel',
+      summary: 'Improved the kernel and verified the measured result.',
     },
   ];
   const completed = projectMissionView(snapshot(), events);
   assert.equal(completed.achievement, null);
+  assert.equal(completed.mission.status, 'complete');
+  assert.equal(
+    completed.mission.summary,
+    'Improved the kernel and verified the measured result.',
+  );
+  assert.equal(
+    completed.timeline.at(-1)?.detail,
+    'Improved the kernel and verified the measured result.',
+  );
+  assert.notEqual(completed.active_role, 'engineer');
 
   const certified = reduceMissionViewEvent(completed, {
     type: 'research.achievement.certified',
@@ -79,9 +90,73 @@ test('achievement requires an explicit reviewer certification event', () => {
     evidence: ['result.json'],
     reviewer_certified: true,
   });
+
   assert.equal(certified.achievement?.reviewer_certified, true);
   assert.equal(certified.achievement?.title, 'Kernel speedup certified');
   assert.deepEqual(certified.achievement?.evidence, ['result.json']);
+});
+
+
+test('manager routing persists all execution axes', () => {
+  const view = reduceMissionViewEvent(emptyMissionView(), {
+    type: 'life.manager.intent.completed',
+    ts: 1,
+    item_id: 'task-routing',
+    objective: 'Complete a finite staged delivery',
+    route: 'team',
+    vertical: 'software',
+    workflow_mode: 'staged',
+    lifetime: 'bounded',
+    continuous: true,
+    open_ended: false,
+  });
+
+  assert.deepEqual(view.routing, {
+    route: 'team',
+    vertical: 'software',
+    workflow_mode: 'staged',
+    lifetime: 'bounded',
+    continuous: true,
+    open_ended: false,
+  });
+});
+
+
+test('partial Manager intent events preserve existing routing axes', () => {
+  const current = emptyMissionView();
+  current.routing = {
+    route: 'team',
+    vertical: 'software',
+    workflow_mode: 'staged',
+    lifetime: 'standing',
+    continuous: true,
+    open_ended: true,
+  };
+  const next = reduceMissionViewEvent(current, {
+    type: 'life.manager.intent.completed',
+    ts: 2,
+    item_id: 'daemon-boot',
+    objective: 'Resume campaign',
+    vertical: 'software',
+  });
+
+  assert.deepEqual(next.routing, current.routing);
+});
+
+
+test('new failure event wins over an older running snapshot', () => {
+  const failed = projectMissionView(snapshot(), [{
+    type: 'life.mission.failed',
+    ts: 13,
+    success: false,
+    item_id: 'task-1',
+    title: 'Kernel v7',
+    objective: 'Optimize kernel',
+    reason: 'benchmark regressed',
+  }]);
+
+  assert.equal(failed.mission.status, 'failed');
+  assert.notEqual(failed.active_role, 'engineer');
 });
 
 
@@ -284,6 +359,90 @@ test('completed mission preserves terminal role verdicts', () => {
       ['reviewer', 'rejected'],
     ],
   );
+});
+
+test('current mission owner is not replaced by an older pending backlog item', () => {
+  const current = snapshot();
+  current.session.objective = '';
+  current.roles = [];
+  current.continuous = {
+    enabled: false,
+    objective: '',
+    done_reason: 'operator drain-stop',
+  };
+  current.backlog = [
+    {
+      id: 'old-research',
+      title: 'Preparing exact-search foundations',
+      objective: 'Continue old research',
+      status: 'pending',
+      priority: 1,
+      deps: [],
+      finished_ts: 999,
+      outcome: {
+        execution_status: 'completed',
+        review_status: 'done',
+        stage_certification: 'certified',
+        interruption_kind: 'none',
+        resumable: false,
+      },
+    },
+    {
+      id: 'deploy-verify',
+      title: 'Verify deployed release',
+      objective: 'Verify the current deployed release',
+      status: 'paused_operator',
+      priority: 1,
+      deps: [],
+      finished_ts: 20,
+      outcome: {
+        execution_status: 'blocked',
+        review_status: 'blocked',
+        stage_certification: 'intentionally_skipped',
+        interruption_kind: 'operator_input_required',
+        resumable: true,
+      },
+    },
+  ];
+  current.mission_view = emptyMissionView();
+  current.mission_view.mission = {
+    ...current.mission_view.mission,
+    id: 'deploy-verify',
+    title: 'Verify deployed release',
+    objective: 'Verify the current deployed release',
+    status: 'blocked',
+    started_at: 10,
+    completed_at: 20,
+  };
+
+  const view = projectMissionView(current);
+
+  assert.equal(view.mission.id, 'deploy-verify');
+  assert.equal(view.mission.title, 'Verify deployed release');
+  assert.equal(view.mission.objective, 'Verify the current deployed release');
+  assert.equal(view.mission.status, 'blocked');
+  assert.equal(view.outcome.execution_status, 'blocked');
+  assert.equal(view.outcome.review_status, 'blocked');
+});
+
+test('client reducer distinguishes manager routing failure from grounding', () => {
+  let view = reduceMissionViewEvent(emptyMissionView(), {
+    type: 'life.manager.intent.started',
+    ts: 1,
+    item_id: 'task-1',
+    objective: 'Route this task',
+  });
+  view = reduceMissionViewEvent(view, {
+    type: 'life.manager.intent.failed',
+    ts: 2,
+    item_id: 'task-1',
+    objective: 'Route this task',
+    error: 'VerticalDecisionError: no backend',
+  });
+
+  assert.equal(view.mission.status, 'failed');
+  assert.equal(view.roles.find((role) => role.role === 'manager')?.label, 'Manager routing failed');
+  assert.equal(view.timeline.at(-1)?.title, 'Manager routing failed');
 });
 
 test('budget summary is always visible with global spend and cap', () => {

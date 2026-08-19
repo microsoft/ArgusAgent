@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, useApp, useInput, useStdout } from 'ink';
 import {
   ApiClient,
+  type CreatedDaemon,
   type DaemonStartResult,
   type ArtifactInfo,
   type EventMsg,
@@ -51,14 +52,19 @@ import {
 import { MissionCockpit } from './components/MissionCockpit.js';
 import { consumePasteChunk } from './input/paste.js';
 import {
+  daemonReplacementInputIntent,
   DaemonReplacementPicker,
   type DaemonReplacementState,
 } from './components/DaemonReplacementPicker.js';
 import { projectMissionView } from '../../core/src/missionView.js';
+import { isPromptRewriteShortcut } from '../../core/src/shortcuts.js';
+import { operatorDecisionCards } from '../../core/src/decisions.js';
 import { useProjectFeed } from './appProjectFeed.js';
 import { useManagerSession } from './appManagerSession.js';
 import { usePanelState } from './appPanelState.js';
 import { dispatchSlashCommand } from './appSlashDispatch.js';
+import { PendingDecisionPrompt } from './components/PendingDecisionPrompt.js';
+import type { ExitPolicy } from './args.js';
 
 export interface AppProps {
   host: string;
@@ -68,6 +74,9 @@ export interface AppProps {
   initialNotice?: string;
   initialAdmission?: DaemonStartResult;
   initialResumeContinuous?: boolean;
+  exitPolicy?: ExitPolicy;
+  onProjectChange?: (sid: string) => void;
+  trackDaemonCreation?: <T extends CreatedDaemon>(promise: Promise<T>) => Promise<T>;
 }
 
 function replacementState(
@@ -96,6 +105,9 @@ export function App({
   initialNotice = '',
   initialAdmission,
   initialResumeContinuous = false,
+  exitPolicy = 'detach',
+  onProjectChange,
+  trackDaemonCreation = (promise) => promise,
 }: AppProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
@@ -132,15 +144,37 @@ export function App({
     ),
   );
   const [pendingExit, setPendingExit] = useState(false);
-  const [showReasoning, setShowReasoning] = useState(resolveShowReasoning);
+  const [showReasoning] = useState(resolveShowReasoning);
+  const pendingDecision = useMemo(() => operatorDecisionCards(
+    snap?.pending_questions ?? [],
+    (snap?.backlog ?? []).map((item) => ({ ...item })),
+  )[0] ?? null, [snap?.backlog, snap?.pending_questions]);
+  const [decisionSelection, setDecisionSelection] = useState(0);
+  const [decisionNote, setDecisionNote] = useState<Edit>(EMPTY);
+  const [decisionBusy, setDecisionBusy] = useState(false);
+  const [decisionError, setDecisionError] = useState('');
 
   useEffect(() => {
     setMenuSel(0);
   }, [edit.value]);
+  useEffect(() => {
+    setDecisionSelection(0);
+    setDecisionNote(EMPTY);
+    setDecisionBusy(false);
+    setDecisionError('');
+  }, [pendingDecision?.id]);
   const creatingProjectRef = useRef(false);
+  const mountedRef = useRef(true);
   const dismissedAdmissionRef = useRef(0);
   const pasteActiveRef = useRef(false);
   const rewritingRef = useRef(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!stdout.isTTY) return;
@@ -247,12 +281,14 @@ export function App({
     cancelManagerTurn();
     projectRef.current = id;
     setProject(id);
+    onProjectChange?.(id);
     setReplacement(null);
     dismissedAdmissionRef.current = 0;
     return true;
   };
 
   const quit = () => {
+    mountedRef.current = false;
     cancelManagerTurn();
     shutdownFeed();
     exit();
@@ -315,7 +351,8 @@ export function App({
     creatingProjectRef.current = true;
     setDaemonDraft((current) => current ? { ...current, busy: true, error: '' } : current);
     try {
-      const created = await api.createDaemon(objective, name);
+      const created = await trackDaemonCreation(api.createDaemon(objective, name));
+      if (!mountedRef.current) return;
       setPanel(null);
       setDaemonDraft(null);
       changeProject(created.sid);
@@ -328,6 +365,7 @@ export function App({
           : `created ${created.sid} · message Argus when ready`,
       );
     } catch (error) {
+      if (!mountedRef.current) return;
       setDaemonDraft((current) => current ? {
         ...current,
         busy: false,
@@ -417,10 +455,54 @@ export function App({
     else void submitFreeText(text);
   };
 
+  const submitPendingDecision = async () => {
+    if (!pendingDecision || decisionBusy) return;
+    const freeform = pendingDecision.options.length === 0;
+    const option = pendingDecision.options[decisionSelection];
+    const note = decisionNote.value.trim();
+    if ((freeform || option?.requires_note) && !note) {
+      setDecisionError('Type the requested answer before confirming.');
+      return;
+    }
+    if (!freeform && !option) return;
+    setDecisionBusy(true);
+    setDecisionError('');
+    try {
+      const result = pendingDecision.legacy
+        ? await api.answerPending(pendingDecision.item_id, note)
+        : await api.resolveDecision(
+            pendingDecision.id,
+            freeform ? 'custom' : option!.id,
+            note,
+          );
+      if (result.resolved === false) {
+        setDecisionError(String(result.reply || 'A more specific answer is required.'));
+        return;
+      }
+      setNotice(String(result.reply || 'Your answer was delivered to the team.'));
+      setSnap(await api.snapshot());
+    } catch (error) {
+      setDecisionError((error as Error).message);
+    } finally {
+      setDecisionBusy(false);
+    }
+  };
+
   useInput((input, key) => {
     const paste = consumePasteChunk(input, pasteActiveRef.current);
     if (paste.handled) {
       pasteActiveRef.current = paste.active;
+      if (pendingDecision && paste.text) {
+        const freeform = pendingDecision.options.length === 0;
+        const custom = pendingDecision.options.findIndex((option) => option.requires_note);
+        if (freeform || custom >= 0) {
+          if (custom >= 0) {
+            setDecisionSelection(custom);
+          }
+          setDecisionNote((current) => insert(current, paste.text));
+        }
+        return;
+      }
       if (paste.text && !panel) {
         if (replacement) return;
         if (daemonDraft) {
@@ -436,22 +518,98 @@ export function App({
       }
       return;
     }
+    if (pendingDecision) {
+      if (key.ctrl && (input === 'c' || input === 'd')) {
+        quit();
+        return;
+      }
+      if (decisionBusy) return;
+      const freeform = pendingDecision.options.length === 0;
+      if (freeform) {
+        if (key.return) void submitPendingDecision();
+        else if (key.leftArrow) setDecisionNote(left);
+        else if (key.rightArrow) setDecisionNote(right);
+        else if (key.backspace || key.delete) setDecisionNote(backspace);
+        else if (key.ctrl && input === 'w') setDecisionNote(deleteWordBefore);
+        else if (key.ctrl && input === 'u') setDecisionNote(killToStart);
+        else if (key.ctrl && input === 'k') setDecisionNote(killToEnd);
+        else if (input && !key.ctrl && !key.meta) {
+          setDecisionNote((current) => insert(current, input));
+        }
+        setDecisionError('');
+        return;
+      }
+      if (key.downArrow) {
+        setDecisionSelection((current) => moveSelection(
+          current,
+          pendingDecision.options.length,
+          1,
+        ));
+        return;
+      }
+      if (key.upArrow) {
+        setDecisionSelection((current) => moveSelection(
+          current,
+          pendingDecision.options.length,
+          -1,
+        ));
+        return;
+      }
+      if (key.return) {
+        void submitPendingDecision();
+        return;
+      }
+      const selected = pendingDecision.options[decisionSelection];
+      if (selected?.requires_note) {
+        if (key.leftArrow) setDecisionNote(left);
+        else if (key.rightArrow) setDecisionNote(right);
+        else if (key.backspace || key.delete) setDecisionNote(backspace);
+        else if (key.ctrl && input === 'w') setDecisionNote(deleteWordBefore);
+        else if (key.ctrl && input === 'u') setDecisionNote(killToStart);
+        else if (key.ctrl && input === 'k') setDecisionNote(killToEnd);
+        else if (input && !key.ctrl && !key.meta) {
+          setDecisionNote((current) => insert(current, input));
+        }
+        setDecisionError('');
+        return;
+      }
+      if (/^[1-9]$/.test(input)) {
+        const optionIndex = Number(input) - 1;
+        if (optionIndex < pendingDecision.options.length) {
+          setDecisionSelection(optionIndex);
+          setDecisionError('');
+        }
+        return;
+      }
+      if (input && !key.ctrl && !key.meta) {
+        const custom = pendingDecision.options.findIndex((option) => option.requires_note);
+        if (custom >= 0) {
+          setDecisionSelection(custom);
+          setDecisionNote((current) => insert(current, input));
+          setDecisionError('');
+        }
+      }
+      return;
+    }
     if (replacement) {
-      if (key.escape) {
+      const intent = daemonReplacementInputIntent(replacement, input, key);
+      if (intent === 'exit') {
+        quit();
+      } else if (intent === 'dismiss') {
         dismissedAdmissionRef.current = Date.now() / 1000;
         setReplacement(null);
         setNotice('new work remains queued');
-      } else if (!replacement.busy && (key.downArrow || input === 'j')) {
+      } else if (intent === 'next') {
         setReplacement((current) => current ? {
           ...current,
           selection: moveSelection(current.selection, current.running.length, 1),
         } : current);
-      } else if (!replacement.busy && (key.upArrow || input === 'k')) {
+      } else if (intent === 'previous') {
         setReplacement((current) => current ? {
           ...current,
           selection: moveSelection(current.selection, current.running.length, -1),
         } : current);
-      } else if (!replacement.busy && key.return) {
+      } else if (intent === 'replace') {
         void replaceRunningDaemon();
       }
       return;
@@ -477,25 +635,19 @@ export function App({
         return;
       }
       setPendingExit(true);
-      setNotice('Ctrl-C again to exit · Ctrl-D also quits · the daemon keeps running');
+      const policyNotice = exitPolicy === 'stop-all'
+        ? 'current executor and this launch\'s owned API will stop gracefully'
+        : exitPolicy === 'stop-api'
+        ? 'executor keeps running; this launch\'s owned API will stop'
+        : 'terminal UI exits; local API and executor keep running';
+      setNotice(`Ctrl-C again to exit · Ctrl-D also quits · ${policyNotice}`);
       return;
     }
     if (key.ctrl && input === 'd') {
       quit();
       return;
     }
-    if (key.ctrl && input === 'o') {
-      setPanel((current) => current?.kind === 'operations' ? null : { kind: 'operations' });
-      return;
-    }
-    if (key.ctrl && input === 't') {
-      setShowReasoning((current) => {
-        setNotice(`reasoning ${current ? 'hidden' : 'shown'}`);
-        return !current;
-      });
-      return;
-    }
-    if (key.ctrl && input === 'r') {
+    if (isPromptRewriteShortcut(input, key.ctrl, key.meta)) {
       rewriteDraft(edit.value);
       return;
     }
@@ -713,7 +865,15 @@ export function App({
     <Box flexDirection="column" paddingX={1}>
       <Header width={terminal.columns} />
       {!slashMenuOpen ? <GuardianBanner alert={activeGuardianAlert(events)} /> : null}
-      {replacement ? (
+      {pendingDecision ? (
+        <PendingDecisionPrompt
+          card={pendingDecision}
+          selection={decisionSelection}
+          note={decisionNote}
+          busy={decisionBusy}
+          error={decisionError}
+        />
+      ) : replacement ? (
         <DaemonReplacementPicker state={replacement} width={terminal.columns} />
       ) : daemonDraft ? (
         <NewDaemonForm draft={daemonDraft} />

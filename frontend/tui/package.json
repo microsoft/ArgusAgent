@@ -1,6 +1,6 @@
 {
   "name": "argus-tui",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Ink terminal frontend for the argus-skill autonomous-research daemon. A client of the argus-skill webapi (events over WS, snapshots/commands over REST).",
   "type": "module",
@@ -10,16 +10,17 @@
   },
   "scripts": {
     "dev": "tsx src/cli.tsx",
-    "build": "python ../../scripts/generate_event_payload_types.py --check && python ../../scripts/generate_release_manifest.py --check && tsc -p tsconfig.json && npm run build:bundle",
+    "build": "python -m argus_skill.release_tools.generate_event_types --check && python -m argus_skill.release_tools.generate_manifest --check && tsc -p tsconfig.json && npm run build:bundle",
     "build:bundle": "node scripts/build-bundle.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
     "start": "node dist/tui/src/cli.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.12.0"
   },
   "dependencies": {
+    "ansi-escapes": "^7.3.0",
     "ink": "^5.0.1",
     "react": "^18.3.1",
     "string-width": "^7.2.0",

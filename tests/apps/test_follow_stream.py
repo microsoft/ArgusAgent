@@ -165,7 +165,7 @@ def test_follow_coalescer_uses_latest_snapshot_even_when_shorter() -> None:
 
 
 def test_follow_progress_render_redacts_raw_secret() -> None:
-    secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345678901"
+    secret = "ghp_" + "A" * 36
     rendered = _follow._format_follow_event_body(
         {
             "type": "engineer.progress",
@@ -179,3 +179,20 @@ def test_follow_progress_render_redacts_raw_secret() -> None:
     assert rendered is not None
     assert secret not in rendered
     assert "REDACTED" in rendered
+
+
+def test_follow_progress_hides_structured_handoff_fields() -> None:
+    rendered = _follow._format_follow_event_body(
+        {
+            "type": "engineer.progress",
+            "kind": "agent_message",
+            "agent_layer": "engineer",
+            "text": "Artifact complete.\nNEXT_OWNER=reviewer\nOPERATOR_QUESTION=none",
+        },
+        "engineer",
+    )
+
+    assert rendered is not None
+    assert rendered.endswith("💭 Artifact complete.")
+    assert "NEXT_OWNER" not in rendered
+    assert "OPERATOR_QUESTION" not in rendered

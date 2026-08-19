@@ -96,6 +96,14 @@ def test_complete_paper_package_passes(complete: Path) -> None:
     assert ms.main(["check", "--project-root", str(complete)]) == 0
 
 
+def test_pypdf_fallback_works_without_pdftotext(
+    complete: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ms.shutil, "which", lambda _name: None)
+    assert ms.verify_paper_style_deliverables(complete) == []
+
+
 # --------------------------------------------------------------------------- #
 # missing paper deliverables                                                   #
 # --------------------------------------------------------------------------- #

@@ -61,6 +61,7 @@ from ._runtime_helpers import (  # noqa: F401 — re-exported, see __all__
 from ._runtime_stage_transition import StageTransitionMixin
 from ._runtime_supervisor import (  # noqa: F401 — re-exported, see __all__
     _build_supervisor_config,
+    _final_certification_for_project_root,
     _independent_review_required_for_project_root,
     _invoke_supervisor,
     _paper_mission_for_project_root,
@@ -112,6 +113,8 @@ __all__ = [
     "_inbox_drainer_for",
     "build_life_runner",
     "_build_supervisor_config",
+    "_paper_mission_for_project_root",
+    "_final_certification_for_project_root",
     "run_life_supervisor",
     "_invoke_supervisor",
 ]

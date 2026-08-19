@@ -1,0 +1,155 @@
+import { apiAuthHeaders } from './api';
+
+export interface WorkspaceProfile {
+  id: string;
+  label: string;
+  path: string;
+  source: 'project' | 'system' | 'configured';
+  project_sid: string;
+  canonical: boolean;
+}
+
+export interface WorkspaceProfileIndex {
+  profiles: WorkspaceProfile[];
+  default_id: string;
+}
+
+export interface WorkspaceEntry {
+  path: string;
+  name: string;
+  type: 'file' | 'directory' | 'symlink';
+  size: number;
+  mtime: number;
+  extension: string;
+  skipped?: boolean;
+}
+
+export interface WorkspaceTree {
+  root: string;
+  entries: WorkspaceEntry[];
+  truncated: boolean;
+}
+
+export interface WorkspaceFile {
+  root: string;
+  workspace_id: string;
+  path: string;
+  content: string;
+  size: number;
+  mtime: number;
+  extension: string;
+}
+
+export interface WorkspaceRemote { name: string; fetch: string; push: string }
+export interface WorkspaceGit {
+  available: boolean;
+  branch: string;
+  status: string;
+  stat: string;
+  diff: string;
+  log: string;
+  remotes: WorkspaceRemote[];
+  upstream: string;
+  ahead: number;
+  behind: number;
+  identity: { name: string; email: string; valid: boolean };
+  github: { authenticated: boolean; host: string; login: string; protocol: string; scopes: string[] };
+  publish_ready: boolean;
+  truncated?: boolean;
+}
+
+export interface LiteraturePaper {
+  id: string;
+  title: string;
+  authors: string[];
+  year: number | null;
+  venue: string;
+  url: string;
+  abstract: string;
+  relevance: string;
+  topics: string[];
+  sourcePath: string;
+  retrievedAt: string;
+  evidenceStatus: 'verified_artifact' | 'metadata' | 'unresolved';
+  evidencePath?: string;
+  evidenceBytes?: number;
+}
+
+export interface LiteratureIndex {
+  papers: LiteraturePaper[];
+  sourceFiles: WorkspaceEntry[];
+  searchFiles: WorkspaceEntry[];
+  scannedFiles: number;
+}
+
+async function get<T>(path: string, params: Record<string, string>, signal?: AbortSignal): Promise<T> {
+  const query = new URLSearchParams(params);
+  const response = await fetch(`${path}?${query}`, { headers: apiAuthHeaders(), signal, cache: 'no-store' });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { error?: string; detail?: string };
+    throw new Error(payload.detail || payload.error || `${path} failed (${response.status})`);
+  }
+  return response.json() as Promise<T>;
+}
+
+const context = (sid: string, workspaceId: string) => ({ sid, workspace_id: workspaceId });
+
+export const workspaceApi = {
+  profiles: (sid: string, signal?: AbortSignal) =>
+    get<WorkspaceProfileIndex>('/api/v2/workspaces', { sid }, signal),
+  tree: (sid: string, workspaceId: string, signal?: AbortSignal) =>
+    get<WorkspaceTree>('/api/v2/workspace/tree', context(sid, workspaceId), signal),
+  file: (sid: string, workspaceId: string, path: string, signal?: AbortSignal) =>
+    get<WorkspaceFile>('/api/v2/workspace/file', { ...context(sid, workspaceId), path }, signal),
+  git: (sid: string, workspaceId: string, signal?: AbortSignal) =>
+    get<WorkspaceGit>('/api/v2/workspace/git', context(sid, workspaceId), signal),
+  literature: (sid: string, workspaceId: string, signal?: AbortSignal) =>
+    get<LiteratureIndex>('/api/v2/workspace/literature', context(sid, workspaceId), signal),
+  rawUrl: (sid: string, workspaceId: string, path: string) =>
+    `/api/v2/workspace/raw?${new URLSearchParams({ ...context(sid, workspaceId), path })}`,
+  rawBlob: async (sid: string, workspaceId: string, path: string, signal?: AbortSignal) => {
+    const response = await fetch(`/api/v2/workspace/raw?${new URLSearchParams({ ...context(sid, workspaceId), path })}`, { headers: apiAuthHeaders(), signal, cache: 'no-store' });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      throw new Error(payload.detail || `raw preview failed (${response.status})`);
+    }
+    return response.blob();
+  },
+};
+
+export function paperAssets(entries: WorkspaceEntry[]): WorkspaceEntry[] {
+  const direct = new Set(['.tex', '.bib', '.pdf']);
+  const media = new Set(['.png', '.jpg', '.jpeg', '.webp', '.svg', '.csv', '.tsv']);
+  return entries
+    .filter((entry) => entry.type === 'file')
+    .filter((entry) => {
+      const path = entry.path.toLowerCase();
+      const inPaperArea = /(?:^|\/)(paper|papers|manuscript|latex|technical_report|submission|camera_ready|figures|tables)(?:\/|$)/.test(path);
+      if (direct.has(entry.extension)) return inPaperArea || entry.extension === '.tex' || entry.extension === '.bib';
+      if (entry.extension === '.md') {
+        if (/(?:^|\/)(evidence|runs?|logs?|cache)(?:\/|$)/.test(path)) return false;
+        return inPaperArea && /draft|paper|report|manuscript|section|related|abstract|method|experiment|conclusion|template/.test(path);
+      }
+      return inPaperArea && media.has(entry.extension);
+    })
+    .sort((left, right) => right.mtime - left.mtime);
+}
+
+export interface FileTreeNode extends WorkspaceEntry { children: FileTreeNode[] }
+export function buildFileTree(entries: WorkspaceEntry[]): FileTreeNode[] {
+  const nodes = new Map<string, FileTreeNode>();
+  entries.forEach((entry) => nodes.set(entry.path, { ...entry, children: [] }));
+  const roots: FileTreeNode[] = [];
+  nodes.forEach((node) => {
+    const separator = node.path.lastIndexOf('/');
+    const parentPath = separator >= 0 ? node.path.slice(0, separator) : '';
+    const parent = parentPath ? nodes.get(parentPath) : null;
+    if (parent) parent.children.push(node); else roots.push(node);
+  });
+  const sort = (items: FileTreeNode[]) => {
+    items.sort((left, right) => left.type !== right.type ? left.type === 'directory' ? -1 : 1 : left.name.localeCompare(right.name));
+    items.forEach((item) => sort(item.children));
+  };
+  sort(roots);
+  return roots;
+}

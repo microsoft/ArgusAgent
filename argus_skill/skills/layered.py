@@ -24,10 +24,6 @@ def shared_skill_scope_dir(global_dir: Path, scope: str) -> Path | None:
     return Path(global_dir) / _SHARED_VERTICALS_DIR / value
 
 
-def shared_vertical_skills_dir(global_dir: Path, vertical: str) -> Path | None:
-    return shared_skill_scope_dir(global_dir, vertical)
-
-
 class LayeredSkillStore:
     """Expose ordered Skill-library roots without interpreting their files."""
 
@@ -128,5 +124,4 @@ __all__ = [
     "LAYER_VERTICAL",
     "LayeredSkillStore",
     "shared_skill_scope_dir",
-    "shared_vertical_skills_dir",
 ]

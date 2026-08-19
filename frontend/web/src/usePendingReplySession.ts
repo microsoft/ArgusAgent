@@ -56,7 +56,6 @@ export function usePendingReplySession({
           pendingReply.id,
           optionId,
           note,
-          pendingReply.revision,
         );
       if (result.resolved === false) {
         notify(
@@ -79,6 +78,7 @@ export function usePendingReplySession({
         );
       }
     } catch (error) {
+      await refetchSnapshot();
       notify('error', `Could not send answer: ${errorText(error)}`);
     } finally {
       setPendingReplyBusy(false);

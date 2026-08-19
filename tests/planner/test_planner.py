@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from argus_skill.core.models import RunnerResult
 from argus_skill.planner.planner import (
+    FORBIDDEN_BARE_VERDICT_ERROR,
     NO_CONCRETE_TASKS_ERROR,
     OPEN_ENDED_PROJECT_DONE_ERROR,
     PLANNER_SUPERSEDED_ERROR,
     Planner,
     PlannerConfig,
     parse_planner_text,
+    parse_task_scope,
 )
 from argus_skill.roles.prompts.planner import _PLANNER_CORE_CONTRACT
 
@@ -25,6 +27,59 @@ def test_parse_key_value_completion_after_freeform_progress() -> None:
     assert verdict.reason == "Updated the parser and verified the regression suite."
 
 
+def test_parse_planner_task_ignores_legacy_workdir_and_quality_controls() -> None:
+    verdict = parse_planner_text(
+        "\n".join([
+            "PROJECT_DONE=false",
+            "REASON=work in the cloned target repository",
+            "TASK_KEY=target",
+            "TASK_TITLE=Repair target kernel",
+            "TASK_OBJECTIVE=Edit and test the target kernel.",
+            "TASK_HYPOTHESIS=The target kernel contains the defect.",
+            "TASK_GOAL_CONTRIBUTION=Fix the operator's target repository.",
+            "TASK_EXPECTED_REGRESSIONS=The focused test may stay red during repair.",
+            "TASK_DECISION_RULE=Replan if the defect is outside this repository.",
+            "TASK_WORKDIR=flash-linear-attention",
+            "TASK_ACCEPTANCE_CHECK=pytest tests/ops/test_attnres.py -q",
+        ])
+    )
+
+    assert verdict.error == ""
+    assert verdict.new_tasks[0].execution_workdir == ""
+    assert verdict.new_tasks[0].hypothesis == ""
+    assert verdict.new_tasks[0].acceptance_check == (
+        "pytest tests/ops/test_attnres.py -q"
+    )
+
+
+def test_parse_planner_emits_disjoint_parallel_task_batch() -> None:
+    verdict = parse_planner_text(
+        "\n".join([
+            "PROJECT_DONE=false",
+            "REASON=two independent evidence tracks remain",
+            "TASK_KEY=route-a",
+            "TASK_DEPS=",
+            "TASK_TITLE=Investigate route A",
+            "TASK_OBJECTIVE=Write route A.",
+            "TASK_PARALLEL_SAFE=true",
+            "TASK_OWNS_PATHS=research/routes/a.md",
+            "TASK_KEY=route-b",
+            "TASK_DEPS=",
+            "TASK_TITLE=Investigate route B",
+            "TASK_OBJECTIVE=Write route B.",
+            "TASK_PARALLEL_SAFE=true",
+            "TASK_OWNS_PATHS=research/routes/b.md",
+        ])
+    )
+
+    assert [task.key for task in verdict.new_tasks] == ["route-a", "route-b"]
+    assert all(task.parallel_safe for task in verdict.new_tasks)
+    assert [task.owns_paths for task in verdict.new_tasks] == [
+        ["research/routes/a.md"],
+        ["research/routes/b.md"],
+    ]
+
+
 def test_parse_status_summary_aliases() -> None:
     verdict = parse_planner_text(
         "STATUS=completed\nSUMMARY=Implementation and verification finished."
@@ -34,7 +89,7 @@ def test_parse_status_summary_aliases() -> None:
     assert verdict.reason == "Implementation and verification finished."
 
 
-def test_parse_task_blocker_fingerprint() -> None:
+def test_parse_planner_task_ignores_legacy_blocker_fingerprint() -> None:
     verdict = parse_planner_text(
         "PROJECT_DONE=false\n"
         "REASON=The same external blocker remains.\n"
@@ -45,7 +100,41 @@ def test_parse_task_blocker_fingerprint() -> None:
     )
 
     assert verdict.error == ""
-    assert verdict.new_tasks[0].blocker_fingerprint == "dataset-license:benchmark-x"
+    assert verdict.new_tasks[0].blocker_fingerprint == ""
+
+
+def test_parse_numbered_planner_task_fields() -> None:
+    verdict = parse_planner_text(
+        "PROJECT_DONE=false\n"
+        "REASON=Delegate the next bounded frontier.\n"
+        "TASK_1_TITLE=Certify the next multiplier family\n"
+        "TASK_1_OBJECTIVE=Produce a Reviewer-checkable theorem or obstruction.\n"
+        "TASK_1_ACCEPTANCE_CHECK=Run the exact verifier."
+    )
+
+    assert verdict.error == ""
+    assert len(verdict.new_tasks) == 1
+    assert verdict.new_tasks[0].title == "Certify the next multiplier family"
+    assert verdict.new_tasks[0].objective == (
+        "Produce a Reviewer-checkable theorem or obstruction."
+    )
+    assert verdict.new_tasks[0].acceptance_check == "Run the exact verifier."
+
+
+def test_parse_multiple_numbered_planner_tasks() -> None:
+    verdict = parse_planner_text(
+        "PROJECT_DONE=false\n"
+        "TASK_1_TITLE=First task\n"
+        "TASK_1_OBJECTIVE=Do the first bounded task.\n"
+        "TASK_2_TITLE=Second task\n"
+        "TASK_2_OBJECTIVE=Do the dependent bounded task."
+    )
+
+    assert verdict.error == ""
+    assert [task.title for task in verdict.new_tasks] == [
+        "First task",
+        "Second task",
+    ]
 
 
 def test_incomplete_key_value_result_is_retryable() -> None:
@@ -57,6 +146,24 @@ def test_incomplete_key_value_result_is_retryable() -> None:
     assert verdict.error == "planner said not done but produced no concrete tasks"
 
 
+def test_operator_wait_defaults_to_event_driven_authorization() -> None:
+    verdict = parse_planner_text(
+        "PROJECT_DONE=false\n"
+        "REASON=An operator must approve the external action.\n"
+        "WAITING=true\n"
+        "BLOCKER_FINGERPRINT=external-approval\n"
+        "RECHECK_CONDITION=Operator approval arrives.\n"
+        "RECHECK_TOKEN=approval-pending\n"
+        "OPERATOR_ACTION_REQUIRED=true"
+    )
+
+    assert verdict.error == ""
+    assert verdict.waiting_contract is not None
+    assert verdict.waiting_contract.operator_action_required is True
+    assert verdict.waiting_contract.wait_mode == "event"
+    assert verdict.waiting_contract.wake_on == ("authorization",)
+
+
 def test_missing_completion_marker_is_retryable() -> None:
     verdict = parse_planner_text("I inspected the repository but did not finish.")
 
@@ -64,12 +171,127 @@ def test_missing_completion_marker_is_retryable() -> None:
     assert verdict.error == "planner missing key-value completion marker"
 
 
-def test_planner_prompt_requires_read_only_delegation_and_plain_key_values() -> None:
+def test_planner_prompt_requires_read_only_delegation_and_process_decision() -> None:
     assert "Planner read-only delegation contract" in _PLANNER_CORE_CONTRACT
     assert "Do not edit project files" in _PLANNER_CORE_CONTRACT
     assert "Engineer owns edits" in _PLANNER_CORE_CONTRACT
-    assert "PROJECT_DONE=true|false" in _PLANNER_CORE_CONTRACT
-    assert "not JSON" in _PLANNER_CORE_CONTRACT
+    assert "ARGUS_ROLE_DECISION=" in _PLANNER_CORE_CONTRACT
+    assert '"role":"planner"' in _PLANNER_CORE_CONTRACT
+    assert "not parsed" in _PLANNER_CORE_CONTRACT
+    assert "Never poll a watched durable task" in _PLANNER_CORE_CONTRACT
+    assert "`wait_mode=event`" in _PLANNER_CORE_CONTRACT
+    assert '`wake_on=["subagent_state"]`' in _PLANNER_CORE_CONTRACT
+    for field in ("`title`", "`objective`", "`acceptance_check`"):
+        assert field in _PLANNER_CORE_CONTRACT
+    for field in (
+        "TASK_WORKDIR",
+        "TASK_CONTEXT_REFS",
+        "TASK_REQUIRE_INDEPENDENT_REVIEW",
+        "TASK_STAGE_CLOSING",
+    ):
+        assert field not in _PLANNER_CORE_CONTRACT
+    assert "The Host owns workdir, scope" in _PLANNER_CORE_CONTRACT
+    assert "external algorithm" in _PLANNER_CORE_CONTRACT
+    assert "primary-source grounding" in _PLANNER_CORE_CONTRACT
+    assert "starting context, not a" in _PLANNER_CORE_CONTRACT
+    assert "fresh paper/source/issue/hardware investigation" in _PLANNER_CORE_CONTRACT
+    assert "When related attempts repeatedly fail" in (
+        _PLANNER_CORE_CONTRACT
+    )
+    assert "official implementations" in _PLANNER_CORE_CONTRACT
+
+
+def test_planner_forbids_binary_outcome_labels_and_standing_keeps_exploring(
+    tmp_path,
+) -> None:
+    finite = Planner._build_planner_prompt(
+        continuous_objective=(
+            "Promote the route if it wins; otherwise reject it with decisive evidence."
+        ),
+        journal_tail="The route was measured and rejected.",
+        planning_cycle=2,
+        project_root=tmp_path,
+        state_root=tmp_path,
+        open_ended=False,
+    )
+    standing = Planner._build_planner_prompt(
+        continuous_objective="Keep exploring new optimization mechanisms.",
+        journal_tail="The current route was measured and rejected.",
+        planning_cycle=2,
+        project_root=tmp_path,
+        state_root=tmp_path,
+        open_ended=True,
+    )
+
+    assert "accepted " + "no" + "-go" not in finite.lower()
+    assert "bare launch verdict" in finite.lower()
+    assert "what happened" in finite
+    assert "timing/profiling" in finite
+    assert "This campaign remains active until the operator stops it" not in finite
+    assert "This campaign remains active until the operator stops it" in standing
+
+
+def test_parse_planner_rejects_binary_outcome_label() -> None:
+    forbidden_label = "no" + "-go"
+    verdict = parse_planner_text(
+        "\n".join(
+            [
+                "PROJECT_DONE=false",
+                "REASON=The current route needs a replacement.",
+                "TASK_TITLE=Measure the replacement route",
+                "TASK_OBJECTIVE=Profile the runtime and test a controlled alternative.",
+                (
+                    "TASK_ACCEPTANCE_CHECK=Write a documented "
+                    f"{forbidden_label} if it misses the threshold."
+                ),
+            ]
+        )
+    )
+
+    assert verdict.project_done is False
+    assert verdict.new_tasks == []
+    assert verdict.error == FORBIDDEN_BARE_VERDICT_ERROR
+
+
+def test_parse_task_scope_accepts_final_certification_annotation() -> None:
+    assert parse_task_scope("bounded — one coherent mission") == "bounded"
+    assert parse_task_scope("final_submission (certification)") == "final_submission"
+
+
+def test_parse_planner_task_rejects_malformed_dependency_controls() -> None:
+    verdict = parse_planner_text(
+        "\n".join([
+            "PROJECT_DONE=false",
+            "REASON=queue the grounded implementation",
+            "TASK_KEY=grounded",
+            (
+                "TASK_DEPS=No external dependency. Preserve the dense baseline; "
+                "do not repeat rejected work."
+            ),
+            "TASK_TITLE=Implement grounded method",
+            "TASK_OBJECTIVE=Implement the source-backed method.",
+            "TASK_SCOPE=bounded — one coherent mission",
+        ])
+    )
+
+    assert verdict.error == "invalid planner task dependency identifier"
+    assert verdict.new_tasks == []
+
+
+def test_parse_planner_task_treats_none_dependency_as_empty() -> None:
+    verdict = parse_planner_text(
+        "\n".join([
+            "PROJECT_DONE=false",
+            "REASON=queue the next independent route search",
+            "TASK_KEY=route-search",
+            "TASK_DEPS=none",
+            "TASK_TITLE=Search the next route",
+            "TASK_OBJECTIVE=Find a source-grounded candidate.",
+        ])
+    )
+
+    assert verdict.error == ""
+    assert verdict.new_tasks[0].deps == []
 
 
 class _Runner:
@@ -95,10 +317,14 @@ class _SequenceRunner:
 
     def run_exec(self, **kwargs):  # noqa: ANN003
         self.calls.append(kwargs)
-        return RunnerResult(exit_code=0, agent_messages=[self.messages.pop(0)])
+        return RunnerResult(
+            exit_code=0,
+            agent_messages=[self.messages.pop(0)],
+            thread_id="planner-thread",
+        )
 
 
-def test_plan_next_disables_schema_and_planner_timeouts(monkeypatch) -> None:
+def test_plan_next_disables_schema_and_forces_read_only_tools(monkeypatch) -> None:
     runner = _Runner()
     monkeypatch.setattr(
         Planner,
@@ -122,13 +348,13 @@ def test_plan_next_disables_schema_and_planner_timeouts(monkeypatch) -> None:
     assert not hasattr(options, "output_schema_path")
     assert options.external_interrupt_reason_provider is None
     assert options.watchdog_hard_idle_seconds == 0
-    assert options.dangerous_yolo is True
+    assert options.dangerous_yolo is False
     assert options.full_auto is False
-    assert options.sandbox_mode is None
+    assert options.sandbox_mode == "read-only"
     assert options.add_dirs == ["/tmp/project-state"]
 
 
-def test_plan_next_defaults_to_full_tool_access(monkeypatch) -> None:
+def test_plan_next_defaults_to_read_only_tool_access(monkeypatch) -> None:
     runner = _Runner()
     monkeypatch.setattr(
         Planner,
@@ -142,9 +368,68 @@ def test_plan_next_defaults_to_full_tool_access(monkeypatch) -> None:
     )
 
     options = runner.calls[0]["options"]
-    assert options.dangerous_yolo is True
+    assert options.dangerous_yolo is False
     assert options.full_auto is False
-    assert options.sandbox_mode is None
+    assert options.sandbox_mode == "read-only"
+
+
+def test_plan_next_uses_process_decision_without_final_message(monkeypatch) -> None:
+    class _DecisionRunner:
+        def run_exec(self, **_kwargs):
+            return RunnerResult(
+                exit_code=0,
+                agent_messages=[],
+                role_decisions=[{
+                    "role": "planner",
+                    "payload": {
+                        "project_done": False,
+                        "reason": "one bounded repair remains",
+                        "tasks": [{
+                            "key": "repair",
+                            "deps": [],
+                            "title": "Repair the parser",
+                            "objective": "Fix the parser and run its focused test.",
+                        }, {
+                            "key": "verify",
+                            "deps": ["repair"],
+                            "title": "Verify the repair",
+                            "objective": "Run the integration check.",
+                            "vertical": "argus_maintenance",
+                        }],
+                    },
+                }],
+                thread_id="planner-thread",
+            )
+
+    monkeypatch.setattr(
+        Planner,
+        "_build_planner_prompt",
+        staticmethod(lambda **kwargs: "direct execution prompt"),
+    )
+
+    verdict = Planner(_DecisionRunner()).plan_next(
+        continuous_objective="fix the issue",
+        config=PlannerConfig(working_dir="/tmp/project"),
+    )
+
+    assert verdict.error == ""
+    assert verdict.new_tasks[0].key == "repair"
+    assert verdict.new_tasks[1].deps == ["repair"]
+    assert verdict.new_tasks[1].vertical == "argus_maintenance"
+
+
+def test_parse_planner_task_vertical() -> None:
+    verdict = parse_planner_text(
+        "PROJECT_DONE=false\n"
+        "REASON=route this node to the maintenance role\n"
+        "TASK_KEY=repair\n"
+        "TASK_TITLE=Repair Argus\n"
+        "TASK_OBJECTIVE=Fix the lifecycle bug.\n"
+        "TASK_VERTICAL=argus_maintenance"
+    )
+
+    assert verdict.error == ""
+    assert verdict.new_tasks[0].vertical == "argus_maintenance"
 
 
 def test_plan_next_repairs_not_done_empty_task_response(monkeypatch) -> None:
@@ -160,6 +445,10 @@ def test_plan_next_repairs_not_done_empty_task_response(monkeypatch) -> None:
                     "TASK_OBJECTIVE=Update src/verifier.py and run pytest "
                     "tests/test_verifier.py."
                 ),
+                "TASK_HYPOTHESIS=The verifier path is the remaining defect.",
+                "TASK_GOAL_CONTRIBUTION=Restore trustworthy verification for the objective.",
+                "TASK_EXPECTED_REGRESSIONS=The focused verifier may stay red during repair.",
+                "TASK_DECISION_RULE=Replan if the failing evidence points outside this path.",
                 "TASK_ACCEPTANCE_CHECK=pytest tests/test_verifier.py",
             ]
         ),
@@ -179,17 +468,148 @@ def test_plan_next_repairs_not_done_empty_task_response(monkeypatch) -> None:
     assert verdict.error == ""
     assert verdict.project_done is False
     assert [task.title for task in verdict.new_tasks] == ["Repair verifier path"]
+    assert verdict.new_tasks[0].hypothesis == ""
+    assert verdict.new_tasks[0].goal_contribution == ""
     assert runner.calls[0]["run_label"] == "planner.cycle7"
     assert runner.calls[1]["run_label"] == "planner.cycle7.repair1"
+    assert runner.calls[1]["resume_thread_id"] == "planner-thread"
+    assert "Original Planner prompt" not in runner.calls[1]["prompt"]
+    assert "Do not use tools" in runner.calls[1]["prompt"]
     assert NO_CONCRETE_TASKS_ERROR in runner.calls[1]["prompt"]
-    assert (
-        "Never return `PROJECT_DONE=false` without either `WAITING=true`"
-        in runner.calls[1]["prompt"]
-    )
+    assert "ARGUS_ROLE_DECISION=" in runner.calls[1]["prompt"]
+    assert "If work remains, include concrete tasks" in runner.calls[1]["prompt"]
+    assert '"title":"title"' in runner.calls[1]["prompt"]
+    assert '"objective":"work and decisive check"' in runner.calls[1]["prompt"]
     assert runner.calls[1]["options"].working_dir == "/tmp/project"
 
+def test_plan_next_repairs_binary_outcome_label(monkeypatch) -> None:
+    forbidden_label = "no" + "-go"
+    runner = _SequenceRunner([
+        "\n".join(
+            [
+                "PROJECT_DONE=false",
+                f"REASON=The route is a {forbidden_label}.",
+                "TASK_TITLE=Replace the route",
+                "TASK_OBJECTIVE=Implement the presumed replacement.",
+            ]
+        ),
+        "\n".join(
+            [
+                "PROJECT_DONE=false",
+                "REASON=The current measurement is inconclusive.",
+                "TASK_TITLE=Attribute the runtime",
+                (
+                    "TASK_OBJECTIVE=Inspect the hot path and live waits, then run "
+                    "phase timing or a controlled comparison."
+                ),
+                (
+                    "TASK_ACCEPTANCE_CHECK=Evidence explains a material share of "
+                    "elapsed time or states that the cause is still unclear."
+                ),
+            ]
+        ),
+    ])
+    monkeypatch.setattr(
+        Planner,
+        "_build_planner_prompt",
+        staticmethod(lambda **kwargs: "original planner prompt"),
+    )
 
-def test_plan_next_repairs_malformed_context_ref_metadata(monkeypatch) -> None:
+    verdict = Planner(runner).plan_next(
+        continuous_objective="diagnose the slow route",
+        planning_cycle=4,
+        config=PlannerConfig(working_dir="/tmp/project"),
+    )
+
+    assert verdict.error == ""
+    assert [task.title for task in verdict.new_tasks] == ["Attribute the runtime"]
+    assert runner.calls[1]["run_label"] == "planner.cycle4.repair1"
+    assert FORBIDDEN_BARE_VERDICT_ERROR in runner.calls[1]["prompt"]
+    assert "what failed, why" in runner.calls[1]["prompt"]
+
+
+def test_plan_next_downgrades_invalid_skip_hint_without_repair_call(
+    monkeypatch,
+) -> None:
+    runner = _SequenceRunner([
+        "\n".join([
+            "PROJECT_DONE=false",
+            "REASON=delegate the missing scope deliverable",
+            "TASK_KEY=scope",
+            "TASK_TITLE=Complete kernel campaign scope",
+            "TASK_OBJECTIVE=Create the missing scope artifacts without editing kernels.",
+            "TASK_HYPOTHESIS=A bounded scope pass can unlock discovery.",
+            "TASK_GOAL_CONTRIBUTION=Advance the campaign from scope to discovery.",
+            "TASK_EXPECTED_REGRESSIONS=None; production code is read-only.",
+            "TASK_DECISION_RULE=Stop if the target worktree is not clean main.",
+            "TASK_SCOPE=bounded",
+            "TASK_STAGE_CLOSING=false",
+            "TASK_REQUIRE_INDEPENDENT_REVIEW=false",
+            "TASK_SKIP_STAGE_TRANSITION=true",
+            "TASK_ACCEPTANCE_CHECK=scope completion hook reports no issues",
+        ])
+    ])
+    monkeypatch.setattr(
+        Planner,
+        "_build_planner_prompt",
+        staticmethod(lambda **kwargs: "original planner prompt"),
+    )
+
+    verdict = Planner(runner).plan_next(
+        continuous_objective="run the kernel campaign",
+        config=PlannerConfig(working_dir="/tmp/project"),
+    )
+
+    assert verdict.error == ""
+    assert [task.title for task in verdict.new_tasks] == [
+        "Complete kernel campaign scope"
+    ]
+    assert verdict.new_tasks[0].skip_stage_transition is False
+    assert len(runner.calls) == 1
+
+
+def test_plan_next_accepts_minimal_task_without_mission_quality_fields(
+    monkeypatch,
+) -> None:
+    runner = _SequenceRunner([
+        "\n".join([
+            "PROJECT_DONE=false",
+            "REASON=try the next checker",
+            "TASK_KEY=weak",
+            "TASK_TITLE=Make checker green",
+            "TASK_OBJECTIVE=Change code until the local checker passes.",
+            "TASK_ACCEPTANCE_CHECK=pytest tests/test_checker.py",
+        ]),
+        "\n".join([
+            "PROJECT_DONE=false",
+            "REASON=ground the checker repair in the user goal",
+            "TASK_KEY=grounded",
+            "TASK_TITLE=Repair the user-visible parser behavior",
+            "TASK_OBJECTIVE=Fix the parser defect and verify the user-visible case.",
+            "TASK_HYPOTHESIS=The parser branch drops the required user-visible value.",
+            "TASK_GOAL_CONTRIBUTION=Restore the behavior requested by the user.",
+            "TASK_EXPECTED_REGRESSIONS=The local checker may remain red during repair.",
+            "TASK_DECISION_RULE=Replan if the parser branch is not causal.",
+            "TASK_ACCEPTANCE_CHECK=Reproduce the user case, then run pytest tests/test_checker.py.",
+        ]),
+    ])
+    monkeypatch.setattr(
+        Planner,
+        "_build_planner_prompt",
+        staticmethod(lambda **kwargs: "original planner prompt"),
+    )
+
+    verdict = Planner(runner).plan_next(
+        continuous_objective="restore parser behavior",
+        config=PlannerConfig(working_dir="/tmp/project"),
+    )
+
+    assert verdict.error == ""
+    assert verdict.new_tasks[0].title == "Make checker green"
+    assert len(runner.calls) == 1
+
+
+def test_plan_next_ignores_malformed_context_ref_metadata(monkeypatch) -> None:
     runner = _SequenceRunner([
         "\n".join(
             [
@@ -199,7 +619,7 @@ def test_plan_next_repairs_malformed_context_ref_metadata(monkeypatch) -> None:
                 "TASK_TITLE=Summarize paper",
                 "TASK_OBJECTIVE=Read the supplied paper and summarize it.",
                 (
-                    "TASK_CONTEXT_REFS=research/PIPELINE_STATE.json; "
+                    "TASK_CONTEXT_REFS=.argus/PIPELINE_STATE.json; "
                     "/tmp/runtime/events.jsonl"
                 ),
             ]
@@ -211,8 +631,12 @@ def test_plan_next_repairs_malformed_context_ref_metadata(monkeypatch) -> None:
                 "TASK_KEY=paper-summary",
                 "TASK_TITLE=Summarize paper",
                 "TASK_OBJECTIVE=Read the supplied paper and summarize it.",
+                "TASK_HYPOTHESIS=The supplied paper can be summarized from current sources.",
+                "TASK_GOAL_CONTRIBUTION=Produce the requested grounded paper summary.",
+                "TASK_EXPECTED_REGRESSIONS=None expected; this is read-only synthesis.",
+                "TASK_DECISION_RULE=Stop and ask for sources if the referenced paper is absent.",
                 (
-                    "TASK_CONTEXT_REFS=artifact::research/PIPELINE_STATE.json::"
+                    "TASK_CONTEXT_REFS=artifact::.argus/PIPELINE_STATE.json::"
                     "current stage"
                 ),
             ]
@@ -230,17 +654,8 @@ def test_plan_next_repairs_malformed_context_ref_metadata(monkeypatch) -> None:
     )
 
     assert verdict.error == ""
-    assert verdict.new_tasks[0].context_refs == [
-        {
-            "kind": "artifact",
-            "ref": "research/PIPELINE_STATE.json",
-            "why": "current stage",
-            "content_hash": "",
-        }
-    ]
-    assert runner.calls[1]["run_label"] == "planner.cycle0.repair1"
-    assert "TASK_CONTEXT_REFS=kind::project/relative/path::why|..." in runner.calls[1]["prompt"]
-    assert "Never put URLs, absolute paths" in runner.calls[1]["prompt"]
+    assert verdict.new_tasks[0].context_refs == []
+    assert len(runner.calls) == 1
 
 
 def test_plan_next_reports_bounded_failure_after_empty_task_repair_exhaustion(
@@ -277,6 +692,10 @@ def test_open_ended_planner_must_delegate_after_one_increment() -> None:
             "TASK_KEY=next",
             "TASK_TITLE=Remove duplicate Manager reply rows",
             "TASK_OBJECTIVE=Unify live and persisted Manager message identity.",
+            "TASK_HYPOTHESIS=Identity drift creates duplicate conversation rows.",
+            "TASK_GOAL_CONTRIBUTION=Keep the standing user conversation coherent.",
+            "TASK_EXPECTED_REGRESSIONS=Replay ordering may move while identity is unified.",
+            "TASK_DECISION_RULE=Replan if duplicate rows survive stable message ids.",
             "TASK_ACCEPTANCE_CHECK=run the focused TUI stream tests",
         ]),
     ])
@@ -290,6 +709,8 @@ def test_open_ended_planner_must_delegate_after_one_increment() -> None:
     assert [task.title for task in verdict.new_tasks] == [
         "Remove duplicate Manager reply rows"
     ]
+    assert "TASK_STAGE_CLOSING" not in runner.calls[0]["prompt"]
+    assert "TASK_REQUIRE_INDEPENDENT_REVIEW" not in runner.calls[0]["prompt"]
     assert OPEN_ENDED_PROJECT_DONE_ERROR in runner.calls[1]["prompt"]
 
 

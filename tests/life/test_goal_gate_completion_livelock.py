@@ -1,8 +1,6 @@
 """Twenty of twenty-three verticals could never complete. Regression guard.
 
-Observed live on 2026-07-26 in
-``/tmp/argus-night/home/projects/ce3bdc5a5291/events.jsonl`` (and earlier in
-``/tmp/argus-ux-home-current/projects/s-5d812960/events.jsonl``): the Reviewer
+Observed live on 2026-07-26 in multiple captured project event logs: the Reviewer
 returned ``done`` and certified the delivery stage, the Manager's stage decision
 agreed, the mission completed — and the Planner immediately re-issued the
 identical task "Complete and certify the current Goal Gate". Twenty-one provider
@@ -11,7 +9,7 @@ calls and about $1.085 in the first session, with no progress.
 Three rules interlocked, each defensible alone:
 
 1. ``_planner_task_tags`` downgrades a ``final_submission`` scope to ``bounded``
-   for any vertical whose completion gate is not ``full_paper``;
+   for any vertical whose completion gate is not ``certified``;
 2. ``tick()`` retires a persisted ``final_submission`` item under such a
    vertical as stale — which is *why* rule 1 exists;
 3. ``final_stage_completion_decision`` accepted nothing but
@@ -82,7 +80,7 @@ def test_every_vertical_can_complete_with_the_scope_it_can_actually_carry() -> N
         gate = vertical_completion_gate(load_vertical(vertical))
         # The scope the enqueue boundary will actually persist for this
         # vertical: `final_submission` survives only on the paper track.
-        carried = "final_submission" if gate == "full_paper" else "bounded"
+        carried = "final_submission" if gate == "certified" else "bounded"
         decision, order = _decide(vertical, scope=carried)
         if not order:
             continue
@@ -144,6 +142,23 @@ def test_an_unreadable_vertical_keeps_the_strict_rule() -> None:
 
     assert _mission_scope_can_complete("final_submission", "no-such-vertical") is True
     assert _mission_scope_can_complete("bounded", "no-such-vertical") is False
+def test_project_local_vertical_completion_uses_project_root(tmp_path) -> None:
+    """A data-domain gate must not silently fall back to research."""
+    from argus_skill.manager.stage_decider import _mission_scope_can_complete
+    from argus_skill.verticals import _data_domain as data_domain
+
+    data_domain.write_data_domain(
+        tmp_path,
+        "bench",
+        stages=["scope", "execute", "certify"],
+        completion_gate="none",
+    )
+
+    assert _mission_scope_can_complete(
+        "bounded",
+        "bench",
+        project_root=tmp_path,
+    ) is True
 
 
 # -- the log has to say what happened ----------------------------------------
@@ -152,7 +167,7 @@ def test_an_unreadable_vertical_keeps_the_strict_rule() -> None:
 def test_a_completion_that_overrode_a_hold_does_not_read_as_a_hold() -> None:
     """Persisted history must not contradict itself.
 
-    Observed verbatim in /tmp/argus-night/wd-03/research/PIPELINE_STATE.json:
+    Observed verbatim in a captured `.argus/PIPELINE_STATE.json`:
 
         {"direction": "complete", ..., "reason": "manager held (default)"}
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,20 @@ from argus_skill.core.mission_view import (
 
 def emit(root: Path, event_type: str, ts: float, **payload) -> dict:
     return update_mission_view_event(root, {"type": event_type, "ts": ts, **payload})
+
+
+def test_legacy_team_waiting_projects_as_planner_waiting(tmp_path: Path) -> None:
+    view = emit(
+        tmp_path,
+        "life.team.waiting",
+        1,
+        reason="await external worker",
+    )
+
+    planner = next(role for role in view["roles"] if role["role"] == "planner")
+    assert planner["status"] == "waiting"
+    assert planner["label"] == "Waiting on external work"
+    assert view["timeline"][-1]["title"] == "Planner waiting"
 
 
 def test_manager_handoff_refreshes_stage_after_objective_update(tmp_path: Path) -> None:
@@ -61,11 +76,126 @@ def test_manager_grounding_lifecycle_is_visible(tmp_path: Path) -> None:
         execution_task="Repair parser behavior\n\nManager grounding",
         vertical="software",
         workflow_mode="staged",
+        route="team",
+        lifetime="bounded",
+        continuous=True,
+        open_ended=False,
         reason="grounded",
     )
     roles = {role["role"]: role for role in view["roles"]}
     assert view["mission"]["status"] == "framed"
+    assert view["routing"] == {
+        "route": "team",
+        "vertical": "software",
+        "workflow_mode": "staged",
+        "lifetime": "bounded",
+        "continuous": True,
+        "open_ended": False,
+    }
     assert roles["manager"]["status"] == "done"
+
+
+def test_manager_intent_failure_is_not_labeled_as_grounding_failed(
+    tmp_path: Path,
+) -> None:
+    emit(
+        tmp_path,
+        "life.manager.intent.started",
+        1,
+        item_id="task-1",
+        objective="Route this task",
+    )
+
+    view = emit(
+        tmp_path,
+        "life.manager.intent.failed",
+        2,
+        item_id="task-1",
+        objective="Route this task",
+        error="VerticalDecisionError: no runnable vertical",
+    )
+
+    roles = {role["role"]: role for role in view["roles"]}
+    assert view["mission"]["status"] == "failed"
+    assert roles["manager"]["status"] == "error"
+    assert roles["manager"]["label"] == "Manager routing failed"
+    assert view["timeline"][-1]["title"] == "Manager routing failed"
+    assert view["role_work"][-1]["title"] == "Manager routing failed"
+
+
+def test_load_normalizes_persisted_legacy_manager_failure_label(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "mission-view.json").write_text(
+        '{"schema_version":3,"bootstrapped":true,'
+        '"roles":[{"role":"manager","status":"error","label":"Grounding failed"}],'
+        '"timeline":[{"type":"life.manager.intent.failed","title":"Grounding failed"}],'
+        '"role_work":[{"role":"manager","status":"error","title":"Grounding failed"}]}',
+        encoding="utf-8",
+    )
+
+    view = load_mission_view(tmp_path)
+
+    assert view["roles"][0]["label"] == "Manager routing failed"
+    assert view["timeline"][0]["title"] == "Manager routing failed"
+    assert view["role_work"][0]["title"] == "Manager routing failed"
+
+
+def test_v3_snapshot_rebuilds_to_include_completion_summary(tmp_path: Path) -> None:
+    (tmp_path / "mission-view.json").write_text(
+        '{"schema_version":3,"bootstrapped":true,"mission":{"status":"complete"}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "events.jsonl").write_text(
+        json.dumps({
+            "type": "life.mission.completed",
+            "ts": 1,
+            "item_id": "task-summary",
+            "title": "Create result",
+            "status": "done",
+            "success": True,
+            "summary": "Created RESULT.txt and verified its exact contents.",
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+
+    view = snapshot_mission_view(
+        tmp_path,
+        session={},
+        daemon={},
+        roles=[],
+        backlog=[],
+    )
+
+    assert view["schema_version"] == 6
+    assert view["mission"]["summary"] == (
+        "Created RESULT.txt and verified its exact contents."
+    )
+
+
+def test_v4_snapshot_migrates_without_discarding_projected_state(tmp_path: Path) -> None:
+    (tmp_path / "mission-view.json").write_text(
+        json.dumps({
+            "schema_version": 4,
+            "bootstrapped": True,
+            "mission": {"id": "kept", "title": "Keep this mission", "status": "working"},
+            "stage": {"id": "delivery", "label": "Delivery"},
+        }),
+        encoding="utf-8",
+    )
+
+    view = snapshot_mission_view(
+        tmp_path,
+        session={},
+        daemon={},
+        roles=[],
+        backlog=[],
+    )
+
+    assert view["schema_version"] == 6
+    assert view["mission"]["id"] == "kept"
+    assert view["routing"]["route"] == ""
 
 
 def test_venue_and_idea_research_are_visible_as_engineer_work(tmp_path: Path) -> None:
@@ -344,6 +474,35 @@ def test_free_text_is_display_only_and_never_changes_review_state(tmp_path: Path
     assert view["active_role"] == "engineer"
 
 
+def test_engineer_self_review_is_not_presented_as_independent_review(
+    tmp_path: Path,
+) -> None:
+    emit(
+        tmp_path,
+        "life.mission.started",
+        1,
+        item_id="mission-1",
+        title="Small repair",
+        objective="Fix one covered boundary",
+    )
+    view = emit(
+        tmp_path,
+        "round.review.completed",
+        2,
+        round_index=1,
+        status="done",
+        reason="Decisive tests passed.",
+        review_source="engineer_self_review",
+    )
+
+    roles = {row["role"]: row for row in view["roles"]}
+    assert view["review"]["source"] == "engineer_self_review"
+    assert roles["engineer"]["label"] == "Self-verified"
+    assert roles["reviewer"]["label"] == "Independent review not required"
+    assert view["timeline"][-1]["role"] == "engineer"
+    assert view["timeline"][-1]["title"] == "Engineer self-review accepted"
+
+
 def test_new_mission_resets_prior_review_projection(tmp_path: Path) -> None:
     emit(
         tmp_path,
@@ -397,6 +556,71 @@ def test_new_mission_resets_prior_review_projection(tmp_path: Path) -> None:
     assert view["active_role"] == "engineer"
 
 
+def test_snapshot_keeps_current_mission_owner_ahead_of_stale_pending_work(
+    tmp_path: Path,
+) -> None:
+    snapshot_mission_view(
+        tmp_path,
+        session={},
+        daemon={},
+        roles=[],
+        backlog=[],
+        continuous={},
+    )
+    emit(
+        tmp_path,
+        "life.mission.started",
+        10,
+        item_id="deploy-verify",
+        title="Verify deployed release",
+        objective="Verify the current deployed release.",
+    )
+    emit(
+        tmp_path,
+        "life.mission.completed",
+        20,
+        item_id="deploy-verify",
+        title="Verify deployed release",
+        objective="Verify the current deployed release.",
+        status="blocked",
+        success=False,
+        outcome_class="blocked",
+    )
+
+    view = snapshot_mission_view(
+        tmp_path,
+        session={"objective": ""},
+        daemon={"alive": True},
+        roles=[],
+        backlog=[
+            {
+                "id": "old-research",
+                "title": "Preparing exact-search foundations",
+                "objective": "Continue the old research task.",
+                "status": "pending",
+                "deps": [],
+            },
+            {
+                "id": "deploy-verify",
+                "title": "Verify deployed release",
+                "objective": "Verify the current deployed release.",
+                "status": "paused_operator",
+                "deps": [],
+            },
+        ],
+        continuous={
+            "enabled": False,
+            "objective": "",
+            "done_reason": "operator drain-stop",
+        },
+    )
+
+    assert view["mission"]["id"] == "deploy-verify"
+    assert view["mission"]["title"] == "Verify deployed release"
+    assert view["mission"]["objective"] == "Verify the current deployed release."
+    assert view["mission"]["status"] == "blocked"
+
+
 def test_review_deferral_projects_as_engineer_activity(tmp_path: Path) -> None:
     view = emit(
         tmp_path,
@@ -420,10 +644,10 @@ def test_review_deferral_projects_as_engineer_activity(tmp_path: Path) -> None:
     [
         ("done", True, "complete", "done", "Task completed", "success"),
         ("completed", False, "complete", "done", "Task completed", "success"),
-        ("research_incomplete", False, "incomplete", "done", "Mission incomplete", "info"),
-        ("no_progress", False, "stalled", "done", "Mission stalled", "info"),
-        ("blocked", False, "blocked", "error", "Mission blocked", "error"),
-        ("failed", False, "failed", "error", "Mission failed", "error"),
+        ("research_incomplete", False, "incomplete", "done", "Work remains", "info"),
+        ("no_progress", False, "stalled", "done", "No useful progress", "info"),
+        ("blocked", False, "blocked", "error", "Cannot continue yet", "error"),
+        ("failed", False, "failed", "error", "Task failed", "error"),
         (
             "legacy_unknown_status",
             False,
@@ -475,7 +699,30 @@ def test_completed_mission_prefers_normalized_outcome_class(tmp_path: Path) -> N
     )
 
     assert view["mission"]["status"] == "incomplete"
-    assert view["timeline"][-1]["title"] == "Mission incomplete"
+    assert view["timeline"][-1]["title"] == "Work remains"
+
+
+def test_completed_mission_projects_engineer_summary(tmp_path: Path) -> None:
+    view = emit(
+        tmp_path,
+        "life.mission.completed",
+        1,
+        item_id="task-summary",
+        title="Create result",
+        status="done",
+        success=True,
+        summary="Created RESULT.txt and verified its exact contents.",
+    )
+
+    assert view["mission"]["summary"] == (
+        "Created RESULT.txt and verified its exact contents."
+    )
+    assert view["timeline"][-1]["detail"] == (
+        "Created RESULT.txt and verified its exact contents."
+    )
+    assert view["role_work"][-1]["detail"] == (
+        "Created RESULT.txt and verified its exact contents."
+    )
 
 
 def test_final_submission_projects_as_certified_not_merely_completed(

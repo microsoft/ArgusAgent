@@ -34,6 +34,13 @@ from argus_skill.verticals.quant.integrations.qlib_cn.model import (
 from argus_skill.verticals.quant.search_ledger import SearchLedger
 
 
+def _require_lightgbm() -> None:
+    try:
+        import lightgbm  # noqa: F401
+    except (ImportError, OSError) as exc:
+        pytest.skip(f"LightGBM native runtime unavailable: {exc}")
+
+
 def _reports():
     """Two fiscal years of YTD-cumulative quarterly reports for one code."""
     return pd.DataFrame(
@@ -129,6 +136,7 @@ def _synthetic_xy(seed=0):
 
 
 def test_train_predict_learns_and_reports():
+    _require_lightgbm()
     X, y, dates = _synthetic_xy()
     splits = time_split(
         X.index,
@@ -235,6 +243,7 @@ def test_forward_return_label_math(monkeypatch):
 
 
 def test_rolling_retrain_predict_rolls_expanding_no_leakage():
+    _require_lightgbm()
     X, y, dates = _synthetic_xy(seed=3)
     pred, windows = rolling_retrain_predict(
         X,

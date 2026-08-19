@@ -167,6 +167,8 @@ def test_stage_checklist_completeness() -> None:
 
     research_ids = {item.id for item in STAGE_CHECKLISTS["research"]}
     assert "research.literature" in research_ids
+    assert "research.idea_portfolio" in research_ids
+    assert "research.adversarial_selection" in research_ids
     assert "research.thesis" in research_ids
 
     run_ids = {item.id for item in STAGE_CHECKLISTS["run"]}
@@ -192,13 +194,35 @@ def test_stage_checklist_completeness() -> None:
     assert "submission.anonymous" in submission_ids
 
 
+def test_research_late_stages_accept_manager_selected_survey_shape() -> None:
+    by_stage = {
+        stage: {item.id: item for item in STAGE_CHECKLISTS[stage]}
+        for stage in ("draft", "review", "submission")
+    }
+
+    draft = by_stage["draft"]["draft.tex"].statement
+    assert "literature review" in draft
+    assert "must not invent a method or experiment section" in draft
+
+    language = by_stage["review"]["review.language"].statement
+    assert "For a literature review" in language
+    assert "taxonomy" in language and "source selection" in language
+
+    value = by_stage["review"]["review.publication_value"].statement
+    assert "literature review must deliver valuable coverage" in value
+
+    upstream = by_stage["submission"]["submission.upstream"]
+    assert "explicitly skipped by a recorded Manager decision" in upstream.statement
+    assert "status=skipped" in upstream.evidence_hint
+
+
 # --- stage rollback ---------------------------------------------------------
 
 
 def test_rollback_stage_moves_state_machine_backward(tmp_path: Path) -> None:
     from argus_skill.skills.stage_machine import rollback_stage
 
-    research_dir = tmp_path / "research"
+    research_dir = tmp_path / ".argus"
     research_dir.mkdir()
     (research_dir / "PIPELINE_STATE.json").write_text(json.dumps({
         "current_stage": "run",
@@ -240,7 +264,7 @@ def test_rollback_stage_rejects_forward_or_same_target(tmp_path: Path) -> None:
 
     from argus_skill.skills.stage_machine import rollback_stage
 
-    research_dir = tmp_path / "research"
+    research_dir = tmp_path / ".argus"
     research_dir.mkdir()
     (research_dir / "PIPELINE_STATE.json").write_text(json.dumps({
         "current_stage": "plan",
@@ -257,7 +281,7 @@ def test_rollback_stage_rejects_forward_or_same_target(tmp_path: Path) -> None:
 def test_rollback_stage_appends_history_across_calls(tmp_path: Path) -> None:
     from argus_skill.skills.stage_machine import rollback_stage
 
-    research_dir = tmp_path / "research"
+    research_dir = tmp_path / ".argus"
     research_dir.mkdir()
     (research_dir / "PIPELINE_STATE.json").write_text(json.dumps({
         "current_stage": "draft",
@@ -297,7 +321,7 @@ def test_rollback_onto_completed_stage_reopens_it_no_deadlock(tmp_path: Path) ->
     """
     from argus_skill.skills.stage_machine import rollback_stage
 
-    research_dir = tmp_path / "research"
+    research_dir = tmp_path / ".argus"
     research_dir.mkdir()
     (research_dir / "PIPELINE_STATE.json").write_text(json.dumps({
         "current_stage": "draft",
@@ -321,7 +345,7 @@ def test_rollback_onto_completed_stage_reopens_it_no_deadlock(tmp_path: Path) ->
 def test_advance_stage_moves_forward_and_marks_previous_done(tmp_path: Path) -> None:
     from argus_skill.skills.stage_machine import advance_stage
 
-    research_dir = tmp_path / "research"
+    research_dir = tmp_path / ".argus"
     research_dir.mkdir()
     (research_dir / "PIPELINE_STATE.json").write_text(json.dumps({
         "current_stage": "benchmark",
@@ -357,7 +381,7 @@ def test_advance_stage_moves_forward_and_marks_previous_done(tmp_path: Path) -> 
 def test_stage_transition_leaves_noncanonical_status_file_untouched(tmp_path: Path) -> None:
     from argus_skill.skills.stage_machine import advance_stage
 
-    research_dir = tmp_path / "research"
+    research_dir = tmp_path / ".argus"
     research_dir.mkdir()
     (research_dir / "PIPELINE_STATE.json").write_text(
         json.dumps({"current_stage": "benchmark"}), encoding="utf-8"
@@ -372,12 +396,12 @@ def test_stage_transition_leaves_noncanonical_status_file_untouched(tmp_path: Pa
     )
 
 
-def test_advance_stage_rejects_backward_or_skip(tmp_path: Path) -> None:
+def test_advance_stage_rejects_backward_but_records_skips(tmp_path: Path) -> None:
     import pytest as _pytest
 
     from argus_skill.skills.stage_machine import advance_stage
 
-    research_dir = tmp_path / "research"
+    research_dir = tmp_path / ".argus"
     research_dir.mkdir()
     (research_dir / "PIPELINE_STATE.json").write_text(json.dumps({
         "current_stage": "benchmark",
@@ -385,8 +409,16 @@ def test_advance_stage_rejects_backward_or_skip(tmp_path: Path) -> None:
 
     with _pytest.raises(ValueError):
         advance_stage(tmp_path, target_stage="research", reason="backward")  # earlier
-    with _pytest.raises(ValueError):
-        advance_stage(tmp_path, target_stage="analysis", reason="skip over run")  # skip
+    advance_stage(tmp_path, target_stage="analysis", reason="run is irrelevant")
+    payload = json.loads((research_dir / "PIPELINE_STATE.json").read_text())
+    assert payload["current_stage"] == "analysis"
+    assert payload["stages"]["benchmark"]["status"] == "done"
+    assert payload["stages"]["run"] == {
+        "status": "skipped",
+        "skip_reason": "run is irrelevant",
+        "skipped_by": "manager",
+    }
+    assert payload["stage_history"][-1]["skipped_stages"] == ["run"]
     with _pytest.raises(ValueError):
         advance_stage(tmp_path, target_stage="nonsense", reason="bad name")
 
@@ -397,7 +429,7 @@ def test_advance_stage_is_vertical_aware_speedrun(tmp_path: Path, monkeypatch) -
     from argus_skill.skills.stage_machine import advance_stage
 
     monkeypatch.delenv("ARGUS_SKILL_VERTICAL", raising=False)
-    research_dir = tmp_path / "research"
+    research_dir = tmp_path / ".argus"
     research_dir.mkdir()
     # speedrun order is setup -> optimize -> measure -> report
     (research_dir / "PIPELINE_STATE.json").write_text(json.dumps({
@@ -415,10 +447,63 @@ def test_advance_stage_is_vertical_aware_speedrun(tmp_path: Path, monkeypatch) -
         advance_stage(tmp_path, target_stage="run", reason="wrong vertical")
 
 
+def test_manager_early_completion_is_a_current_completion_certificate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Early completion is a real outcome — for a caller that has standing.
+
+    This asserted the same three facts before run 13, minus the standing. It
+    was, exactly, the shape that run's Engineer produced: ``complete`` at
+    ``scope``, ``solve`` and ``review`` ``skipped``, certificate valid. The
+    difference between that and a legitimate early close is entirely who is
+    allowed to ask, so that is now what the test supplies — ``direct`` workflow
+    mode, where stopping before the final stage is a real answer rather than an
+    abandoned pipeline, plus the explicit argument at the primitive.
+
+    The refusal side lives in ``tests/skills/test_stage_completion_authority.py``.
+    """
+    from argus_skill.skills import stage_machine
+    from argus_skill.skills.vertical_select import (
+        persist_vertical,
+        vertical_has_current_completion_certificate,
+        vertical_reached_own_terminal_stage,
+    )
+
+    persist_vertical(
+        tmp_path,
+        "math",
+        research_target_level="exploratory",
+    )
+    state_path = tmp_path / ".argus" / "PIPELINE_STATE.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["workflow_mode"] = "direct"
+    state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    monkeypatch.setattr(
+        stage_machine,
+        "_ensure_stage_completion",
+        lambda *_args, **_kwargs: None,
+    )
+
+    stage_machine.complete_final_stage(
+        tmp_path,
+        reason="The scoped answer satisfies the operator objective.",
+        allow_early_completion=True,
+    )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["current_stage"] == "scope"
+    assert state["stages"]["scope"]["status"] == "done"
+    assert state["stages"]["solve"]["status"] == "skipped"
+    assert state["stages"]["review"]["status"] == "skipped"
+    assert vertical_reached_own_terminal_stage(tmp_path, "math") is True
+    assert vertical_has_current_completion_certificate(tmp_path, "math") is True
+
+
 def test_rollback_stage_also_writes_unified_stage_history(tmp_path: Path) -> None:
     from argus_skill.skills.stage_machine import rollback_stage
 
-    research_dir = tmp_path / "research"
+    research_dir = tmp_path / ".argus"
     research_dir.mkdir()
     (research_dir / "PIPELINE_STATE.json").write_text(json.dumps({
         "current_stage": "run",
@@ -434,6 +519,34 @@ def test_rollback_stage_also_writes_unified_stage_history(tmp_path: Path) -> Non
     assert len(payload["stage_history"]) == 1
     assert payload["stage_history"][0]["direction"] == "rollback"
     assert payload["stage_history"][0]["by"] == "reviewer"
+
+
+def test_rollback_reopens_a_previously_skipped_stage(tmp_path: Path) -> None:
+    from argus_skill.skills.stage_machine import rollback_stage
+
+    research_dir = tmp_path / ".argus"
+    research_dir.mkdir()
+    (research_dir / "PIPELINE_STATE.json").write_text(
+        json.dumps({
+            "current_stage": "draft",
+            "stages": {
+                "plan": {"status": "skipped", "skip_reason": "not needed"},
+                "benchmark": {"status": "skipped"},
+                "run": {"status": "skipped"},
+                "analysis": {"status": "skipped"},
+                "draft": {"status": "in_progress"},
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    rollback_stage(tmp_path, target_stage="plan", reason="survey scope now needs planning")
+
+    payload = json.loads((research_dir / "PIPELINE_STATE.json").read_text())
+    assert payload["current_stage"] == "plan"
+    assert payload["stages"]["plan"]["status"] == "in_progress"
+    for stage in ("benchmark", "run", "analysis", "draft"):
+        assert payload["stages"][stage]["status"] == "pending"
 
 
 # --- new evaluator-authenticity items --------------------------------------
@@ -459,7 +572,7 @@ def test_run_stage_checklist_demands_score_variance() -> None:
 def test_run_stage_checklist_has_generic_method_diagnosis_recall() -> None:
     """The run stage must carry a DOMAIN-AGNOSTIC recall item that makes the
     agent consult the matched method-specific diagnosis skill before killing an
-    idea on a no-go — RL specifics live in the evolvable skill, not here. This
+    idea on a rejected attempt — RL specifics live in the evolvable skill, not here. This
     guards against the framework re-acquiring hardcoded RL-knob prose.
     """
 
