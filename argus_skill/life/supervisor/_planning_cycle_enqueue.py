@@ -336,6 +336,9 @@ class PlanningCycleEnqueueMixin:
                     advanced_by="manager:auto_completion",
                     evidence_root=Path(context_root).resolve(),
                 )
+                # The tasks were authored under the old research-stage context.
+                # Replan immediately so they cannot become stale closeout work in plan.
+                return PLAN_RETRY
             except Exception:  # noqa: BLE001 - normal Manager planning remains available
                 log.debug("automatic research stage advance failed", exc_info=True)
         for task in planned_tasks:
