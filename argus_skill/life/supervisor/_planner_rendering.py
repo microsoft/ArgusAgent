@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections import Counter
+from typing import Any
+
 _PLANNER_HISTORY_KINDS = frozenset({
     "budget_pause",
     "mission_complete",
@@ -20,6 +23,52 @@ _PLANNER_TALLY_KINDS = (
 )
 
 
+def _payload(entry: Any) -> dict[str, Any]:
+    """Return the settled mission event carried by a journal entry."""
+    extra = getattr(entry, "extra", None)
+    return extra if isinstance(extra, dict) else {}
+
+
+def _forward_progress(entry: Any) -> bool | None:
+    """Return the Reviewer's own objective-level verdict, if it recorded one.
+
+    A mission can close as ``mission_complete`` because the round was correct
+    while the Reviewer still judged that the operator's objective did not move.
+    That distinction is the whole point of the field, and it is invisible in the
+    kind counts.
+    """
+    report = _payload(entry).get("planner_report")
+    value = report.get("forward_progress") if isinstance(report, dict) else None
+    return value if isinstance(value, bool) else None
+
+
+def _amount(value: Any) -> float:
+    """Coerce one recorded cost/duration to a non-negative float."""
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _missions_since_replan(missions: list[Any]) -> int:
+    for distance, entry in enumerate(reversed(missions)):
+        if getattr(entry, "kind", "") == "mission_replan_requested":
+            return distance
+    return 0
+
+
+def _cumulative_price(missions: list[Any]) -> str:
+    """Render what the campaign has already spent, or ``""`` when unmeasured."""
+    dollars = sum(_amount(getattr(entry, "cost_usd", 0.0)) for entry in missions)
+    seconds = sum(_amount(_payload(entry).get("elapsed_seconds")) for entry in missions)
+    measured = []
+    if dollars >= 0.01:
+        measured.append(f"${dollars:,.2f}")
+    if seconds >= 360:
+        measured.append(f"{seconds / 3600:.1f}h")
+    return "cumulative " + " over ".join(measured) if measured else ""
+
+
 class PlannerRenderingMixin:
     def _item_iteration_cycles(self) -> int:
         """Default iteration cycles for planner-generated tasks."""
@@ -29,45 +78,56 @@ class PlannerRenderingMixin:
             return 6
 
     def _render_campaign_tally(self) -> str:
-        """Whole-campaign terminal-outcome counts, as facts and nothing else.
+        """Whole-campaign terminal facts, as facts and nothing else.
 
         The detailed history window below is only ``_PLANNER_HISTORY_COUNT``
         entries, which is the right size for "what just happened" but makes the
         campaign's shape invisible: a project can close dozens of missions and
         the Planner still only ever sees the last few. It is then asked whether
         the project is done or the strategy needs replacing while having no way
-        to notice that nothing has been replanned in a hundred cycles.
+        to notice that nothing has been replanned in a hundred cycles, that the
+        Reviewer has been reporting a stalled objective throughout, or what the
+        attempt has already cost.
 
         This reports counts only. Whether that pattern means "keep going",
         "change approach", or "this is finished" is the Planner's call — the
         harness must not pre-chew it into a recommendation.
         """
         try:
-            entries = list(self.memory.journal.tail(4096))
+            missions = [
+                entry
+                for entry in self.memory.journal.tail(4096)
+                if getattr(entry, "kind", "") in _PLANNER_TALLY_KINDS
+            ]
         except Exception:  # noqa: BLE001 — planner context is best-effort
             return ""
-        counts = {kind: 0 for kind in _PLANNER_TALLY_KINDS}
-        total = 0
-        since_replan: int | None = None
-        for entry in entries:
-            kind = getattr(entry, "kind", "")
-            if kind not in counts:
-                continue
-            counts[kind] += 1
-            total += 1
-            since_replan = (
-                0 if kind == "mission_replan_requested"
-                else (since_replan + 1 if since_replan is not None else None)
-            )
-        if total == 0:
+        if not missions:
             return ""
-        parts = [f"{kind.removeprefix('mission_')}={counts[kind]}" for kind in _PLANNER_TALLY_KINDS]
-        line = f"Campaign totals ({total} terminal missions): " + ", ".join(parts)
-        if counts["mission_replan_requested"] == 0:
-            line += "; no mission has ever requested a replacement plan"
-        elif since_replan:
-            line += f"; {since_replan} terminal missions since the last replan"
-        return line
+        counts = Counter(getattr(entry, "kind", "") for entry in missions)
+        facts = [
+            f"Campaign totals ({len(missions)} terminal missions): "
+            + ", ".join(
+                f"{kind.removeprefix('mission_')}={counts[kind]}"
+                for kind in _PLANNER_TALLY_KINDS
+            )
+        ]
+        judged = [
+            verdict
+            for entry in missions
+            if (verdict := _forward_progress(entry)) is not None
+        ]
+        if flat := judged.count(False):
+            facts.append(
+                f"{flat} of {len(judged)} reviewed missions reported no "
+                "objective-level progress"
+            )
+        if not counts["mission_replan_requested"]:
+            facts.append("no mission has ever requested a replacement plan")
+        elif distance := _missions_since_replan(missions):
+            facts.append(f"{distance} terminal missions since the last replan")
+        if price := _cumulative_price(missions):
+            facts.append(price)
+        return "; ".join(facts)
 
     def _render_journal_for_planner(self) -> str:
         """Render a bounded recency window of terminal mission evidence."""

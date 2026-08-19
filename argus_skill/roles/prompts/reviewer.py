@@ -35,6 +35,24 @@ _REEVALUATE_HEADER = (
 
 _MAX_SHARED_CTX_CHARS = 100_000_000
 
+# The Reviewer is the only role that can open the plan-challenge channel, and
+# `reconsider` is the single token that opens it. Until this block existed the
+# word appeared nowhere in any prompt while the example offered an invalid
+# `keep`, so the channel stayed shut and a campaign could close round after
+# locally correct round without anything ever questioning the plan itself.
+# Keep these values in step with ``argus_skill.reviewer._parsing``.
+_PLAN_SIGNAL_VOCABULARY = (
+    "`plan_signal` is `continue` or `reconsider`. Use `reconsider` when the "
+    "evidence says the plan itself — not this round's execution — is what now "
+    "stands between the operator and the objective; rounds that each repair a "
+    "different symptom of one design are evidence for that, not proof. Then "
+    "name the assumption you are challenging in `plan_challenge`, the better "
+    "route in `plan_alternative`, and whose call it is in `authority_impact`: "
+    "`technical` for a working choice the team may replace, `manager_contract` "
+    "or `operator` for a commitment only they can relax. A plan or protocol "
+    "the team authored for itself is a working choice.\n"
+)
+
 
 def evaluate_request(
     project_root: Path | str,
@@ -641,10 +659,14 @@ def render_reviewer_prompt(
         + decision_event_instruction(
             "reviewer",
             '{"status":"done","reason":"requested outcome is materially complete",'
-            '"next_action":"","forward_progress":true,"plan_signal":"keep"}',
+            '"next_action":"","forward_progress":true,"plan_signal":"continue"}',
         )
         + "\nUse plan fields only when the result changes the plan. Judge "
-        "forward_progress against the operator goal, not activity. Put the next Engineer "
+        "forward_progress against the operator goal, not activity: a repair can be "
+        "locally correct and still leave the objective exactly where it was, and "
+        "saying so is not a rejection of the work.\n"
+        + _PLAN_SIGNAL_VOCABULARY
+        + "Put the next Engineer "
         "instruction only in next_action. Do not inspect or edit "
         "checkpoint/context-packet/handoff bookkeeping.\n\n"
         + wiki_curator_skill_block

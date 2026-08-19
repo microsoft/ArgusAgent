@@ -101,7 +101,7 @@ def test_engineer_learning_targets_engineer_bucket(tmp_path) -> None:
 
     assert f"Engineer Skill directory (project layer only): {skill_dir}" in prompt
     assert "Do not add unrelated cleanup or hardening" in prompt
-    assert "Keep only reusable procedures and checklists here" in prompt
+    assert "Keep only reusable role learning here" in prompt
     assert "route durable project facts" in prompt
     assert "never write shared/global layers" in prompt
 
@@ -181,6 +181,28 @@ def test_planner_learning_ab_switch_targets_planner_bucket(tmp_path, monkeypatch
     assert "Planner self-evolution" not in control
     assert "Planner self-evolution" in treatment
     assert str((tmp_path / "skills" / "planner").resolve()) in treatment
+
+
+def test_the_planner_may_keep_judgement_where_the_engineer_keeps_procedure(
+    tmp_path,
+) -> None:
+    """A role can only retain the shape of learning its decisions produce.
+
+    Planner lessons are campaign-level judgement, not shell steps. Asking every
+    role for a "reusable procedure" filed the strategic lesson under generic
+    advice and dropped it — the learning that would question a stalled plan
+    soonest was the learning the contract refused to store.
+    """
+    store = SkillStore(tmp_path / "skills")
+
+    planner = role_skill_maintenance_block(store, "planner", enabled=True)
+    assert "strategic decision heuristic" in planner
+    assert "where it applies" in planner
+    assert "one case where following it would be wrong" in planner
+
+    engineer = role_skill_maintenance_block(store, "engineer", enabled=True)
+    assert "a reusable procedure" in engineer
+    assert "strategic decision heuristic" not in engineer
 
 
 def test_manager_learning_ab_switch_targets_manager_bucket(tmp_path) -> None:
