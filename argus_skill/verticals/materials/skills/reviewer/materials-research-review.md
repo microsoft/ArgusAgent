@@ -13,7 +13,8 @@ forward plan.
 Read the original objective and identify the material, state, scale, environment,
 processing or service conditions, observables, and requested completion bar.
 Then inspect the actual sources, inputs, code, native solver/instrument outputs,
-comparisons, and final claims.
+comparisons, and final claims. Use `research/MATERIALS_EVIDENCE.json` only to
+locate them; an entry in the index is not evidence of correctness.
 
 Require:
 

@@ -83,6 +83,28 @@ def test_empty_clean_output_stays_continue() -> None:
     assert decision.backend_unavailable is False
 
 
+def test_process_decision_succeeds_without_final_reviewer_message() -> None:
+    class _DecisionRunner:
+        def run_exec(self, **_kwargs):
+            return RunnerResult(
+                exit_code=0,
+                agent_messages=[],
+                role_decisions=[{
+                    "role": "reviewer",
+                    "payload": {
+                        "status": "done",
+                        "reason": "The focused check passed.",
+                        "next_action": "",
+                    },
+                }],
+            )
+
+    decision = _evaluate(Reviewer(runner=_DecisionRunner()))
+
+    assert decision.status == "done"
+    assert decision.reason == "The focused check passed."
+
+
 def test_invalid_named_footer_is_not_credited_as_evidence() -> None:
     class _InvalidRunner:
         def run_exec(self, **_kwargs):
@@ -129,7 +151,6 @@ def test_unavailable_engineer_model_blocks_once_with_actionable_error(
         supervised_config=SupervisedConfig(
             max_rounds=10,
             backend_failure_backoff_seconds=0,
-            effective_progress_timeout_seconds=0,
             background_subagent_advisory=False,
         ),
         workdir=tmp_path,
@@ -196,7 +217,6 @@ def test_loop_escalates_to_error_on_reviewer_backend_death(tmp_path: Path) -> No
         max_rounds=10,
         backend_failure_threshold=2,
         backend_failure_backoff_seconds=0.0,
-        effective_progress_timeout_seconds=0,
         background_subagent_advisory=False,
     )
     status, rounds, _final_msg, reason, _tid = engine.run(
@@ -296,7 +316,6 @@ def test_watchdog_timeout_retries_once_from_checkpoint_in_fresh_session(
             backend_failure_threshold=2,
             backend_failure_backoff_seconds=0,
             checkpoint_path=checkpoint,
-            effective_progress_timeout_seconds=0,
             runner_hard_idle_seconds=0,
             background_subagent_advisory=False,
         ),
@@ -336,7 +355,6 @@ def test_watchdog_retry_exhaustion_fails_loudly(tmp_path: Path) -> None:
             backend_failure_threshold=5,
             backend_failure_backoff_seconds=0,
             checkpoint_path=checkpoint,
-            effective_progress_timeout_seconds=0,
             runner_hard_idle_seconds=0,
             background_subagent_advisory=False,
         ),
@@ -397,7 +415,6 @@ def test_loop_recovers_when_reviewer_backend_comes_back(tmp_path: Path) -> None:
         max_rounds=10,
         backend_failure_threshold=2,
         backend_failure_backoff_seconds=0.0,
-        effective_progress_timeout_seconds=0,
         background_subagent_advisory=False,
     )
     status, rounds, _final_msg, _reason, _tid = engine.run(
@@ -446,7 +463,6 @@ def test_reviewer_flake_does_not_rerun_engineer(tmp_path: Path) -> None:
         max_rounds=10,
         backend_failure_threshold=2,
         backend_failure_backoff_seconds=0.0,
-        effective_progress_timeout_seconds=0,
         background_subagent_advisory=False,
     )
     status, rounds, _final_msg, _reason, _tid = engine.run(

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
+import pytest
 
 from argus_skill.manager import Manager
-from argus_skill.manager._helpers import _OPTIMIZE_VERTICALS
 from argus_skill.skills.builtins import (
     iter_vertical_skill_texts,
     seed_builtin_skills_for_vertical,
@@ -73,14 +75,13 @@ def test_materials_uses_proportional_independently_reviewed_workflow() -> None:
     assert vertical_completion_gate(mod) == "none"
     assert vertical_requires_independent_review(mod) is True
     assert Manager._kind_for("materials") == "custom"
-    assert "materials" not in _OPTIMIZE_VERTICALS
 
 
 def test_materials_persists_and_seeds_scope(tmp_path) -> None:
     persist_vertical(tmp_path, "materials")
 
     state = json.loads(
-        (tmp_path / "research" / "PIPELINE_STATE.json").read_text(encoding="utf-8")
+        (tmp_path / ".argus" / "PIPELINE_STATE.json").read_text(encoding="utf-8")
     )
     assert state["vertical"] == "materials"
     assert state["current_stage"] == "scope"
@@ -178,3 +179,54 @@ def test_materials_skills_are_packaged_and_seeded(tmp_path) -> None:
     )
     assert MATERIALS_SKILLS <= set(seeded)
     assert all((tmp_path / path).is_file() for path in MATERIALS_SKILLS)
+
+
+def _write_materials_evidence(root: Path) -> None:
+    files = {
+        "runs/native.out": "solver output",
+        "validation/check.json": '{"converged": true}',
+        "REPORT.md": "bounded materials result",
+    }
+    for relpath, content in files.items():
+        path = root / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    manifest = root / "research" / "MATERIALS_EVIDENCE.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps({
+        "version": 1,
+        "evidence": [
+            {"kind": "native_output", "path": "runs/native.out"},
+            {"kind": "validation", "path": "validation/check.json"},
+            {"kind": "report", "path": "REPORT.md"},
+        ],
+    }), encoding="utf-8")
+
+
+def test_materials_evidence_gate_requires_real_project_files(tmp_path: Path) -> None:
+    from argus_skill.verticals.materials.evidence import validate_evidence
+
+    assert "missing" in " ".join(validate_evidence(tmp_path, "execute"))
+    _write_materials_evidence(tmp_path)
+    assert validate_evidence(tmp_path, "execute") == []
+    assert validate_evidence(tmp_path, "validate") == []
+    assert validate_evidence(tmp_path, "report") == []
+
+    (tmp_path / "runs" / "native.out").write_text("", encoding="utf-8")
+    assert "empty" in " ".join(validate_evidence(tmp_path, "report"))
+
+
+def test_materials_final_stage_cannot_complete_without_indexed_evidence(tmp_path: Path) -> None:
+    from argus_skill.skills.stage_machine import StageCompletionError, complete_final_stage
+
+    persist_vertical(tmp_path, "materials")
+    state_path = tmp_path / ".argus" / "PIPELINE_STATE.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["current_stage"] = "report"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(StageCompletionError, match="MATERIALS_EVIDENCE"):
+        complete_final_stage(tmp_path, reason="reviewed")
+
+    _write_materials_evidence(tmp_path)
+    complete_final_stage(tmp_path, reason="reviewed and evidence indexed")

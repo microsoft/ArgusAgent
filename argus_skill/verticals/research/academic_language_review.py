@@ -20,7 +20,6 @@ from argus_skill.tools.image_api import (
     _require_route,
 )
 
-from ...skills.venue_profiles import VenueProfile, resolve_venue_profile
 from ._review_contract_constants import (
     ACADEMIC_LANGUAGE_REVIEW_GENERATED_BY,
     ACADEMIC_LANGUAGE_REVIEW_HISTORY_PATH,
@@ -35,6 +34,7 @@ from ._reviewer_runner_fallback import (
     run_reviewer_prompt_via_runner,
     runner_fallback_enabled,
 )
+from .venue_profiles import VenueProfile, resolve_venue_profile
 
 PAPER_MAIN_TEX_PATH = Path("paper/main.tex")
 ACADEMIC_LANGUAGE_REVIEW_JSON_PATH = Path("paper/ACADEMIC_LANGUAGE_REVIEW.json")
@@ -326,9 +326,6 @@ def generate_academic_language_review(
                 venue=venue,
             )
         except (ImageToolError, AcademicLanguageReviewError) as exc:
-            # TODO(agent-cli-review-fallback): when no vault HTTP route exists but
-            # the reviewer role runs on an agent-CLI backend (copilot/claude),
-            # dispatch this review through that backend instead of hard-blocking.
             issues.append(
                 _issue(
                     "model_review_unavailable",
@@ -927,32 +924,18 @@ def _review_prompt(
         "Setup must let a reviewer identify the system under study, its paper-facing "
         "framework, benchmark harness, or controller, the controller/skill/memory "
         "mechanism, baselines, task source, metrics, evaluated model/backend, and "
-        "budget. For hosted agent experiments, the final paper should name the "
-        "approved hosted backbone such as gpt-5-mini plus decoding and budget "
-        "settings. For scorer-based experiments, the paper should name the evaluated "
-        "scorer/backend such as PairScorer and describe the candidate-ranking "
-        "protocol without adding authoring-environment details. Do not credit or describe the "
-        "Argus/Codex daemon, engineer/reviewer routes, academic-language review, layout "
-        "review, or image tool used to write this paper as if they were paper-method "
-        "components. Treat gpt-5.4, gpt-5.4-mini, and similar orchestration/reviewer "
-        "model labels as internal infrastructure names, not publishable evaluated-model "
-        "identifiers; hard-block them when they appear in the abstract, method, setup "
-        "tables, captions, or results prose. These details should be reader-facing prose or a compact table, "
-        "not only comments or JSON artifacts. Reject tables that expose internal "
-        "Argus/Codex route labels instead of paper-facing experimental facts. A "
-        "professional setup/results table should have explicit Benchmark/Source and "
-        "Model/Backend columns, task count/split, method/baseline role, "
-        "decoding/budget policy, metric, and the numerical takeaway. Reject final "
-        "claims supported by one benchmark family only; same-family variants such as "
-        "SWE-bench Verified/Lite/Multimodal do not count as independent sources. If "
-        "the Results section lacks one readable cross-benchmark results matrix "
-        "covering the selected three or more independent benchmark/source families "
-        "and major baselines/methods, require a table redesign rather than accepting "
-        "scattered single-benchmark snippets. The table must expose benchmark/source, "
-        "task count/split, evaluated model/backend, metric, budget/decoding, and key "
-        "scores so an outside reviewer can inspect the experiment scale quickly. If "
-        "a table says only 'route', 'component', or an internal role such as "
-        "engineer/reviewer, require the manuscript to redesign the table. Reject "
+        "budget. Name evaluated models, scorers, decoding settings, and ranking "
+        "protocols when they affect the result. Do not present the authoring daemon, "
+        "internal agent roles, review tools, or orchestration model identifiers as "
+        "paper-method components. Experimental details should appear in reader-facing "
+        "prose or a compact table, not only comments or internal artifacts. Tables "
+        "must expose the sources, evaluated systems, task scale, metrics, protocol, "
+        "and numerical takeaway needed to inspect the claim. Require multiple data "
+        "sources or a cross-source matrix only when the paper claims broad transfer "
+        "or generality; a focused contribution may use one well-justified evaluation "
+        "family with adequate baselines and uncertainty. Reject tables organized "
+        "around internal routes, components, or agent roles instead of experimental "
+        "facts. Reject "
         "a paper whose abstract reads like a validator checklist, starts with a numeric "
         "result before the problem/gap, or spends its scarce space on defensive caveats "
         "instead of problem, method, result, and implication. "
@@ -1098,25 +1081,14 @@ def describe_reviewer_route_unavailable(
     """Build an accurate operator message when the model-backed ``reviewer``
     route is unavailable.
 
-    The reviewer *role* may run on an agent-CLI backend (``copilot`` /
-    ``claude`` / ``codex``) that authenticates through its own CLI and exposes
-    no OpenAI-style HTTP route. On such deployments the raw ``_require_route``
-    guidance ("configure api_key, base_url, and model") is impossible to satisfy
-    for copilot/claude, so we surface the real options instead of a misleading
-    one. The gate stays blocking either way — this only fixes the message.
+    The reviewer *role* may run on an agent-CLI backend that authenticates
+    through its own CLI and exposes no OpenAI-style HTTP route. When both the
+    model route and the runner fallback are unavailable, surface actionable
+    configuration guidance instead of raw route internals.
 
     The note is only appended when the ``reviewer`` vault route is genuinely
     absent (so a real HTTP failure on a configured route is not mislabelled).
 
-    TODO(agent-cli-review-fallback): the durable fix is to let the model-backed
-    reviews dispatch their prompt through the reviewer's agent-CLI backend
-    (``AgentCliRunner.run_exec``) when no vault HTTP route is configured, so a
-    copilot/claude-only deployment can complete the review stage without a
-    separate keyed route. That is a larger, cross-file change: these reviews run
-    as standalone ``python -m argus_skill.verticals.research.*`` subprocesses,
-    so they would need to spawn the reviewer role backend and parse its JSON
-    output (timeouts, streaming, and JSON-extraction included). Tracked as a
-    follow-up rather than folded into this message-only fix.
     """
     base = _redact(str(exc))
     try:
@@ -1128,7 +1100,7 @@ def describe_reviewer_route_unavailable(
         backend = resolve_role_backend("reviewer", env=env).strip().lower()
     except Exception:  # pragma: no cover - never mask the underlying error
         return base
-    if route_missing and backend in {"copilot", "claude", "pi"}:
+    if route_missing and backend in {"copilot", "claude", "pi", "grok", "qoder", "dsh"}:
         return (
             f"{base} — note: the reviewer role runs on the {backend!r} agent-CLI "
             "backend, which authenticates through its own CLI and exposes no "

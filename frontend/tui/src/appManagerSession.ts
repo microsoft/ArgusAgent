@@ -230,7 +230,7 @@ export function useManagerSession({
                 requestProject,
                 Boolean(result.continuous),
               );
-              say(taskDispatchMessage(result));
+              if (!gotDelta) say(taskDispatchMessage(result));
             }
             else if (!gotDelta) {
               say(result.reply || '[Manager reply unavailable] No task was dispatched.');

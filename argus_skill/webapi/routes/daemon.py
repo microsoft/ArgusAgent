@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import Depends, HTTPException
 from starlette.concurrency import run_in_threadpool
 
+from ...core.workspace_lease import canonical_workdir
 from .context import ServerContext
 from .models import CommandIn, ContinuousIn, CreateDaemonIn, ReplaceDaemonIn, StopIn
 
@@ -23,6 +24,21 @@ def register_daemon_routes(app, ctx: ServerContext, server_mod) -> None:
         none, the daemon is idle and the user just talks to the Manager (which
         writes its own objectives). Threadpool: fs writes + optional fork."""
         root = server_mod._global_root(ctx.global_root)
+        resolved_paths: dict[str, str] = {}
+        for label, value in (
+            ("workdir", body.workdir),
+            ("launch cwd", body.launch_cwd),
+        ):
+            if not value:
+                resolved_paths[label] = ""
+                continue
+            try:
+                resolved_paths[label] = str(canonical_workdir(value))
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{label} is unavailable: {value}",
+                ) from exc
         receipt = await run_in_threadpool(
             server_mod.execute_daemon_command,
             root,
@@ -30,8 +46,8 @@ def register_daemon_routes(app, ctx: ServerContext, server_mod) -> None:
             args={
                 "objective": body.objective,
                 "name": body.name,
-                "launch_cwd": body.launch_cwd,
-                "workdir": body.workdir,
+                "launch_cwd": resolved_paths["launch cwd"],
+                "workdir": resolved_paths["workdir"],
             },
             command_id=body.command_id or None,
             expected_revision=body.expected_revision,
@@ -39,8 +55,8 @@ def register_daemon_routes(app, ctx: ServerContext, server_mod) -> None:
             handler=lambda: server_mod.create_daemon(
                 body.objective,
                 name=body.name,
-                launch_cwd=body.launch_cwd,
-                workdir=body.workdir,
+                launch_cwd=resolved_paths["launch cwd"],
+                workdir=resolved_paths["workdir"],
                 global_root=ctx.global_root,
             ),
         )

@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from typing import Any
 from ._life_worker_boot import _RunForeverState
 from ._life_worker_identity import _effective_runner_backend, _worker_vault_preflight_routes
 from .state import (
+    clear_daemon_control_stop,
     clear_daemon_drain_request,
     compare_and_swap_continuous_config,
     read_continuous_state,
@@ -199,6 +201,24 @@ class LifeWorkerRunMixin:
         except Exception:  # noqa: BLE001
             log.exception("daemon: failed to start telegram poller; continuing")
 
+        # Same contract for Feishu/Lark: opt-in, and a failure here must never
+        # take down a daemon that is otherwise healthy.
+        try:
+            from ..life.feishu_bot import feishu_enabled
+
+            if feishu_enabled():
+                from ..life.feishu_bot import FeishuPoller
+
+                fs_poller = FeishuPoller(
+                    life_dir=rf_state.runtime_root,
+                    stop_event=self._stop,
+                )
+                fs_poller.start()
+            else:
+                log.info("feishu bridge disabled")
+        except Exception:  # noqa: BLE001
+            log.exception("daemon: failed to start feishu bridge; continuing")
+
         # Start the resident Curator: it keeps each active team campaign's pool
         # in flight and is the single reaper (the lead drops .argus/team campaign
         # markers under project_workdir, which the Curator watches). Stopped in
@@ -229,7 +249,30 @@ class LifeWorkerRunMixin:
                     lock_factory = getattr(manager, "pipeline_lock", None)
                     pipeline_lock = lock_factory() if callable(lock_factory) else nullcontext()
                     with pipeline_lock:
-                        summary = rf_state.sup.run()
+                        supervisors = getattr(
+                            rf_state,
+                            "supervisors",
+                            [rf_state.sup],
+                        )
+                        if not supervisors:
+                            summary = {
+                                "stopped_by": "paused_workers",
+                                "suggested_sleep": rf_state.cfg.poll_interval,
+                            }
+                        elif len(supervisors) == 1:
+                            summary = rf_state.sup.run()
+                        else:
+                            with ThreadPoolExecutor(
+                                max_workers=len(supervisors),
+                                thread_name_prefix="argus-mission",
+                            ) as executor:
+                                futures = [
+                                    executor.submit(supervisor.run)
+                                    for supervisor in supervisors
+                                ]
+                                summary = futures[0].result()
+                                for future in futures[1:]:
+                                    future.result()
                         # Persist the planner's terminal decision before any
                         # optional self-maintenance. A maintenance handoff may
                         # rewrite stopped_by or raise; neither may resurrect a
@@ -341,10 +384,16 @@ class LifeWorkerRunMixin:
                         )
                         break
                 except Exception:  # noqa: BLE001
+                    if self._stop.is_set():
+                        log.info("daemon: drain pass interrupted by stop request")
+                        break
                     log.exception("daemon: drain pass raised; sleeping and retrying")
                 # Reset per-run counters so future drain passes work.
-                rf_state.sup._missions_started = 0
-                rf_state.sup._planning_cycles = 0
+                for supervisor in (
+                    getattr(rf_state, "supervisors", None) or [rf_state.sup]
+                ):
+                    supervisor._missions_started = 0
+                    supervisor._planning_cycles = 0
                 if self._stop.is_set():
                     break
                 # Honor the supervisor's suggested backoff (escalating while it is
@@ -363,6 +412,12 @@ class LifeWorkerRunMixin:
         finally:
             if self._curator is not None:
                 self._curator.stop()
+            if self._control_started_at_iso:
+                clear_daemon_control_stop(
+                    self.config.life_dir,
+                    pid=os.getpid(),
+                    started_at_iso=self._control_started_at_iso,
+                )
             clear_daemon_drain_request(
                 self.config.life_dir,
                 pid=os.getpid(),
@@ -480,6 +535,31 @@ class LifeWorkerRunMixin:
 
         maintenance = getattr(self, "_self_maintenance", None)
         if maintenance is not None:
+            publish_canary = getattr(maintenance, "publish_after_canary", None)
+            if callable(publish_canary):
+                canary_result = publish_canary(
+                    summary={
+                        "stopped_by": "",
+                        "planning_cycles": 0,
+                        "results": [outcome],
+                    }
+                )
+                if canary_result.startswith("rollback:"):
+                    rollback_root = Path(canary_result.removeprefix("rollback:"))
+                    if rollback_root.is_dir() and _spawn_handoff_candidate(
+                        self.config,
+                        reason=(
+                            "self-maintenance canary failed after a mission; "
+                            "restore prior runtime"
+                        ),
+                        candidate_source_root=rollback_root,
+                    ):
+                        self._stop.set()
+                        return "daemon_handoff"
+                    maintenance.mark_handoff_failed(
+                        "mission-level canary rollback did not reach standby"
+                    )
+                    return ""
             candidate_root = maintenance.prepare_reviewed_change(outcome)
             if candidate_root is not None:
                 from ..core.runtime_identity import source_root

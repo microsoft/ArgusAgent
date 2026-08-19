@@ -67,8 +67,10 @@ def test_apply_current_process_affinity_verifies_exact_mask(
         current.update(cpu_ids)
         applied.append(set(cpu_ids))
 
-    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: set(current))
-    monkeypatch.setattr(os, "sched_setaffinity", fake_setaffinity)
+    monkeypatch.setattr(
+        os, "sched_getaffinity", lambda _pid: set(current), raising=False
+    )
+    monkeypatch.setattr(os, "sched_setaffinity", fake_setaffinity, raising=False)
 
     cpu.apply_current_process_affinity((1, 3))
 

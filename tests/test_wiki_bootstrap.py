@@ -1,6 +1,8 @@
 from pathlib import Path
 
+from argus_skill.core.event_catalog import EventType
 from argus_skill.wiki.bootstrap import init_wiki, is_initialized_wiki
+from argus_skill.wiki.lifecycle import ensure_project_wiki
 
 
 def test_init_creates_minimal_tree(tmp_path: Path) -> None:
@@ -19,3 +21,24 @@ def test_init_preserves_agent_index(tmp_path: Path) -> None:
     (root / "INDEX.md").write_text("# Agent index\n", encoding="utf-8")
     init_wiki(project="demo", base=tmp_path)
     assert (root / "INDEX.md").read_text(encoding="utf-8") == "# Agent index\n"
+
+
+def test_runtime_bootstrap_creates_discoverable_wiki_and_emits_entry(
+    tmp_path: Path,
+) -> None:
+    events: list[dict] = []
+
+    root = ensure_project_wiki(tmp_path, enabled=True, on_event=events.append)
+
+    assert root == tmp_path / ".autors" / tmp_path.name / "wiki"
+    assert is_initialized_wiki(root)
+    assert (root / "INDEX.md").read_text(encoding="utf-8").startswith("# Wiki Index")
+    assert events == [
+        {
+            "type": EventType.WIKI_INITIALIZED,
+            "project": tmp_path.name,
+            "path": str(root),
+            "auto": True,
+            "text": f"initialized project Wiki at {root}",
+        }
+    ]

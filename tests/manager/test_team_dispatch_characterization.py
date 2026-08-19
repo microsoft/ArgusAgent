@@ -29,11 +29,11 @@ def memory(tmp_path):
 @pytest.mark.parametrize(
     ("hint", "expected_continuous"),
     [
-        pytest.param(None, True, id="missing-defaults-standing"),
+        pytest.param(None, False, id="missing-defaults-bounded"),
         pytest.param("standing", True, id="standing"),
         pytest.param("bounded", False, id="bounded"),
         pytest.param("bounded_increment", False, id="bounded-increment"),
-        pytest.param("garbage", True, id="malformed-defaults-standing"),
+        pytest.param("garbage", False, id="malformed-defaults-bounded"),
     ],
 )
 def test_team_lifetime_controls_dispatch_mode(memory, hint, expected_continuous):

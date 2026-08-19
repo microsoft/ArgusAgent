@@ -94,3 +94,20 @@ def test_all_role_prompt_boundaries_hide_dynamic_hash_values() -> None:
     for prompt in (manager, reviewer):
         assert MODEL_INTEGRITY_BOUNDARY.splitlines()[0] in prompt
         assert SHA_A not in prompt
+
+
+def test_reviewer_requires_causal_performance_evidence() -> None:
+    prompt = Reviewer(runner=None, skill_store=None)._build_prompt(
+        objective="Review the claimed throughput bottleneck.",
+        operator_messages=[],
+        planner_review_instruction="",
+        round_index=1,
+        session_id=None,
+        main_summary="The end-to-end threshold was missed.",
+        main_error=None,
+        prior_checkpoint={},
+    )
+
+    assert "threshold miss only shows that this run missed its target" in prompt
+    assert "root-cause, dominant/bottleneck-stage" in prompt
+    assert "profiling, timing, or a controlled comparison" in prompt

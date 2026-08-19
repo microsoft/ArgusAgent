@@ -30,21 +30,24 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
+import weakref
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
+import portalocker
+
 from ..core.event_catalog import EventType, canonical_event_type
 
-fcntl: Any
-try:  # pragma: no cover - platform-specific import
-    import fcntl
-except ImportError:  # pragma: no cover - Windows fallback
-    fcntl = None
+_BACKLOG_THREAD_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = (
+    weakref.WeakValueDictionary()
+)
+_BACKLOG_THREAD_LOCKS_GUARD = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -446,6 +449,7 @@ class EventJournal:
         r'"(?:type|canonical_type)"\s*:\s*"(?:user\.note|'
         r'mission\.(?:started|completed)|life\.(?:mission|planner|budget|lifecycle)\.[^"]+)"'
     )
+    _TOTAL_COST_CACHE_MAX_ENTRIES = 32
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
@@ -613,7 +617,10 @@ class EventJournal:
                             total += cost
             except OSError:
                 continue
+        self._total_cost_cache.pop(ts, None)
         self._total_cost_cache[ts] = (signature, total)
+        while len(self._total_cost_cache) > self._TOTAL_COST_CACHE_MAX_ENTRIES:
+            del self._total_cost_cache[next(iter(self._total_cost_cache))]
         return total
 
 
@@ -683,6 +690,7 @@ class BacklogItem:
     tags: list[str] = field(default_factory=list)
     notes: str = ""
     started_ts: float | None = None
+    running_owner: str = ""
     finished_ts: float | None = None
     last_error: str = ""
     # Set when this item's reviewer verdict was "blocked" with a
@@ -696,6 +704,13 @@ class BacklogItem:
     # — a non-empty value always means "still waiting on the operator".
     pending_question: str = ""
     operator_decision: dict[str, Any] = field(default_factory=dict)
+    # Evidence that the Manager routed this item: which vertical, stage, and
+    # target level it chose. Empty means the row reached the backlog without a
+    # Manager decision — almost always because something wrote backlog.jsonl
+    # directly instead of dispatching. The file is writable by design, so this
+    # is not a lock; it is what lets the supervisor notice and re-route rather
+    # than run the item blind under the default workflow.
+    manager_decision: dict[str, Any] = field(default_factory=dict)
     # --- iteration loop fields (Phase-7) -------------------------------
     # When ``iterate`` is True the supervisor, after a successful
     # ``done`` verdict, hands the produced artefacts to a L2 reviewer agent. The reviewer is the only verdict authority;
@@ -736,6 +751,10 @@ class BacklogItem:
     # these fields bound completion and prevent a fresh session from reopening
     # unrelated project history.
     acceptance_check: str = ""
+    plan_hypothesis: str = ""
+    goal_contribution: str = ""
+    expected_regressions: str = ""
+    decision_rule: str = ""
     non_goals: list[str] = field(default_factory=list)
     superseded_by_plan_id: str = ""
     superseded_reason: str = ""
@@ -749,9 +768,14 @@ class BacklogItem:
     replan_streak_tracked: bool = False
     authorization_id: str = ""
     authorization_action: str = ""
-    # Optional execution root selected by the Manager for framework maintenance.
-    # Ordinary research tasks leave this empty and execute in project_worktree.
+    # Optional execution root. Framework maintenance may use an isolated
+    # absolute worktree; ordinary Planner tasks use a project-relative nested
+    # Git root, which becomes the campaign root after host validation.
     execution_workdir: str = ""
+    # Only explicitly disjoint Planner tasks may be claimed by auxiliary mission
+    # workers. The primary worker remains able to execute every backlog item.
+    parallel_safe: bool = False
+    owns_paths: list[str] = field(default_factory=list)
     outcome: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -779,9 +803,16 @@ class BacklogItem:
         authorization_id: str = "",
         authorization_action: str = "",
         execution_workdir: str = "",
+        parallel_safe: bool = False,
+        owns_paths: list[str] | None = None,
         acceptance_check: str = "",
+        plan_hypothesis: str = "",
+        goal_contribution: str = "",
+        expected_regressions: str = "",
+        decision_rule: str = "",
         non_goals: list[str] | None = None,
         original_objective: str = "",
+        manager_decision: dict[str, Any] | None = None,
     ) -> "BacklogItem":
         objective = objective.strip()
         root_objective = str(original_objective or "").strip() or objective
@@ -796,6 +827,7 @@ class BacklogItem:
             iterate=bool(iterate),
             iteration_max_cycles=int(iteration_max_cycles),
             original_objective=root_objective,
+            manager_decision=dict(manager_decision or {}),
             deps=list(deps or []),
             plan_id=str(plan_id),
             plan_version=max(0, int(plan_version)),
@@ -809,7 +841,17 @@ class BacklogItem:
             authorization_id=str(authorization_id),
             authorization_action=str(authorization_action),
             execution_workdir=str(execution_workdir),
+            parallel_safe=bool(parallel_safe),
+            owns_paths=[
+                str(path).strip()
+                for path in (owns_paths or [])
+                if str(path).strip()
+            ],
             acceptance_check=str(acceptance_check or "").strip(),
+            plan_hypothesis=str(plan_hypothesis or "").strip(),
+            goal_contribution=str(goal_contribution or "").strip(),
+            expected_regressions=str(expected_regressions or "").strip(),
+            decision_rule=str(decision_rule or "").strip(),
             non_goals=[
                 str(item).strip()
                 for item in (non_goals or [])
@@ -836,12 +878,18 @@ class BacklogItem:
             tags=list(row.get("tags", [])),
             notes=str(row.get("notes", "")),
             started_ts=row.get("started_ts"),
+            running_owner=str(row.get("running_owner", "")),
             finished_ts=row.get("finished_ts"),
             last_error=str(row.get("last_error", "")),
             pending_question=str(row.get("pending_question", "")),
             operator_decision=(
                 dict(row.get("operator_decision", {}))
                 if isinstance(row.get("operator_decision"), dict)
+                else {}
+            ),
+            manager_decision=(
+                dict(row.get("manager_decision", {}))
+                if isinstance(row.get("manager_decision"), dict)
                 else {}
             ),
             iterate=bool(row.get("iterate", False)),
@@ -865,6 +913,10 @@ class BacklogItem:
             ],
             blocker_fingerprint=str(row.get("blocker_fingerprint", "")),
             acceptance_check=str(row.get("acceptance_check", "")),
+            plan_hypothesis=str(row.get("plan_hypothesis", "")),
+            goal_contribution=str(row.get("goal_contribution", "")),
+            expected_regressions=str(row.get("expected_regressions", "")),
+            decision_rule=str(row.get("decision_rule", "")),
             non_goals=[
                 str(item).strip()
                 for item in (row.get("non_goals", []) or [])
@@ -881,6 +933,12 @@ class BacklogItem:
             authorization_id=str(row.get("authorization_id", "")),
             authorization_action=str(row.get("authorization_action", "")),
             execution_workdir=str(row.get("execution_workdir", "")),
+            parallel_safe=bool(row.get("parallel_safe", False)),
+            owns_paths=[
+                str(path).strip()
+                for path in (row.get("owns_paths", []) or [])
+                if str(path).strip()
+            ],
             outcome=(
                 {str(key): value for key, value in row.get("outcome", {}).items()}
                 if isinstance(row.get("outcome"), dict)
@@ -933,7 +991,61 @@ class Backlog:
         always ready — this is what guarantees the no-deps behaviour is
         identical to the pre-DAG flat backlog.
         """
-        return item.status == "pending" and all(d in done for d in item.deps)
+        return (
+            item.status == "pending"
+            and not str(item.pending_question or "").strip()
+            and all(d in done for d in item.deps)
+        )
+
+    @staticmethod
+    def _paths_overlap(left: str, right: str) -> bool:
+        left_parts = tuple(
+            part.casefold()
+            for part in left.replace("\\", "/").strip("/").split("/")
+            if part and part != "."
+        )
+        right_parts = tuple(
+            part.casefold()
+            for part in right.replace("\\", "/").strip("/").split("/")
+            if part and part != "."
+        )
+        if not left_parts or not right_parts:
+            return True
+        common = min(len(left_parts), len(right_parts))
+        return left_parts[:common] == right_parts[:common]
+
+    @classmethod
+    def _parallel_worker_can_claim(
+        cls,
+        candidate: BacklogItem,
+        items: Iterable[BacklogItem],
+    ) -> bool:
+        if not candidate.parallel_safe or not candidate.owns_paths:
+            return False
+        if any(
+            Path(path).is_absolute()
+            or not Path(path).parts
+            or ".." in Path(path).parts
+            or any(char in path for char in "*?[]{}!")
+            for path in candidate.owns_paths
+        ):
+            return False
+        forbidden = {"stage_closing", "framework_maintenance"}
+        tags = {
+            str(tag).strip().lower().replace("-", "_")
+            for tag in candidate.tags
+        }
+        if tags & forbidden:
+            return False
+        running = [item for item in items if item.status == "running"]
+        if any(not item.parallel_safe or not item.owns_paths for item in running):
+            return False
+        return not any(
+            cls._paths_overlap(candidate_path, running_path)
+            for item in running
+            for candidate_path in candidate.owns_paths
+            for running_path in item.owns_paths
+        )
 
     @staticmethod
     def _dependency_cycle_components(
@@ -1063,27 +1175,17 @@ class Backlog:
     @contextmanager
     def _locked(self) -> Iterator[None]:
         """Serialize backlog read-modify-write operations across processes."""
+        key = os.path.normcase(str(self._lock_path.resolve()))
+        with _BACKLOG_THREAD_LOCKS_GUARD:
+            thread_lock = _BACKLOG_THREAD_LOCKS.setdefault(key, threading.Lock())
         self._lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._lock_path.open("a+b") as fh:
-            if fcntl is not None:  # POSIX
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        with thread_lock:
+            with self._lock_path.open("a+b") as fh:
+                portalocker.lock(fh, portalocker.LOCK_EX)
                 try:
                     yield
                 finally:
-                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-            else:  # pragma: no cover - Windows fallback
-                import msvcrt
-
-                lock = getattr(msvcrt, "locking")
-                lk_lock = getattr(msvcrt, "LK_LOCK")
-                lk_unlock = getattr(msvcrt, "LK_UNLCK")
-                fh.seek(0)
-                lock(fh.fileno(), lk_lock, 1)
-                try:
-                    yield
-                finally:
-                    fh.seek(0)
-                    lock(fh.fileno(), lk_unlock, 1)
+                    portalocker.unlock(fh)
 
     # --- write ---
     def add(self, item: BacklogItem) -> BacklogItem:
@@ -1119,7 +1221,7 @@ class Backlog:
         reason: str,
         replacement_id: str,
     ) -> tuple[str, ...]:
-        """Atomically retire pending work owned by a superseded objective.
+        """Atomically retire inactive work owned by a superseded objective.
 
         Running missions are left untouched; Manager pipeline-yield ensures
         replacement commits happen at a mission boundary in normal operation.
@@ -1133,7 +1235,7 @@ class Backlog:
             items = self._load()
             now = time.time()
             for item in items:
-                if item.status != "pending":
+                if item.status in _TERMINAL_STATUSES or item.status == "running":
                     continue
                 item.status = "superseded"
                 item.finished_ts = now
@@ -1332,12 +1434,28 @@ class Backlog:
         *,
         manager_decision: str = "",
         decision_option: str = "custom",
+        decision_id: str = "",
+        decision_note: str = "",
+        manager_reply: str = "",
     ) -> tuple[BacklogItem | None, BacklogItem | None]:
-        """Atomically consume one pending question and enqueue its continuation."""
+        """Atomically consume one pending question and enqueue its continuation.
+
+        A decision id binds typed-card requests to the pending card. The backlog
+        lock and resolved card provide idempotency without a separate revision
+        or campaign-generation gate.
+        """
         with self._locked():
             items = self._load()
             blocked = next((item for item in items if item.id == item_id), None)
-            if blocked is None or not str(blocked.pending_question or "").strip():
+            if blocked is None:
+                return None, None
+            card = blocked.operator_decision
+            if decision_id and (
+                str(card.get("id") or "") != decision_id
+                or str(card.get("status") or "") != "pending"
+            ):
+                return blocked, None
+            if not str(blocked.pending_question or "").strip():
                 return blocked, None
             answer = answer.strip()
             decision = manager_decision.strip()
@@ -1375,11 +1493,19 @@ class Backlog:
                     )
                     for goal in non_goals
                 ]
+            inherited_manager_decision = dict(blocked.manager_decision)
+            if decision:
+                inherited_manager_decision["routed"] = True
             continuation = BacklogItem.new(
                 title=blocked.title,
                 objective=objective,
                 priority=blocked.priority,
-                tags=[*blocked.tags, "operator-reply", "manager-approved"],
+                tags=list(dict.fromkeys([
+                    *blocked.tags,
+                    "operator-reply",
+                    "manager-approved",
+                    "review:required",
+                ])),
                 notes=f"Continues blocked item {blocked.id}.",
                 iterate=blocked.iterate,
                 iteration_max_cycles=blocked.iteration_max_cycles,
@@ -1396,17 +1522,38 @@ class Backlog:
                 authorization_action=blocked.authorization_action,
                 execution_workdir=blocked.execution_workdir,
                 acceptance_check=acceptance_check,
+                plan_hypothesis=(
+                    decision or blocked.plan_hypothesis
+                ),
+                goal_contribution=blocked.goal_contribution,
+                expected_regressions=blocked.expected_regressions,
+                decision_rule=blocked.decision_rule,
                 non_goals=non_goals,
+                manager_decision=inherited_manager_decision,
             )
             blocked.status = "failed"
             blocked.finished_ts = time.time()
             blocked.pending_question = ""
             if blocked.operator_decision:
+                resolved_from_revision = int(
+                    blocked.operator_decision.get("revision", 1) or 1
+                )
                 blocked.operator_decision.update({
                     "status": "resolved",
                     "selected_option": decision_option,
-                    "note": answer,
-                    "revision": int(blocked.operator_decision.get("revision", 1)) + 1,
+                    "note": (
+                        decision_note.strip() if decision_id else answer
+                    ),
+                    "resolved_from_revision": resolved_from_revision,
+                    "revision": resolved_from_revision + 1,
+                    "continuation_item_id": continuation.id,
+                    "manager_decision": decision,
+                    "reply": manager_reply.strip(),
+                    "resume_requested": True,
+                    "resolution_id": (
+                        f"{blocked.operator_decision.get('id', decision_id)}:"
+                        f"r{resolved_from_revision}"
+                    ),
                 })
             # The blocked item becomes terminal in the same transaction that
             # creates its continuation. Every live downstream node that
@@ -1431,27 +1578,55 @@ class Backlog:
         item_id: str,
         *,
         note: str = "",
+        decision_id: str = "",
     ) -> BacklogItem | None:
         """Resolve one pending decision by stopping its campaign item."""
         with self._locked():
             items = self._load()
             item = next((row for row in items if row.id == item_id), None)
-            if item is None or not item.pending_question:
+            if item is None:
+                return None
+            card = item.operator_decision
+            if decision_id and (
+                str(card.get("id") or "") != decision_id
+                or str(card.get("status") or "") != "pending"
+            ):
+                return None
+            if not item.pending_question:
                 return None
             item.status = "aborted"
             item.finished_ts = time.time()
             item.pending_question = ""
             if item.operator_decision:
+                resolved_from_revision = int(
+                    item.operator_decision.get("revision", 1) or 1
+                )
                 item.operator_decision.update({
                     "status": "resolved",
                     "selected_option": "stop",
                     "note": note.strip(),
-                    "revision": int(item.operator_decision.get("revision", 1)) + 1,
+                    "resolved_from_revision": resolved_from_revision,
+                    "revision": resolved_from_revision + 1,
+                    "continuation_item_id": "",
+                    "manager_decision": "stop campaign",
+                    "reply": "Campaign stopped. Current work was preserved.",
+                    "resume_requested": False,
+                    "resolution_id": (
+                        f"{item.operator_decision.get('id', decision_id)}:"
+                        f"r{resolved_from_revision}"
+                    ),
                 })
             self._save(items)
             return item
 
-    def claim_next(self) -> BacklogItem | None:
+    def claim_next(
+        self,
+        *,
+        parallel_only: bool = False,
+        respect_running: bool = False,
+        expected_id: str = "",
+        owner: str = "",
+    ) -> BacklogItem | None:
         """Atomically pick the head *ready* pending item and flip it to ``running``.
 
         Replaces the ``next_pending()`` + ``mark_running()`` pair so the
@@ -1477,14 +1652,30 @@ class Backlog:
             cascaded = self._cascade_blocked(items)
             done = self._done_ids(items)
             ready = [it for it in items if self._is_ready(it, done)]
+            if parallel_only or (
+                respect_running
+                and any(item.status == "running" for item in items)
+            ):
+                ready = [
+                    item
+                    for item in ready
+                    if self._parallel_worker_can_claim(item, items)
+                ]
             if not ready:
                 if cascaded:
                     self._save(items)
                 return None
             ready.sort(key=lambda it: (it.priority, it.ts))
-            head = ready[0]
+            head = (
+                next((item for item in ready if item.id == expected_id), None)
+                if expected_id
+                else ready[0]
+            )
+            if head is None:
+                return None
             head.status = "running"
             head.started_ts = time.time()
+            head.running_owner = str(owner)
             self._save(items)
             return head
 
@@ -1725,7 +1916,12 @@ class Backlog:
         out.sort(key=lambda it: (it.priority, it.ts))
         return out
 
-    def next_pending(self) -> BacklogItem | None:
+    def next_pending(
+        self,
+        *,
+        parallel_only: bool = False,
+        respect_running: bool = False,
+    ) -> BacklogItem | None:
         """Head of the *ready* queue (deps all ``done``), or ``None``.
 
         Kept named ``next_pending`` for the existing supervisor call
@@ -1742,6 +1938,15 @@ class Backlog:
             changed = self._cascade_blocked(items)
             done = self._done_ids(items)
             ready = [item for item in items if self._is_ready(item, done)]
+            if parallel_only or (
+                respect_running
+                and any(item.status == "running" for item in items)
+            ):
+                ready = [
+                    item
+                    for item in ready
+                    if self._parallel_worker_can_claim(item, items)
+                ]
             if changed:
                 self._save(items)
             ready.sort(key=lambda item: (item.priority, item.ts))
@@ -1826,6 +2031,10 @@ class IdentityCard:
         if not self.path.exists():
             return ""
         return self.path.read_text(encoding="utf-8")
+
+    def prompt_text(self) -> str:
+        text = self.read().strip()
+        return "" if text == _DEFAULT_IDENTITY.strip() else text
 
     def ensure_default(self) -> bool:
         if self.path.exists():
@@ -1934,7 +2143,7 @@ class LifeMemory:
         *,
         objective: str = "",
         identity_chars: int = 600,
-        max_journal_entries: int = 3,
+        max_journal_entries: int = 0,
     ) -> str:
         """Render the memory block we inject as ``prelude_context``.
 
@@ -1942,10 +2151,14 @@ class LifeMemory:
         the engineer/reviewer prompts can downweight it on conflict.
         Returns an empty string if there's nothing useful to inject.
         """
-        identity = self.identity.read().strip()
+        identity = self.identity.prompt_text()
         if identity_chars > 0:
             identity = identity[:identity_chars]
-        relevant = self.recent_journal(max_entries=max_journal_entries)
+        relevant = (
+            self.recent_journal(max_entries=max_journal_entries)
+            if max_journal_entries > 0
+            else []
+        )
 
         failure_context = self.render_failure_experience_context(objective)
 
@@ -1955,9 +2168,8 @@ class LifeMemory:
         lines: list[str] = []
         lines.append("### Memory context (non-authoritative)")
         lines.append(
-            "The following identity card and prior-mission notes are advisory. "
-            "If they conflict with the current objective, the live repo state, "
-            "or explicit user instructions, **ignore them**."
+            "This memory is advisory. If it conflicts with the current objective, "
+            "live repo state, or explicit user instructions, **ignore it**."
         )
         if identity:
             lines.append("")
@@ -2065,7 +2277,11 @@ def request_running_item_abort(
     )
 
 
-def consume_running_item_abort(life_dir: Path | str | None) -> str | None:
+def consume_running_item_abort(
+    life_dir: Path | str | None,
+    *,
+    target_item_id: str = "",
+) -> str | None:
     """Consume a valid abort request while its exact target remains running."""
     if not life_dir:
         return None
@@ -2077,6 +2293,17 @@ def consume_running_item_abort(life_dir: Path | str | None) -> str | None:
     raw = ""
     consumed_path: Path | None = None
     for path in paths:
+        if target_item_id:
+            try:
+                preview = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if (
+                not isinstance(preview, dict)
+                or str(preview.get("target_item_id") or "").strip()
+                != target_item_id
+            ):
+                continue
         claimed = path.with_name(
             f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.claimed"
         )
@@ -2112,6 +2339,8 @@ def consume_running_item_abort(life_dir: Path | str | None) -> str | None:
         return None
     item_id = str(payload.get("target_item_id") or "").strip()
     if not item_id:
+        return None
+    if target_item_id and item_id != target_item_id:
         return None
     try:
         target = next(
@@ -2364,7 +2593,7 @@ class MemoryBundle:
         *,
         objective: str = "",
         identity_chars: int = 600,
-        max_project_entries: int = 3,
+        max_project_entries: int = 0,
     ) -> str:
         """Render a unified memory prelude for prompt injection.
 
@@ -2373,11 +2602,15 @@ class MemoryBundle:
         workspace prompts must not satisfy or steer the current mission with
         artifacts from another project.
         """
-        identity = self.global_mem.identity.read().strip()
+        identity = self.global_mem.identity.prompt_text()
         if identity_chars > 0:
             identity = identity[:identity_chars]
 
-        project_hits = self.project.recent_journal(max_entries=max_project_entries)
+        project_hits = (
+            self.project.recent_journal(max_entries=max_project_entries)
+            if max_project_entries > 0
+            else []
+        )
 
         failure_context = self.render_failure_experience_context(objective)
 
@@ -2387,10 +2620,8 @@ class MemoryBundle:
         lines: list[str] = []
         lines.append("### Memory context (non-authoritative)")
         lines.append(
-            "The following identity card and prior-mission "
-            "notes are advisory. If they conflict with the current "
-            "objective, the live repo state, or explicit user "
-            "instructions, **ignore them**."
+            "This memory is advisory. If it conflicts with the current objective, "
+            "live repo state, or explicit user instructions, **ignore it**."
         )
         if identity:
             lines.append("")

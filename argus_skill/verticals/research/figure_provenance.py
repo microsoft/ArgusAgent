@@ -46,10 +46,33 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _normalized_resolved_path(path: Path) -> Path:
+    r"""Resolve a path while normalizing Windows' optional extended prefix.
+
+    ``Path.resolve()`` can intermittently return ``\\?\C:\...`` while another
+    thread is creating a parent directory, even when the same path normally
+    resolves to ``C:\...``.  Those spellings identify the same object but
+    ``Path.relative_to`` treats them as different anchors and falsely reports a
+    project escape.  Normalize only the Win32 namespace spelling; containment
+    is still checked against fully resolved paths.
+    """
+    resolved = path.resolve()
+    if os.name != "nt":
+        return resolved
+    raw = str(resolved)
+    if raw.startswith("\\\\?\\UNC\\"):
+        return Path("\\\\" + raw[8:])
+    if raw.startswith("\\\\?\\"):
+        return Path(raw[4:])
+    return resolved
+
+
 def _project_path(project_root: Path, raw: Path | str) -> Path:
-    root = project_root.resolve()
+    root = _normalized_resolved_path(project_root)
     candidate = Path(raw).expanduser()
-    resolved = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
+    resolved = _normalized_resolved_path(
+        candidate if candidate.is_absolute() else root / candidate
+    )
     try:
         resolved.relative_to(root)
     except ValueError as exc:
@@ -58,7 +81,9 @@ def _project_path(project_root: Path, raw: Path | str) -> Path:
 
 
 def _relative(project_root: Path, path: Path) -> str:
-    return path.resolve().relative_to(project_root.resolve()).as_posix()
+    return _normalized_resolved_path(path).relative_to(
+        _normalized_resolved_path(project_root)
+    ).as_posix()
 
 
 def _load_manifest(path: Path) -> dict[str, object]:
@@ -98,7 +123,12 @@ def _file_record(project_root: Path, raw: Path | str) -> dict[str, str]:
 
 
 def _transaction_lock_path(project_root: Path) -> Path:
-    return project_root.resolve() / "paper" / "figures" / ".figure-manifests.lock"
+    return (
+        _normalized_resolved_path(project_root)
+        / "paper"
+        / "figures"
+        / ".figure-manifests.lock"
+    )
 
 
 @contextmanager

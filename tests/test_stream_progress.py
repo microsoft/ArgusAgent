@@ -173,7 +173,7 @@ def test_progress_callback_redacts_secrets_before_live_sink() -> None:
     """Live sinks may not wrap JsonlEventSink, so redact at the source."""
     sink = _RecordingSink()
     cb = make_stream_progress_callback(sink)
-    secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345678901"
+    secret = "ghp_" + "A" * 36
     line = json.dumps({
         "type": "item.completed",
         "item": {
@@ -404,7 +404,7 @@ def test_planner_final_delivery_is_preserved_beyond_progress_limit() -> None:
     assert event["text"].endswith("REASON=complete result remains visible")
 
 
-def test_ordinary_long_progress_remains_bounded() -> None:
+def test_ordinary_long_agent_speech_is_preserved() -> None:
     sink = _RecordingSink()
     cb = make_stream_progress_callback(sink)
 
@@ -414,8 +414,7 @@ def test_ordinary_long_progress_remains_bounded() -> None:
     }))
 
     event = sink.events[-1]
-    assert len(event["text"]) == 600
-    assert event["text"].endswith("…")
+    assert event["text"] == "x" * 900
     assert "final_delivery" not in event
 
 

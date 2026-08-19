@@ -44,7 +44,7 @@ def _seed_proven_domain(tmp_path):
             ],
         },
     )
-    state = tmp_path / "research" / "PIPELINE_STATE.json"
+    state = tmp_path / ".argus" / "PIPELINE_STATE.json"
     payload = json.loads(state.read_text())
     payload.update({"current_stage": "simulate", "stages": {"scope": {"status": "done"}}})
     state.write_text(json.dumps(payload))
@@ -62,7 +62,8 @@ def test_proposes_only_when_proven(tmp_path, monkeypatch):
     # No PIPELINE_STATE → not proven → no proposal.
     assert dt.propose_promotions(tmp_path) == []
     # Mark a stage done → proven.
-    state = tmp_path / "research" / "PIPELINE_STATE.json"
+    state = tmp_path / ".argus" / "PIPELINE_STATE.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
     state.write_text(
         json.dumps({"current_stage": "simulate", "stages": {"scope": {"status": "done"}}})
     )
@@ -91,6 +92,30 @@ def test_rendered_stages_py_is_valid_and_exposes_contract(tmp_path, monkeypatch)
     assert [i.id for i in mod.CHECKLIST_ITEMS["scope"]] == ["scope.obj"]
     assert [i.id for i in mod.CHECKLIST_ITEMS["simulate"]] == ["simulate.seeds"]
     assert callable(mod.role_banner)
+
+
+def test_rendered_stages_py_preserves_role_specific_banners(tmp_path):
+    dd.write_data_domain(
+        tmp_path,
+        "role_aware",
+        stages=["scope", "deliver"],
+        role_banner={
+            "manager": "manager contract",
+            "reviewer": "reviewer contract",
+            "default": "shared contract",
+        },
+    )
+    src = dt._render_stages_py("role_aware", tmp_path)
+    src = src.replace(
+        "from ...skills.stage_machine",
+        "from argus_skill.skills.stage_machine",
+    )
+    mod = types.ModuleType("promoted_role_aware_stages")
+    exec(compile(src, "<stages>", "exec"), mod.__dict__)
+
+    assert mod.role_banner("manager") == "manager contract"
+    assert mod.role_banner("reviewer") == "reviewer contract"
+    assert mod.role_banner("engineer") == "shared contract"
 
 
 def test_render_preserves_seed_plus_custom_items(tmp_path):
@@ -128,7 +153,8 @@ def test_render_preserves_seed_plus_custom_items(tmp_path):
 
     # PIPELINE_STATE: vertical = robotics_sim (so seed_items_for resolves correctly)
     # and one stage done so the domain is "proven".
-    state = tmp_path / "research" / "PIPELINE_STATE.json"
+    state = tmp_path / ".argus" / "PIPELINE_STATE.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
     state.write_text(
         json.dumps(
             {

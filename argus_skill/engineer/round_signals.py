@@ -23,7 +23,6 @@ def _review_event_payload(
     round_max: int,
     text: str,
     review_skipped: bool = False,
-    review_source: str = "",
 ) -> dict[str, object]:
     return redact_secrets_record(
         review.to_event_payload(
@@ -31,7 +30,6 @@ def _review_event_payload(
             round_max=round_max,
             text=text,
             review_skipped=review_skipped,
-            review_source=review_source,
         ),
         known_values=known_secret_values(),
     )

@@ -425,8 +425,12 @@ class FailureExperienceStore:
             ])
             if item.research_narrative:
                 lines.append(f"- Narrative: {item.research_narrative}")
-            if item.lessons:
-                lines.append("- Lessons: " + " | ".join(item.lessons))
+            lessons = [
+                lesson for lesson in item.lessons
+                if lesson != item.factual_outcome
+            ]
+            if lessons:
+                lines.append("- Lessons: " + " | ".join(lessons))
             if item.transfer_insights:
                 lines.append(
                     "- Transfer ideas: " + " | ".join(item.transfer_insights)

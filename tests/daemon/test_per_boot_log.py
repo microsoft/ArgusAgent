@@ -1,9 +1,10 @@
 """Per-boot daemon log segmentation: identity stays per-PROJECT (one daemon per
 life_dir), but each boot gets its OWN log file so consecutive runs never
-interleave; a stable <life_dir>/daemon.log symlink always points at the live boot.
+interleave; a stable <life_dir>/daemon.log alias always exposes the live boot.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from argus_skill.daemon.life_worker import (
@@ -28,16 +29,23 @@ def test_daemon_log_path_is_per_boot(tmp_path: Path):
     assert _daemon_log_path(tmp_path, override, "b1") == override
 
 
-def test_point_active_daemon_log_symlinks_to_target(tmp_path: Path):
+def test_point_active_daemon_log_aliases_target(tmp_path: Path):
     target = _daemon_log_path(tmp_path, None, "b1")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("boot 1\n")
 
     _point_active_daemon_log(tmp_path, target)
     link = tmp_path / "daemon.log"
-    assert link.is_symlink()
-    assert link.resolve() == target.resolve()
+    if os.name == "nt":
+        assert not link.is_symlink()
+        assert link.samefile(target)
+    else:
+        assert link.is_symlink()
+        assert link.resolve() == target.resolve()
     assert link.read_text() == "boot 1\n"  # tail daemon.log == live boot
+    with target.open("a", encoding="utf-8") as handle:
+        handle.write("still live\n")
+    assert link.read_text() == "boot 1\nstill live\n"
 
 
 def test_point_active_repoints_to_new_boot(tmp_path: Path):
@@ -50,7 +58,11 @@ def test_point_active_repoints_to_new_boot(tmp_path: Path):
     _point_active_daemon_log(tmp_path, b1)
     _point_active_daemon_log(tmp_path, b2)  # a restart repoints
     link = tmp_path / "daemon.log"
-    assert link.resolve() == b2.resolve()
+    if os.name == "nt":
+        assert link.samefile(b2)
+        assert not link.samefile(b1)
+    else:
+        assert link.resolve() == b2.resolve()
     assert link.read_text() == "two\n"
 
 
@@ -64,8 +76,11 @@ def test_point_active_preserves_legacy_regular_daemon_log(tmp_path: Path):
     target.write_text("new\n")
 
     _point_active_daemon_log(tmp_path, target)
-    assert (tmp_path / "daemon.log").is_symlink()
-    assert (tmp_path / "daemon.log").resolve() == target.resolve()
+    if os.name == "nt":
+        assert (tmp_path / "daemon.log").samefile(target)
+    else:
+        assert (tmp_path / "daemon.log").is_symlink()
+        assert (tmp_path / "daemon.log").resolve() == target.resolve()
     assert (tmp_path / "daemon.log.pre-segment").read_text() == "old plain log\n"
 
 

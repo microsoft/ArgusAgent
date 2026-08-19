@@ -15,8 +15,10 @@ must directly enable first score and SOTA-oriented optimization.
 from __future__ import annotations
 
 from ...skills.stage_machine import ChecklistItem
-from ..speedrun.stages import _PIPELINE_CHECK
-from ..speedrun.stages import CHECKLIST_ITEMS as SPEEDRUN_CHECKLIST_ITEMS
+from ..optimization_base import PIPELINE_CHECK, speedrun_base_contract
+
+_PIPELINE_CHECK = PIPELINE_CHECK
+SPEEDRUN_CHECKLIST_ITEMS = speedrun_base_contract().checklist_items
 
 STAGE_ORDER = ["research", "setup", "optimize", "measure", "report"]
 
@@ -136,6 +138,7 @@ REVIEWER_CHECKLISTS: dict[str, tuple[str, str, list[str]]] = {
 }
 
 completion_gate = "metric"
+MISSION_KIND = "optimize"
 
 CHECKLIST_STAGE_ORDER: tuple[str, ...] = (
     "research",

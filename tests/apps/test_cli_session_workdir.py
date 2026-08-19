@@ -52,6 +52,59 @@ def test_cli_resume_uses_persisted_workdir_not_shell_cwd(
     assert config.life_dir == state_dir
 
 
+def test_cli_explicit_provider_backend_uses_native_model_default(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    args = _args()
+    args.backend = "claude"
+    monkeypatch.setattr(
+        _core,
+        "_resolve_project_bundle",
+        lambda _args: SimpleNamespace(
+            project=SimpleNamespace(
+                root=tmp_path,
+                fingerprint="test-project",
+                label="test",
+            ),
+            global_root=tmp_path,
+            project_worktree=tmp_path,
+        ),
+    )
+    monkeypatch.delenv("ARGUS_SKILL_MODEL", raising=False)
+    monkeypatch.delenv("ARGUS_SKILL_ENGINEER_MODEL", raising=False)
+    monkeypatch.delenv("ARGUS_SKILL_REVIEWER_MODEL", raising=False)
+
+    config = _core._build_worker_config(args)
+
+    assert config.engineer_model == ""
+    assert config.reviewer_model == ""
+
+
+def test_cli_models_follow_role_specific_backends(monkeypatch, tmp_path) -> None:
+    args = _args()
+    args.backend = "codex"
+    monkeypatch.setenv("ARGUS_SKILL_REVIEWER_BACKEND", "claude")
+    monkeypatch.setattr(
+        _core,
+        "_resolve_project_bundle",
+        lambda _args: SimpleNamespace(
+            project=SimpleNamespace(
+                root=tmp_path,
+                fingerprint="test-project",
+                label="test",
+            ),
+            global_root=tmp_path,
+            project_worktree=tmp_path,
+        ),
+    )
+
+    config = _core._build_worker_config(args)
+
+    assert config.engineer_model == "gpt-5.5"
+    assert config.reviewer_model == ""
+
+
 def test_cli_management_auto_selects_newest_session_for_shell_workdir(
     tmp_path,
     monkeypatch,

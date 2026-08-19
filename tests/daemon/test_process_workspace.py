@@ -83,6 +83,7 @@ def test_spawn_rejects_workspace_before_fork(tmp_path, monkeypatch) -> None:
         process.os,
         "fork",
         lambda: (_ for _ in ()).throw(AssertionError("must not fork")),
+        raising=False,
     )
 
     rc = process.spawn_detached_process(

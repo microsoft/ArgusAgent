@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -67,9 +68,9 @@ def test_final_submission_cert_tracks_current_project_state(tmp_path: Path):
                 + "\n"
             )
 
-    assert sup._journal_has_full_paper_gate_success() is True
+    assert sup._journal_has_final_certification() is True
     source.write_text("changed after review\n", encoding="utf-8")
-    assert sup._journal_has_full_paper_gate_success() is False
+    assert sup._journal_has_final_certification() is False
 
 
 def test_legacy_cert_is_valid_only_while_project_is_unchanged(tmp_path: Path):
@@ -78,6 +79,7 @@ def test_legacy_cert_is_valid_only_while_project_is_unchanged(tmp_path: Path):
     source.parent.mkdir()
     source.write_text("legacy certified\n", encoding="utf-8")
     certified_at = time.time()
+    os.utime(source, (certified_at - 1, certified_at - 1))
     events = tmp_path / "life" / "events.jsonl"
     events.write_text(json.dumps({
         "type": "life.mission.completed",
@@ -87,9 +89,10 @@ def test_legacy_cert_is_valid_only_while_project_is_unchanged(tmp_path: Path):
         "ts": certified_at,
     }) + "\n", encoding="utf-8")
 
-    assert sup._journal_has_full_paper_gate_success() is True
+    assert sup._journal_has_final_certification() is True
     source.write_text("changed\n", encoding="utf-8")
-    assert sup._journal_has_full_paper_gate_success() is False
+    os.utime(source, (certified_at + 1, certified_at + 1))
+    assert sup._journal_has_final_certification() is False
 
 
 def test_gate_can_match_older_certification_after_exact_revert(tmp_path: Path):
@@ -123,7 +126,7 @@ def test_gate_can_match_older_certification_after_exact_revert(tmp_path: Path):
     )
     source.write_text("state A\n", encoding="utf-8")
 
-    assert sup._journal_has_full_paper_gate_success() is True
+    assert sup._journal_has_final_certification() is True
 
 
 def test_project_signature_ignores_history_only_commits(tmp_path: Path):

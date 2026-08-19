@@ -21,7 +21,6 @@ from ._constants import (
     PLAN_ERROR,
     PLAN_RETRY,
     PLAN_TERMINAL_IDLE,
-    PLANNER_SCOPE_FINAL_SUBMISSION,
 )
 from ._planning_cycle_helpers import (
     _PlanCycleState,
@@ -157,44 +156,43 @@ class PlanningCycleCompletionMixin:
         expected_plan_version = state.expected_plan_version
         planner_declared_done = bool(verdict.project_done)
 
-        # The planner's tasks are trusted. Deterministic gate-repair is only
-        # used as a fallback when the planner itself fails (verdict.error above).
+        def reject_completion(reason: str, diagnostic: str) -> str:
+            stage = str(self._current_pipeline_stage() or "")
+            if not self._persist_manager_planner_feedback(
+                stage=stage,
+                reason=reason,
+                diagnostic=diagnostic,
+            ):
+                self._emit_status(
+                    "failed to persist completion rejection; retry later"
+                )
+                return PLAN_ERROR
+            self._reset_idle_backoff()
+            self._emit({
+                "type": "life.planner.completion_rejected",
+                "stage": stage,
+                "reason": reason,
+                "diagnostic": diagnostic,
+            })
+            self._emit_status(
+                "planner completion rejected; returning the invariant to Planner"
+            )
+            state.verdict = replace(
+                verdict,
+                project_done=False,
+                reason=reason,
+                new_tasks=[],
+            )
+            return PLAN_RETRY
 
         if (
             verdict.project_done
-            and self._effective_full_paper_gate(self._artifact_root())
-            and not self._journal_has_full_paper_gate_success()
+            and self._effective_final_certification_gate(self._artifact_root())
+            and not self._journal_has_final_certification()
         ):
-            from ...planner import TaskSpec
-
-            verdict = replace(
-                verdict,
-                project_done=False,
-                reason=(
-                    "full-pipeline final-submission readiness is required before "
-                    "project_done; queueing final submission proof"
-                ),
-                new_tasks=[
-                    TaskSpec(
-                        title="Prove final submission readiness",
-                        objective=(
-                            "Project-final task. Scope: final_submission. Read and "
-                            "improve the paper as a whole, then let the independent "
-                            "Reviewer judge whether the research objective and selected "
-                            "venue bar are genuinely met. Repair substantive experiment, "
-                            "analysis, claim, citation, writing, or layout weaknesses. "
-                            "Do not create an assurance memo or evidence package merely "
-                            "to certify the workflow."
-                        ),
-                        impact_score=5,
-                        impact_area="requirement_gap",
-                        evidence=(
-                            "The project has not yet received an independent final paper review."
-                        ),
-                        scope=PLANNER_SCOPE_FINAL_SUBMISSION,
-                        stage_closing=True,
-                    )
-                ],
+            return reject_completion(
+                "final submission requires an independent certification",
+                "final_certification_missing",
             )
 
         if verdict.project_done:
@@ -203,55 +201,22 @@ class PlanningCycleCompletionMixin:
                 self.memory.journal.all(),
             )
             if research_done_issue:
-                verdict = replace(
-                    verdict,
-                    project_done=False,
-                    reason=(
-                        "Research project completion gate held: "
-                        f"{research_done_issue}. A completed report or bounded cycle "
-                        "does not satisfy the persisted research target."
-                    ),
-                    new_tasks=[],
+                return reject_completion(
+                    "Research project completion gate held: "
+                    f"{research_done_issue}. A completed report or bounded cycle "
+                    "does not satisfy the persisted research target.",
+                    "research_target_incomplete",
                 )
 
         if verdict.project_done:
             from ...core.external_completion_gate import external_completion_gate_issue
-            from ...planner import TaskSpec
 
             external_gate_issue = external_completion_gate_issue(self._artifact_root())
             if external_gate_issue:
-                verdict = replace(
-                    verdict,
-                    project_done=False,
-                    reason=(
-                        f"Project completion held: {external_gate_issue}. "
-                        "Continue improving the operator-requested outcome; the "
-                        "external controller alone owns this gate."
-                    ),
-                    new_tasks=[
-                        TaskSpec(
-                            title="Continue work until the external completion gate passes",
-                            objective=(
-                                f"The project may not complete because {external_gate_issue}. "
-                                "Read the controller-provided aggregate feedback and continue "
-                                "the original operator objective with a new evidence-backed "
-                                "mechanism. Do not edit, synthesize, or bypass the gate file. "
-                                "Obtain independent Reviewer approval for any new candidate."
-                            ),
-                            impact_score=5,
-                            impact_area="requirement_gap",
-                            evidence=external_gate_issue,
-                            acceptance_check=(
-                                "The configured external completion gate is controller-written "
-                                "and reports its required boolean as true."
-                            ),
-                            non_goals=[
-                                "Edit or fabricate the external completion gate.",
-                                "Declare completion based only on an internal stage certificate.",
-                            ],
-                            scope="bounded",
-                        )
-                    ],
+                return reject_completion(
+                    f"Project completion held: {external_gate_issue}. The external "
+                    "controller alone owns this gate.",
+                    "external_completion_gate_held",
                 )
 
         staged_goal_candidate = bool(
@@ -261,47 +226,11 @@ class PlanningCycleCompletionMixin:
         if staged_goal_candidate and revision_request is None:
             goal_gate_issue = _staged_goal_completion_issue(self._artifact_root())
             if goal_gate_issue:
-                from ...planner import TaskSpec
-
-                verdict = replace(
-                    verdict,
-                    project_done=False,
-                    reason=(
-                        f"Staged project completion held: {goal_gate_issue}. "
-                        "Planner project_done cannot replace the Goal Gate."
-                    ),
-                    new_tasks=[
-                        TaskSpec(
-                            title=goal_gate_task_title(self._artifact_root()),
-                            objective=(
-                                "Goal Gate mission for the active staged project. "
-                                f"Current unmet gate: {goal_gate_issue}. "
-                                "Re-read the original operator objective, current-stage "
-                                "checklist, and actual artifacts. Complete any missing "
-                                "current-stage work, then obtain an independent Reviewer "
-                                "judgment. `done` requires positive evidence that the "
-                                "requested outcome for this stage exists; a clean process, "
-                                "honest partial result, or absence of detected errors is not "
-                                "completion. At the final stage, verify that the original "
-                                "Goal Gate itself is achieved. The Manager alone records "
-                                "stage advance or completion."
-                            ),
-                            impact_score=5,
-                            impact_area="requirement_gap",
-                            evidence=goal_gate_issue,
-                            acceptance_check=(
-                                "The independent Reviewer satisfies every current-stage "
-                                "checklist item with concrete evidence and the Manager "
-                                "records advance or final completion."
-                            ),
-                            non_goals=[
-                                "Treat an error-free process or honest partial progress as "
-                                "project completion."
-                            ],
-                            scope="bounded",
-                            stage_closing=True,
-                        )
-                    ],
+                return reject_completion(
+                    f"{goal_gate_task_title(self._artifact_root())}: "
+                    f"{goal_gate_issue}. "
+                    "Planner project_done cannot replace the Goal Gate.",
+                    "staged_goal_gate_incomplete",
                 )
 
         if revision_request is not None and verdict.project_done:

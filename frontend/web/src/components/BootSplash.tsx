@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef } from 'react';
+import { useI18n } from '../i18n';
 import { ArgusMark, Wordmark } from './Wordmark';
 
 export const WEB_SPLASH_DURATION_MS = 180;
 
 export function BootSplash({ onDone }: { onDone: () => void }) {
+  const { t } = useI18n();
   const finished = useRef(false);
   const finish = useCallback(() => {
     if (finished.current) return;
@@ -24,7 +26,7 @@ export function BootSplash({ onDone }: { onDone: () => void }) {
   return (
     <div
       role="status"
-      aria-label="Argus starting"
+      aria-label={t('splash.starting')}
       onClick={finish}
       onAnimationEnd={(event) => {
         if (event.currentTarget === event.target) finish();

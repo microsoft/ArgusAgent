@@ -17,10 +17,9 @@ try:
 except ImportError:  # pragma: no cover - non-POSIX fallback
     fcntl = None  # type: ignore[assignment]
 
-# REGISTRY_DIR lives in _registry to avoid circular imports: _registry imports
-# _mirror_discussion_md from here lazily (inside function bodies), while this
-# module imports the constant at module level.
-from ._registry import REGISTRY_DIR
+# Registry path helpers live in _registry; imports are safe because _registry
+# only imports discussion mirroring lazily inside function bodies.
+from ._registry import _task_log_dir
 
 # Keep a single JSONL line well under PIPE_BUF safety.
 _DISCUSSION_MSG_CAP = 3000
@@ -32,7 +31,7 @@ _DISCUSSION_MSG_CAP = 3000
 
 def _discussion_path(task_id: str) -> Path:
     """Where the supervisor<->engineer discussion transcript for a task lives."""
-    return REGISTRY_DIR / f"{task_id}_logs" / "discussion.jsonl"
+    return _task_log_dir(task_id) / "discussion.jsonl"
 
 
 # ---------------------------------------------------------------------------

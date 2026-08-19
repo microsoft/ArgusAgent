@@ -56,7 +56,7 @@ def test_file_change_lists_the_touched_files_and_caps_the_list() -> None:
 
 
 def test_credentials_never_reach_the_status_line() -> None:
-    secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345678901"
+    secret = "ghp_" + "A" * 36
     label, detail = describe_progress_step({
         "kind": "command_execution",
         "text": f"curl -H 'Authorization: token {secret}' https://api.github.com",

@@ -43,14 +43,14 @@ class PlanningContextMixin:
 
     def _planner_task_tags(self, task: Any) -> list[str]:
         scope = self._normalize_planner_scope(getattr(task, "scope", ""))
-        if scope == PLANNER_SCOPE_FINAL_SUBMISSION and not self._effective_full_paper_gate(
+        if scope == PLANNER_SCOPE_FINAL_SUBMISSION and not self._final_submission_scope_applies(
             self._artifact_root()
         ):
-            # ``final_submission`` is a paper-only transport scope. A Planner
-            # may still choose it for another vertical's terminal review task,
-            # but persisting that tag makes ``tick()`` retire the task as stale
-            # and re-plan it forever. Normalize at the enqueue boundary; the
-            # old skip path remains as migration support for persisted rows.
+            # ``final_submission`` is a terminal-gate transport scope. A Planner
+            # may still choose it for a vertical that has no terminal gate at
+            # all, and persisting that tag makes ``tick()`` retire the task as
+            # stale and re-plan it forever. Normalize at the enqueue boundary;
+            # the old skip path remains as migration support for persisted rows.
             scope = PLANNER_SCOPE_BOUNDED
         tags = ["planner", f"scope:{scope}"]
         if scope == PLANNER_SCOPE_BOUNDED:
@@ -63,6 +63,25 @@ class PlanningContextMixin:
             tags.append("review:required")
         if bool(getattr(task, "skip_stage_transition", False)):
             tags.append("stage_transition:skip")
+        if bool(getattr(task, "stage_repair", False)):
+            tags.append("stage_repair")
+        if bool(getattr(task, "allow_skill_changes", False)):
+            tags.append("skill_changes:allowed")
+        if bool(getattr(task, "parallel_safe", False)):
+            tags.append("parallel_safe")
+        # Bind Planner work to the stage in which it was proposed.  This is
+        # host-owned routing metadata, not a model judgement.  It lets the
+        # enqueue boundary distinguish "re-run the same certification" from
+        # "certify a later stage" even when the Planner rewords the title.
+        stage_reader = getattr(self, "_current_pipeline_stage", None)
+        stage = ""
+        if callable(stage_reader):
+            try:
+                stage = str(stage_reader() or "").strip().lower()
+            except Exception:  # noqa: BLE001 - a missing stage tag is legacy-safe
+                stage = ""
+        if stage:
+            tags.append(f"stage:{stage}")
         return tags
 
     @staticmethod
@@ -164,6 +183,20 @@ class PlanningContextMixin:
         scope = self._planner_scope_from_item(item)
         context_refs = [ref for ref in getattr(item, "context_refs", []) if isinstance(ref, dict)]
         acceptance_check = str(getattr(item, "acceptance_check", "") or "").strip()
+        plan_hypothesis = str(getattr(item, "plan_hypothesis", "") or "").strip()
+        goal_contribution = str(getattr(item, "goal_contribution", "") or "").strip()
+        expected_regressions = str(
+            getattr(item, "expected_regressions", "") or ""
+        ).strip()
+        decision_rule = str(getattr(item, "decision_rule", "") or "").strip()
+        execution_workdir = str(
+            getattr(item, "execution_workdir", "") or ""
+        ).strip()
+        owns_paths = [
+            str(path).strip()
+            for path in getattr(item, "owns_paths", [])
+            if str(path).strip()
+        ]
         non_goals = [
             str(value).strip() for value in getattr(item, "non_goals", []) if str(value).strip()
         ]
@@ -173,6 +206,12 @@ class PlanningContextMixin:
             and not getattr(item, "plan_id", "")
             and not context_refs
             and not acceptance_check
+            and not plan_hypothesis
+            and not goal_contribution
+            and not expected_regressions
+            and not decision_rule
+            and not execution_workdir
+            and not owns_paths
             and not non_goals
         ):
             return ""
@@ -184,6 +223,16 @@ class PlanningContextMixin:
             lines.append(f"- node_key: {item.node_key}")
         if scope:
             lines.append(f"- planner_scope: {scope}")
+        if execution_workdir:
+            lines.append(
+                "- execution_repository_request: " + execution_workdir
+            )
+        if owns_paths:
+            lines.append("- writable_paths: " + ", ".join(owns_paths))
+            lines.append(
+                "  Do not write outside these paths; sibling missions may be "
+                "working concurrently."
+            )
         if self._item_requires_independent_review(item):
             lines.append(
                 "- independent_review: REQUIRED; this mission must close through "
@@ -196,6 +245,23 @@ class PlanningContextMixin:
             )
         if item.tags:
             lines.append("- tags: " + ", ".join(item.tags))
+        if any(str(tag).strip().lower() == "operator_priority" for tag in item.tags):
+            lines.append(
+                "- authority: this is the latest explicit operator task. Execute its "
+                "requested actions before autonomously derived cleanup or hardening; "
+                "do not replace its outcome with project housekeeping."
+            )
+        if plan_hypothesis:
+            lines.append("- planner_working_hypothesis: " + plan_hypothesis)
+            lines.append(
+                "  This is revisable technical strategy, not an operator-owned constraint."
+            )
+        if goal_contribution:
+            lines.append("- goal_frontier_contribution: " + goal_contribution)
+        if expected_regressions:
+            lines.append("- allowed_temporary_regressions: " + expected_regressions)
+        if decision_rule:
+            lines.append("- revise_split_or_abandon_when: " + decision_rule)
         if acceptance_check:
             lines.append("- what_good_looks_like: " + acceptance_check)
         if non_goals:
@@ -232,9 +298,19 @@ class PlanningContextMixin:
                 why = str(ref.get("why") or "").strip()
                 suffix = f" — {why}" if why else ""
                 lines.append(f"- [{kind}] {target}{suffix}")
+                attachment_fields = (
+                    ("attachment_id", str(ref.get("attachment_id") or "").strip()),
+                    ("original_name", str(ref.get("original_name") or "").strip()),
+                    ("mime", str(ref.get("mime") or "").strip()),
+                    ("size_bytes", str(ref.get("size_bytes") or "").strip()),
+                    ("integrity", str(ref.get("integrity") or "").strip()),
+                )
+                for label, value in attachment_fields:
+                    if value:
+                        lines.append(f"  {label}: {value}")
         return "\n".join(lines)
 
-    def _journal_has_full_paper_gate_success(self) -> bool:
+    def _journal_has_final_certification(self) -> bool:
         """Decide whether the project-final completion gate has passed.
 
         Source of truth (post-validator-retirement): the event timeline. A
@@ -242,7 +318,7 @@ class PlanningContextMixin:
         reviewer returns a full-pipeline completion verdict, which the
         supervisor records as a ``life.mission.completed`` event carrying
         ``final_submission_certified = True``. We no longer call the
-        hardcoded ``validate_full_paper_readiness`` validator — the reviewer's
+        retired hardcoded paper-readiness validator — the reviewer's
         checklist verdict is the single source of truth.
 
         Fail-closed: only an explicit certified entry bound to the current
@@ -277,11 +353,11 @@ class PlanningContextMixin:
                     return True
         return False
 
-    def _effective_full_paper_gate(self, workdir: object) -> bool:
+    def _effective_final_certification_gate(self, workdir: object) -> bool:
         """Whether the full-pipeline final-submission gate applies here.
 
-        Returns ``self.config.full_paper_gate`` AND the active vertical's
-        completion gate being the paper gate (``"full_paper"``). The
+        Returns ``self.config.final_certification_gate`` AND the active vertical's
+        completion gate requiring independent final certification. The
         final-submission completion gate only makes sense for a *research*
         vertical: a ``speedrun`` mission runs just the optimize+measure stages
         and has no submission package to certify, so requiring the gate would
@@ -291,28 +367,81 @@ class PlanningContextMixin:
         The read side is deterministic and exception-free, so this never spends
         a token.
         """
-        if not self.config.full_paper_gate:
+        if not self.config.final_certification_gate:
             return False
-        from ...skills.vertical_select import (
-            VerticalResolutionError,
-            resolve_vertical,
-        )
-        from ...verticals._base import (
-            load_vertical,
-            vertical_completion_gate,
-        )
+        from ...skills.vertical_select import resolve_vertical_if_decided
+        from ...verticals._base import load_vertical_contract
 
-        try:
-            vertical = resolve_vertical(workdir)
-        except VerticalResolutionError:
-            # The Manager has not decided + persisted the vertical yet. An
-            # undecided mission is definitionally not at its final-submission
-            # gate, so the gate does not apply (keep running); it is NOT a silent
-            # default to research — resolve_vertical still raised loudly, we just
-            # treat "no vertical yet" as "gate not satisfied" for THIS check.
+        vertical = resolve_vertical_if_decided(workdir)
+        if vertical is None:
+            # The Manager has not decided + persisted a vertical on this root.
+            # An undecided mission is definitionally not at its final-submission
+            # gate, so the gate does not apply and the project keeps running.
+            #
+            # This asks ``resolve_vertical_if_decided`` rather than
+            # ``resolve_vertical`` because the latter does not raise for an
+            # undecided project — it logs and answers ``research``, whose
+            # completion gate is ``certified``. Reading that fallback here would
+            # turn "nobody has decided yet" into "the paper gate applies",
+            # which is exactly backwards, and would do it silently. Today every
+            # production caller passes a state root that does carry the
+            # decision, and ``config.final_certification_gate`` is itself
+            # computed from a persisted certified vertical, so the fallback was
+            # masked twice over rather than being safe.
             return False
-        mod = load_vertical(vertical, project_root=workdir)
-        return vertical_completion_gate(mod) == "full_paper"
+        return load_vertical_contract(
+            vertical, project_root=workdir
+        ).completion_gate == "certified"
+
+    def _final_submission_scope_applies(self, workdir: object) -> bool:
+        """Whether ``scope:final_submission`` can ever be satisfied here.
+
+        Two gates consume that scope, and each is keyed on a different part of
+        the vertical contract:
+
+        * ``_journal_has_final_certification`` guards the full-paper pipeline
+          and reads ``completion_gate == "certified"``.
+        * ``_research_project_done_issue`` guards a persisted research target
+          and reads a non-empty ``research_target_levels``.
+
+        Both are cleared by exactly one artifact — the journal entry
+        ``_mission_execution_settlement`` writes for a succeeded mission whose
+        ``item_scope`` is ``final_submission``. Keying the enqueue-time
+        downgrade on the *first* gate alone therefore stranded every vertical
+        that declares research targets without a certified completion gate:
+        ``math`` and ``materials`` demand a scope the enqueue boundary refuses
+        to persist, so no project in either could reach ``project_done``.
+        Testbed runs 8, 9 and 10 all died here — once fixes #45 and #46 landed
+        the Planner did emit ``TASK_SCOPE=final_submission``, and the item was
+        still enqueued as ``scope:bounded``.
+
+        The bounded verticals this downgrade was written to protect
+        (``software``, a ``perf_tuning`` data domain, and friends) declare
+        neither, so they still normalize to ``bounded`` exactly as before.
+
+        The research-target arm reads the Manager-*decided* vertical only, with
+        no compatibility fallback. ``resolve_vertical`` answers ``research`` for
+        an undecided project, and a stale default ``research`` state inferring
+        its way into a paper-final task is the precise accident this downgrade
+        exists to prevent. An undecided project is therefore already covered by
+        the certification-gate arm above, on the same fallback, and does not
+        need a second inferred route in.
+        """
+        if self._effective_final_certification_gate(workdir):
+            return True
+        from ...core.research_contract import research_target_contract
+        from ...skills.vertical_select import resolve_vertical_if_decided
+        from ...verticals._base import load_vertical_contract
+
+        vertical = resolve_vertical_if_decided(workdir)
+        if vertical is None:
+            return False
+        return research_target_contract(
+            supported_levels=load_vertical_contract(
+                vertical, project_root=workdir
+            ).research_target_levels,
+            selected_level=None,
+        ).required
 
     def _final_submission_signature(self) -> str:
         from ..terminal_state import build_project_state_signature
@@ -390,8 +519,8 @@ class PlanningContextMixin:
     def _defer_project_done_for_operator_external_blocker(self, verdict: Any) -> Any:
         if not (
             getattr(verdict, "project_done", False)
-            and self._effective_full_paper_gate(self._artifact_root())
-            and not self._journal_has_full_paper_gate_success()
+            and self._effective_final_certification_gate(self._artifact_root())
+            and not self._journal_has_final_certification()
         ):
             return verdict
         wait_reason = self._operator_only_external_blocker_wait_reason()
@@ -426,6 +555,7 @@ class PlanningContextMixin:
             if not isinstance(continuous, dict) or not continuous.get("enabled"):
                 return {}
             target_generation = int(continuous.get("generation", 0) or 0)
+            target_objective = str(continuous.get("objective") or "").strip()
             data: dict[str, Any] | None = None
             for name in ("events.jsonl", "events.jsonl.1"):
                 path = Path(root) / name
@@ -444,7 +574,12 @@ class PlanningContextMixin:
                         execution_task = event.get("execution_task")
                         if not isinstance(execution_task, str) or not execution_task.strip():
                             continue
-                        if event.get("continuous_generation") != target_generation:
+                        event_generation = int(
+                            event.get("continuous_generation", 0) or 0
+                        )
+                        if event_generation > target_generation:
+                            continue
+                        if str(execution_task).strip() != target_objective:
                             continue
                         data = event
                         break
@@ -458,39 +593,59 @@ class PlanningContextMixin:
                 "execution_task",
                 "vertical",
                 "kind",
+                "stage",
+                "current_stage",
+                "workflow_mode",
+                "research_target_level",
+                "learned_vertical_status",
                 "continuous_generation",
                 "stages",
                 "reason",
                 "text",
                 "error",
             )
-            return {k: data.get(k) for k in keep if k in data}
+            intent = {k: data.get(k) for k in keep if k in data}
+            stage_reader = getattr(self, "_current_pipeline_stage", None)
+            live_stage = (
+                str(stage_reader() or "").strip()
+                if callable(stage_reader)
+                else ""
+            )
+            if live_stage:
+                intent["stage"] = live_stage
+                intent["current_stage"] = live_stage
+            return intent
         except Exception:  # noqa: BLE001
             return {}
 
     @staticmethod
     def _manager_intent_prompt_block(
         intent: dict[str, Any],
-        execution_objective: str = "",
+        _execution_objective: str = "",
     ) -> str:
         if not intent:
             return ""
-        intent_objective = str(intent.get("execution_task") or "").strip()
         parts = [
-            "## Manager intent boundary (authoritative)",
-            f"- intent_id: {intent.get('intent_id') or ''}",
-            f"- source: {intent.get('source') or ''}",
-            f"- interpreted_vertical: {intent.get('vertical') or ''}",
-            f"- kind: {intent.get('kind') or ''}",
-            f"- stages: {', '.join(str(s) for s in (intent.get('stages') or []))}",
-            f"- reason: {intent.get('reason') or intent.get('text') or ''}",
+            "## Manager routing boundary (authoritative)",
+            f"VERTICAL={intent.get('vertical') or ''}",
+            f"WORKFLOW={intent.get('workflow_mode') or ''}",
+            "AUTHORITY=technical",
+        ]
+        strategic_context = str(
+            intent.get("reason") or intent.get("text") or ""
+        ).strip()
+        if strategic_context:
+            parts.extend([
+                "",
+                "## Manager strategic context",
+                strategic_context,
+            ])
+        parts.extend([
             "",
             "Plan only work consistent with this Manager boundary. If it appears "
             "wrong, surface a Manager/Planner mismatch instead of silently "
             "switching scope.",
-        ]
-        if intent_objective and intent_objective != execution_objective.strip():
-            parts.insert(3, f"- execution_objective: {intent_objective}")
+        ])
         return "\n".join(parts)
 
     # ------------------------------------------------------------------
@@ -508,8 +663,12 @@ class PlanningContextMixin:
         if provider is None:
             return
         try:
-            enabled, objective = provider()
+            enabled, objective, open_ended = provider()
             self.config.continuous = enabled
+            self.config.open_ended = open_ended
+            self.config.final_certification_gate = bool(
+                self.config.paper_mission and open_ended
+            )
             if objective:
                 self.config.continuous_objective = objective
         except Exception:  # noqa: BLE001
@@ -716,18 +875,45 @@ class PlanningContextMixin:
         state = self._load_manager_planner_feedback()
         if state is None:
             return ""
+        diagnostic = str(state.get("diagnostic") or "")
+        # Both diagnostics are satisfied by exactly one thing, and it is the
+        # same thing: ``_mission_execution_settlement`` writes the certified
+        # journal entry these gates read only for a mission that succeeded,
+        # carried ``item_scope == final_submission``, and was certified by the
+        # Reviewer. ``research_target_incomplete`` used to fall through to the
+        # "harness does not prescribe a task" branch — telling the Planner to
+        # use its judgement about a gate that accepts one prescribed action and
+        # nothing else. Testbed run 8 (s-fed750c2) burned four missions
+        # guessing, each independently reviewed ``done`` and each rejected;
+        # run 9 (s-1828745c) answered instead by escalating into
+        # self-maintenance and patching the Planner's own source.
+        prescribes_final_submission = diagnostic in {
+            "final_certification_missing",
+            "research_target_incomplete",
+        }
+        task_instruction = (
+            "The missing invariant is final independent certification. Author the "
+            "next executable certification task with "
+            "`TASK_SCOPE=final_submission`, so its successful Reviewer verdict can "
+            "be recorded as project-final evidence. A task left at the default "
+            "bounded scope cannot satisfy this gate, however complete the work "
+            "behind it already is."
+            if prescribes_final_submission
+            else (
+                "You decide which tasks, if any, are appropriate; the harness does "
+                "not prescribe a repair or delivery task."
+            )
+        )
         return (
-            "MANAGER TO PLANNER REVISION FEEDBACK (durable and unresolved):\n"
+            "PLANNER VERDICT REJECTION (durable and unresolved):\n"
             f"- current_stage: {state.get('stage') or ''}\n"
-            f"- diagnostic: {state.get('diagnostic') or ''}\n"
+            f"- diagnostic: {diagnostic}\n"
             f"- repeated_attempts: {int(state.get('attempts') or 1)}\n"
             f"- rejection_reason: {state.get('reason') or ''}\n"
-            "The Manager attempted the requested stage transition, but framework "
-            "authority rejected it because the required Reviewer evidence is "
-            "incomplete. Re-plan now: emit one or more bounded new_tasks that gather "
-            "or repair the missing current-stage evidence and obtain a complete "
-            "Reviewer verdict. Do not return waiting on the same stage authority, "
-            "and do not start next-stage work."
+            "The previous plan or completion verdict failed a framework-owned "
+            "invariant. Re-plan now from the rejection reason and current evidence. "
+            f"{task_instruction} Do not repeat the rejected "
+            "verdict without new evidence."
         )
 
     @staticmethod
@@ -873,8 +1059,10 @@ class PlanningContextMixin:
                 Path(self.memory.root) / "operator-authorizations.jsonl"
             )
         if "manager_stage" in wake_sources:
+            from ...core.pipeline_state import pipeline_state_path
+
             revision["manager_stage"] = self._waiting_revision_file(
-                project_root / "research" / "PIPELINE_STATE.json"
+                pipeline_state_path(project_root)
             )
         if "artifact_revision" in wake_sources:
             revision["artifacts"] = [
@@ -911,6 +1099,18 @@ class PlanningContextMixin:
                     }
                 )
             revision["subagent_terminal"] = terminal_rows
+        if "subagent_state" in wake_sources:
+            from ...engineer.external_work import scan_external_work
+
+            revision["subagent_state"] = [
+                {
+                    "work_id": status.work_id,
+                    "run_id": status.run_id,
+                    "state": status.state.value,
+                }
+                for status in scan_external_work(project_root)
+                if status.source == "subagent"
+            ]
         blob = json.dumps(revision, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -1016,6 +1216,87 @@ class PlanningContextMixin:
         wait_mode = str(getattr(contract, "wait_mode", "poll") or "poll")
         wake_on = [str(value) for value in getattr(contract, "wake_on", ())]
         watched_paths = [str(value) for value in getattr(contract, "watched_paths", ())]
+        contract_observed_revision = str(
+            getattr(contract, "observed_revision", "") or ""
+        )
+        supported_wake_sources = {
+            "authorization",
+            "manager_stage",
+            "artifact_revision",
+            "subagent_terminal",
+            "subagent_state",
+        }
+        unsupported_wake_sources = sorted(
+            set(wake_on).difference(supported_wake_sources)
+        )
+        if wait_mode == "event" and unsupported_wake_sources:
+            self._emit(
+                {
+                    "type": EventType.LIFE_PLANNER_ERROR,
+                    "error": "event wait has unsupported wake source",
+                    "unsupported_wake_sources": unsupported_wake_sources,
+                    "blocker_fingerprint": blocker_fingerprint,
+                    "recheck_token": recheck_token,
+                }
+            )
+            return None
+        if wait_mode == "event" and not wake_on:
+            self._emit(
+                {
+                    "type": EventType.LIFE_PLANNER_ERROR,
+                    "error": "event wait has no deterministic wake source",
+                    "blocker_fingerprint": blocker_fingerprint,
+                    "recheck_token": recheck_token,
+                }
+            )
+            return None
+        if (
+            wait_mode == "event"
+            and "artifact_revision" in wake_on
+            and not watched_paths
+        ):
+            self._emit(
+                {
+                    "type": EventType.LIFE_PLANNER_ERROR,
+                    "error": "artifact event wait has no watched paths",
+                    "blocker_fingerprint": blocker_fingerprint,
+                    "recheck_token": recheck_token,
+                }
+            )
+            return None
+        if (
+            wait_mode == "event"
+            and {"subagent_state", "subagent_terminal"}.intersection(wake_on)
+            and not contract_observed_revision
+        ):
+            self._emit(
+                {
+                    "type": EventType.LIFE_PLANNER_ERROR,
+                    "error": "subagent event wait lacks host-observed revision",
+                    "blocker_fingerprint": blocker_fingerprint,
+                    "recheck_token": recheck_token,
+                }
+            )
+            return None
+        current_observed_revision = self._planner_waiting_observed_revision(
+            wake_on=wake_on,
+            watched_paths=watched_paths,
+        )
+        if (
+            contract_observed_revision
+            and current_observed_revision != contract_observed_revision
+        ):
+            self._emit(
+                {
+                    "type": EventType.LIFE_PLANNER_WAITING_WOKEN,
+                    "blocker_fingerprint": blocker_fingerprint,
+                    "recheck_token": recheck_token,
+                    "wake_reason": "revision_changed_before_persist",
+                    "observed_revision": contract_observed_revision,
+                    "current_revision": current_observed_revision,
+                }
+            )
+            return None
         wait_id = hashlib.sha256(
             (
                 self._planner_waiting_objective_fingerprint()
@@ -1081,9 +1362,8 @@ class PlanningContextMixin:
             ),
             **control_binding,
             "wait_id": wait_id,
-            "observed_revision": self._planner_waiting_observed_revision(
-                wake_on=wake_on,
-                watched_paths=watched_paths,
+            "observed_revision": (
+                contract_observed_revision or current_observed_revision
             ),
             "first_observed_at": (
                 float(previous.get("first_observed_at") or now) if same_condition else now

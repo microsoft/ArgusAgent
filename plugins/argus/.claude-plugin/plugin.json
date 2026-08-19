@@ -1,0 +1,14 @@
+{
+  "name": "argus",
+  "version": "0.1.1",
+  "description": "Persistent reviewed research and engineering runtime",
+  "author": {
+    "name": "Argus contributors"
+  },
+  "homepage": "https://github.com/microsoft/ArgusAgent",
+  "repository": "https://github.com/microsoft/ArgusAgent",
+  "license": "MIT",
+  "keywords": ["research", "engineering", "medical", "review"],
+  "skills": "./skills/",
+  "mcpServers": "./mcp/claude.json"
+}

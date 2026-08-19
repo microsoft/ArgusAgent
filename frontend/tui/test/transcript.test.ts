@@ -27,6 +27,45 @@ test('transcriptEvents ignores empty and internal turns', () => {
   );
 });
 
+test('transcriptEvents skips background mission notices on reconnect', () => {
+  assert.deepEqual(
+    transcriptEvents([
+      {
+        role: 'argus',
+        text: 'Task completed · old campaign step\nContinuous campaign remains active.',
+        ts: 10,
+        message_id: 'mission-result-old-done',
+      },
+      {
+        role: 'operator',
+        text: '现在进展如何？',
+        ts: 11,
+        message_id: 'manager-turn-operator',
+      },
+      {
+        role: 'argus',
+        text: '当前 frontier 已推进。',
+        ts: 12,
+        message_id: 'manager-turn-argus',
+      },
+    ]),
+    [
+      {
+        type: 'ui.operator',
+        text: '现在进展如何？',
+        ts: 11,
+        message_id: 'manager-turn-operator',
+      },
+      {
+        type: 'ui.argus',
+        text: '当前 frontier 已推进。',
+        ts: 12,
+        message_id: 'manager-turn-argus',
+      },
+    ],
+  );
+});
+
 test('late transcript replay preserves live keys instead of reprinting rows', () => {
   const live = [
     {

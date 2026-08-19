@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shlex
 import subprocess
+import sys
 import time
 import types
 from collections.abc import Callable
@@ -10,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from argus_skill.core.codex_usage import sum_token_counts
 from argus_skill.core.models import RunnerResult
+from argus_skill.core.token_usage import sum_token_counts
 from argus_skill.tools import subagent as _sub
 from argus_skill.tools.subagent import (
     SUPERVISOR_INTERVAL_CAP,
@@ -38,6 +41,11 @@ from argus_skill.tools.subagent import (
     _supervisor_discuss,
     _write_task,
     cmd_reply,
+)
+
+requires_fork = pytest.mark.skipif(
+    not hasattr(os, "fork"),
+    reason="subagent daemonization uses POSIX fork",
 )
 
 _ORIGINAL_RUN_BACKEND_TURN = _sub._llm._run_backend_turn
@@ -92,6 +100,59 @@ def _install_fake_codex(monkeypatch: pytest.MonkeyPatch, fake_run: Callable[...,
         )
 
     monkeypatch.setattr(_sub._llm, "_run_backend_turn", fake_turn)
+
+
+def test_legacy_hashed_registry_record_is_read_and_migrated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from argus_skill.core.portable_filename import legacy_hashed_filename_components
+    from argus_skill.tools.subagent import _registry
+
+    monkeypatch.chdir(tmp_path)
+    task_id = "team::task"
+    legacy_component = legacy_hashed_filename_components(task_id)[0]
+    legacy = _registry.REGISTRY_DIR / f"{legacy_component}.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+        json.dumps({"task_id": task_id, "status": "running"}) + "\n",
+        encoding="utf-8",
+    )
+    legacy_exit = _registry.REGISTRY_DIR / f"{legacy_component}_logs" / "exit_code.run-1"
+    legacy_exit.parent.mkdir()
+    legacy_exit.write_text("7\n", encoding="utf-8")
+
+    assert _registry._read_task(task_id)["status"] == "running"
+    assert _registry._read_exit_code(task_id, "run-1") == 7
+    _registry._write_task(task_id, {"task_id": task_id, "status": "done"})
+
+    assert _registry._registry_path(task_id).exists()
+    assert not legacy.exists()
+    assert _registry._list_tasks() == [{"task_id": task_id, "status": "done"}]
+
+    legacy_only_id = "~legacy"
+    legacy_only = _registry.REGISTRY_DIR / f"{legacy_only_id}.json"
+    legacy_only.write_text(
+        json.dumps({"task_id": legacy_only_id, "state": "done"}) + "\n",
+        encoding="utf-8",
+    )
+
+    assert _sub.cmd_clean(argparse.Namespace()) == 0
+    assert not legacy_only.exists()
+
+    other_id = "other::task"
+    aliased = _registry.REGISTRY_DIR / (
+        f"{legacy_hashed_filename_components(other_id)[0]}.json"
+    )
+    aliased.write_text(
+        json.dumps({"task_id": other_id, "state": "done"}) + "\n",
+        encoding="utf-8",
+    )
+    alias_id = aliased.stem
+
+    _registry._unlink_task_records(alias_id)
+
+    assert aliased.exists()
 
 
 def _skip_supervisor_summary(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -726,6 +787,34 @@ def test_cmd_reply_appends_engineer_turn_and_reports_liveness(monkeypatch, tmp_p
     assert "shorter on purpose" in _render_discussion(tid)
 
 
+def test_cmd_reply_reads_utf8_message_file(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    tid = "train-unicode"
+    _write_task(tid, {"state": "discussing", "task_id": tid, "mode": "supervised"})
+    message = "复现实验 🔬 → α"
+    message_file = tmp_path / "reply.md"
+    message_file.write_text(message, encoding="utf-8")
+
+    args = types.SimpleNamespace(task_id=tid, message="", message_file=str(message_file))
+
+    assert cmd_reply(args) == 0
+    capsys.readouterr()
+    assert message in _render_discussion(tid)
+
+
+def test_queue_fallback_writes_utf8_report(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(_sub._reporting, "REGISTRY_DIR", tmp_path)
+    monkeypatch.setattr(
+        "argus_skill.apps._inbox.queue_inbox_message",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+    report = "实验报告 🔬 → α"
+
+    _sub._reporting._queue_to_inbox(report, task_id="unicode")
+
+    assert (tmp_path / "unicode_ALERT.md").read_text(encoding="utf-8") == report + "\n"
+
+
 def test_cmd_reply_flags_closed_discussion(monkeypatch, tmp_path, capsys) -> None:
     monkeypatch.chdir(tmp_path)
     tid = "train-closed"
@@ -844,7 +933,7 @@ def test_backend_turn_uses_accounted_agent_backend(monkeypatch, tmp_path) -> Non
             calls["run_exec"] = kwargs
             return RunnerResult(exit_code=0, agent_messages=["ok"], thread_id="T")
 
-    monkeypatch.setattr(_sub._llm, "_codex_backend", lambda: _Backend())
+    monkeypatch.setattr(_sub._llm, "_supervisor_backend", lambda: _Backend())
     monkeypatch.setenv("ARGUS_SKILL_HOME", str(tmp_path / "argus-home"))
 
     result = _ORIGINAL_RUN_BACKEND_TURN(
@@ -868,6 +957,38 @@ def test_backend_turn_uses_accounted_agent_backend(monkeypatch, tmp_path) -> Non
     assert run_call["run_label"] == "subagent:train-1:health"
     assert run_call["options"].reasoning_effort == "low"
     assert run_call["options"].working_dir == str(tmp_path)
+
+
+def test_supervisor_backend_inherits_configured_runner(monkeypatch) -> None:
+    constructed: dict[str, object] = {}
+
+    class _Backend:
+        def __init__(self, **kwargs) -> None:
+            constructed.update(kwargs)
+
+    monkeypatch.setattr(_sub._llm, "_SUPERVISOR_BACKENDS", {})
+    monkeypatch.setattr(_sub._llm, "AgentCliBackend", _Backend)
+    monkeypatch.setattr(
+        _sub._llm,
+        "resolve_role_backend",
+        lambda role: "copilot" if role == "supervisor" else "codex",
+    )
+    monkeypatch.setattr(
+        _sub._llm,
+        "resolve_runner_bin_setting",
+        lambda role: "/opt/copilot" if role == "supervisor" else "",
+    )
+    monkeypatch.setattr(
+        _sub._llm,
+        "resolve_available_runner",
+        lambda backend, configured: (backend, configured),
+    )
+
+    backend = _sub._llm._supervisor_backend()
+
+    assert isinstance(backend, _Backend)
+    assert constructed["backend"] == "copilot"
+    assert constructed["runner_bin"] == "/opt/copilot"
 
 
 def test_run_supervised_persists_supervisor_usage_totals(monkeypatch, tmp_path) -> None:
@@ -900,7 +1021,7 @@ def test_run_supervised_persists_supervisor_usage_totals(monkeypatch, tmp_path) 
 
     _sub._run_supervised(
         "train-1",
-        "echo hi",
+        "python -c pass",
         "demo",
         timeout=999,
         monitor_interval=1,
@@ -942,6 +1063,33 @@ def _submit_args(**kw) -> argparse.Namespace:
     return argparse.Namespace(**base)
 
 
+def test_cmd_submit_rejects_new_oversized_task_id(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    if hasattr(_sub._cli.os, "fork"):
+        monkeypatch.setattr(
+            _sub._cli.os,
+            "fork",
+            lambda: (_ for _ in ()).throw(AssertionError("forked")),
+        )
+    else:
+        monkeypatch.setattr(
+            _sub._cli,
+            "_spawn_windows_worker",
+            lambda **_kwargs: (_ for _ in ()).throw(AssertionError("spawned")),
+        )
+
+    rc = _sub.cmd_submit(_submit_args(task_id="x" * 121))
+    output = json.loads(capsys.readouterr().out)
+
+    assert rc == 1
+    assert "invalid task id" in output["error"]
+
+
+@requires_fork
 def test_cmd_submit_blocks_on_open_discussion(monkeypatch, tmp_path, capsys) -> None:
     monkeypatch.chdir(tmp_path)
     me = __import__("os").getpid()
@@ -957,6 +1105,7 @@ def test_cmd_submit_blocks_on_open_discussion(monkeypatch, tmp_path, capsys) -> 
     assert "truncation" in out["supervisor_concern"]
 
 
+@requires_fork
 def test_cmd_submit_rejects_same_id_while_discussion_worker_lives(
     monkeypatch,
     tmp_path,
@@ -992,6 +1141,7 @@ def test_cmd_submit_rejects_same_id_while_discussion_worker_lives(
     assert "already discussing" in out["error"]
 
 
+@requires_fork
 def test_cmd_submit_rejects_terminal_record_while_report_worker_lives(
     monkeypatch,
     tmp_path,
@@ -1022,6 +1172,7 @@ def test_cmd_submit_rejects_terminal_record_while_report_worker_lives(
     assert "already done" in out["error"]
 
 
+@requires_fork
 def test_cmd_submit_override_records_and_proceeds(monkeypatch, tmp_path, capsys) -> None:
     monkeypatch.chdir(tmp_path)
     me = __import__("os").getpid()
@@ -1031,11 +1182,20 @@ def test_cmd_submit_override_records_and_proceeds(monkeypatch, tmp_path, capsys)
     rc = _sub.cmd_submit(_submit_args(task_id="new", override_discussion="I checked, proceed"))
     out = json.loads(capsys.readouterr().out)
     assert rc == 0 and out["state"] == "submitted"
+    assert shlex.split(out["check_with"]) == [
+        sys.executable,
+        "-m",
+        "argus_skill.tools.subagent",
+        "status",
+        "--task-id",
+        "new",
+    ]
     ledger = (tmp_path / _sub.EXPERIMENT_HISTORY_REL).read_text()
     assert "DISCUSSION-OVERRIDE" in ledger
     assert "I checked, proceed" in ledger
 
 
+@requires_fork
 def test_cmd_submit_refuses_poisoned_stop(monkeypatch, tmp_path, capsys) -> None:
     monkeypatch.chdir(tmp_path)
     rd = tmp_path / "runs" / "r1"
@@ -1052,6 +1212,7 @@ def test_cmd_submit_refuses_poisoned_stop(monkeypatch, tmp_path, capsys) -> None
     assert not (rd / "STOP").exists()
 
 
+@requires_fork
 def test_cmd_submit_rejects_insufficient_cpus_before_artifacts(
     monkeypatch, tmp_path, capsys
 ) -> None:
@@ -1078,6 +1239,7 @@ def test_cmd_submit_rejects_insufficient_cpus_before_artifacts(
     assert not run_dir.exists()
 
 
+@requires_fork
 def test_cmd_submit_rejects_cpu_conflict_before_new_task_record(
     monkeypatch, tmp_path, capsys
 ) -> None:
@@ -1109,6 +1271,7 @@ def test_cmd_submit_rejects_cpu_conflict_before_new_task_record(
     assert not _sub._registry_path("new").exists()
 
 
+@requires_fork
 def test_cmd_submit_reserves_disjoint_cpus_before_fork(
     monkeypatch, tmp_path, capsys
 ) -> None:
@@ -1139,6 +1302,58 @@ def test_cmd_submit_reserves_disjoint_cpus_before_fork(
     assert record["cpu_count"] == 2
 
 
+class _OSNameProxy:
+    """Override one module's platform branch without mutating global os.name."""
+
+    def __init__(self, wrapped, name: str) -> None:
+        self._wrapped = wrapped
+        self.name = name
+
+    def __getattr__(self, name: str):
+        return getattr(self._wrapped, name)
+
+
+def test_cmd_submit_spawns_windows_worker(monkeypatch, tmp_path, capsys) -> None:
+    from argus_skill.tools.subagent import _cli
+
+    monkeypatch.chdir(tmp_path)
+    workload = tmp_path / "workload"
+    workload.mkdir()
+    spawned: list[dict] = []
+
+    class _Worker:
+        pid = 9876
+
+    def fake_spawn_windows_worker(**kwargs):
+        spawned.append(kwargs)
+        return _Worker()
+
+    monkeypatch.setattr(_cli, "os", _OSNameProxy(os, "nt"))
+    monkeypatch.setattr(_cli, "_spawn_windows_worker", fake_spawn_windows_worker)
+
+    rc = _sub.cmd_submit(
+        _submit_args(
+            task_id="win-task",
+            command="Write-Output hi",
+            cwd=str(workload),
+        )
+    )
+    out = json.loads(capsys.readouterr().out)
+    record = _sub._read_task("win-task")
+
+    assert rc == 0
+    assert out["state"] == "submitted"
+    assert out["pid"] == 9876
+    assert spawned[0]["command"] == "Write-Output hi"
+    assert spawned[0]["cwd"] == str(workload)
+    assert spawned[0]["registry_cwd"] == str(tmp_path)
+    assert record is not None
+    assert record["state"] == "starting"
+    assert record["cwd"] == str(workload)
+    assert record["worker_pid"] == 9876
+
+
+@requires_fork
 def test_cmd_submit_normalizes_relative_cwd_and_run_dir(
     monkeypatch,
     tmp_path,
@@ -1165,6 +1380,97 @@ def test_cmd_submit_normalizes_relative_cwd_and_run_dir(
     assert record["run_dir"] == str(project / "experiments" / "run-1")
 
 
+def test_launch_durable_command_uses_native_powershell_on_windows(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from argus_skill.tools.subagent import _registry
+
+    monkeypatch.chdir(tmp_path)
+    captured: dict[str, object] = {}
+
+    class _Proc:
+        pid = 4242
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return _Proc()
+
+    monkeypatch.setattr(_registry, "os", _OSNameProxy(os, "nt"))
+    monkeypatch.setattr(_registry.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(_registry, "_child_env", lambda: {})
+
+    stdout = tmp_path / "stdout.log"
+    stderr = tmp_path / "stderr.log"
+    with stdout.open("w") as out, stderr.open("w") as err:
+        proc = _registry._launch_durable_command(
+            task_id="team::windows",
+            run_id="run-1",
+            command="Write-Output ok",
+            cwd=str(tmp_path),
+            stdout=out,
+            stderr=err,
+        )
+
+    args = captured["args"]
+    kwargs = captured["kwargs"]
+    assert proc.pid == 4242
+    assert isinstance(args, list)
+    assert args[0] == "powershell.exe"
+    assert "bash" not in args
+    assert isinstance(kwargs, dict)
+    assert kwargs["cwd"] == str(tmp_path)
+    env = kwargs["env"]
+    assert env["ARGUS_DURABLE_COMMAND"] == "Write-Output ok"
+    exit_path = _registry._exit_status_path("team::windows", "run-1").resolve()
+    assert env["ARGUS_DURABLE_TMP"] == str(
+        exit_path.with_name("exit_code.run-1.tmp")
+    )
+    assert env["ARGUS_DURABLE_EXIT"] == str(exit_path)
+    assert _registry._exit_status_path("team::windows", "run-1").parent.exists()
+
+
+def test_terminate_proc_uses_windows_tree_before_root_fallback(monkeypatch) -> None:
+    from argus_skill.tools.subagent import _direct_run
+
+    calls: list[int] = []
+
+    class _Proc:
+        pid = 6161
+        returncode = None
+        terminated = False
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = 1
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            raise AssertionError("tree termination succeeded; kill is unnecessary")
+
+    proc = _Proc()
+
+    def terminate_tree(pid: int, *, identity_check) -> bool:
+        assert identity_check() is True
+        calls.append(pid)
+        proc.returncode = 1
+        return True
+
+    monkeypatch.setattr(_direct_run, "os", _OSNameProxy(os, "nt"))
+    monkeypatch.setattr(_direct_run, "terminate_windows_process_tree", terminate_tree)
+
+    _direct_run._terminate_proc(proc)
+
+    assert calls == [6161]
+    assert proc.terminated is False
+
+
 def test_persist_experiment_record_writes_artifacts_and_dedups(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     tid = "exp1"
@@ -1187,6 +1493,38 @@ def test_persist_experiment_record_writes_artifacts_and_dedups(monkeypatch, tmp_
     assert len(ledger.read_text().strip().splitlines()) == 1
 
 
+def test_persist_experiment_record_keeps_terminal_state_on_ledger_error(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    ledger = tmp_path / _sub.EXPERIMENT_HISTORY_REL
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text('{"run_id":"torn"')
+    task = {
+        "run_id": "run-1",
+        "task_id": "task-1",
+        "state": "done",
+        "exit_code": 0,
+        "command": "python train.py",
+    }
+
+    _sub._persist_experiment_record(
+        "task-1",
+        "COMPLETED",
+        task,
+        str(tmp_path),
+    )
+
+    persisted = _sub._read_task("task-1")
+    assert persisted is not None
+    assert persisted["state"] == "done"
+    assert persisted["exit_code"] == 0
+    assert "torn final row" in persisted["evidence_persistence_error"]
+    assert "terminal result preserved" in capsys.readouterr().err
+
+
 def test_cmd_status_surfaces_open_discussion(monkeypatch, tmp_path, capsys) -> None:
     monkeypatch.chdir(tmp_path)
     me = __import__("os").getpid()
@@ -1198,7 +1536,16 @@ def test_cmd_status_surfaces_open_discussion(monkeypatch, tmp_path, capsys) -> N
     assert rc == 0
     assert "ACTION_REQUIRED" in out
     assert "DISCUSSION.md" in out["discussion_file"]
-    assert "reply --task-id d" in out["reply_with"]
+    assert shlex.split(out["reply_with"]) == [
+        sys.executable,
+        "-m",
+        "argus_skill.tools.subagent",
+        "reply",
+        "--task-id",
+        "d",
+        "--message",
+        "<your rationale>",
+    ]
 
 
 def test_supervisor_check_prompt_demands_parameter_level_concern(monkeypatch, tmp_path) -> None:
@@ -1247,7 +1594,7 @@ def test_reply_back_block_demands_concrete_fix_not_bare_agreement() -> None:
 def test_supervisor_discuss_prompt_requires_concrete_fix_resolution(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     tid = "train-fix"
-    _append_discussion(tid, "engineer", "agree, it's no-go")
+    _append_discussion(tid, "engineer", "agree, the criterion was not met")
     captured: dict[str, str] = {}
 
     class _Result:
@@ -1268,7 +1615,7 @@ def test_supervisor_discuss_prompt_requires_concrete_fix_resolution(monkeypatch,
     )
     prompt = captured["prompt"]
     assert "CONCRETE fix" in prompt
-    assert "no-go" in prompt.lower()
+    assert "criterion was not met" in prompt.lower()
     # It should reason in terms of the actual hyperparameters.
     assert "hyperparameters in the Command" in prompt
 

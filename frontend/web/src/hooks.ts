@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useReducer, useRef, useState } from 'react';
-import { api, openStream, type EventMsg } from './api';
+import { api, isAuthenticationError, openStream, type EventMsg } from './api';
 import { eventKey } from './lib/eventRender';
 import { cacheProjectName } from './lib/projectName';
 
@@ -12,6 +12,14 @@ export const SNAPSHOT_POLL_MS = 8_000;
 export const ARTIFACTS_POLL_MS = 10_000;
 export const GIT_DIFF_POLL_MS = 10_000;
 
+export function queryRetryPolicy(failureCount: number, error: unknown): boolean {
+  return !isAuthenticationError(error) && failureCount < 1;
+}
+
+export function projectCostPollInterval(error: unknown): number | false {
+  return isAuthenticationError(error) ? false : PROJECT_COST_POLL_MS;
+}
+
 export const useProjects = () =>
   useQuery({ queryKey: ['projects'], queryFn: api.projectIndex, refetchInterval: PROJECT_POLL_MS });
 
@@ -19,14 +27,15 @@ export const useProjectCosts = () =>
   useQuery({
     queryKey: ['project-costs'],
     queryFn: ({ signal }) => api.projectCosts(signal),
-    refetchInterval: PROJECT_COST_POLL_MS,
+    retry: queryRetryPolicy,
+    refetchInterval: (query) => projectCostPollInterval(query.state.error),
     refetchIntervalInBackground: false,
   });
 
 export const useSnapshot = (sid: string | null) =>
   useQuery({
     queryKey: ['snapshot', sid],
-    queryFn: ({ signal }) => api.snapshot(sid!, signal),
+    queryFn: ({ signal }) => api.activeSnapshot(sid!, signal),
     enabled: !!sid,
     refetchInterval: SNAPSHOT_POLL_MS,
   });
@@ -165,7 +174,7 @@ export function streamReducer(state: StreamState, action: StreamAction): StreamS
   if (action.kind === 'seed') {
     const seen = new Set<string>();
     const events: EventMsg[] = [];
-    action.events.forEach((ev, i) => {
+    [...action.events, ...state.events].forEach((ev, i) => {
       const k = eventKey(ev, i);
       if (!seen.has(k)) {
         seen.add(k);

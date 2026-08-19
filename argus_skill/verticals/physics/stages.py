@@ -26,8 +26,9 @@ Stage semantics:
   SUPPLEMENT.tex/pdf, PAPER_BUILD_LOG.md), and an OPTIONAL presentation layer
   (HTML_DEMO/PRESENTATION) that never gates — and audit paper structure,
   figure->claim binding, citations, equations, tables, reproducibility, and
-  no-overclaim. Enforced by ``manuscript.py`` (no optional mode, no marker file,
-  no env var).
+    no-overclaim. Enforced before terminal completion by the typed
+    ``stage_completion_issues`` hook backed by ``manuscript.py`` (no optional
+    mode, no marker file, no env var).
 """
 from __future__ import annotations
 
@@ -81,10 +82,12 @@ completion_gate = "none"
 # hygiene closure-loop), it proposes+applies a one-rung tier downgrade (S->A->B->C->D)
 # and surfaces a reviewer-ratification directive. Never blocks a stage.
 #
-# All of the above gates are invoked directly by the agent (per the prose
+# All advisory gates above are invoked directly by the agent (per the prose
 # instructions in ``role_banner`` below) and by ``skills.research_gates``
 # (``render_active_repair_blocks`` scans on-disk ``*_GATE_STATE.json``); none of
-# them is wired through a shell-command registry.
+# them is wired through a shell-command registry. The terminal manuscript
+# contract is different: the stage machine calls ``stage_completion_issues``
+# before it can mark the final stage done.
 
 CHECKLIST_ITEMS: dict[str, tuple[ChecklistItem, ...]] = {
     "scope": (
@@ -337,10 +340,9 @@ def _current_stage(project_root: object) -> str:
     if project_root is None:
         return ""
     try:
-        import json as _json
+        from ...core.pipeline_state import read_pipeline_state
 
-        p = Path(str(project_root)) / "research" / "PIPELINE_STATE.json"
-        data = _json.loads(p.read_text(encoding="utf-8"))
+        data = read_pipeline_state(project_root)
         return str(data.get("current_stage", "") or "")
     except Exception:  # noqa: BLE001
         return ""
@@ -393,6 +395,15 @@ _STAGE_ENTRY_CONTRACTS: dict[str, str] = {
 def stage_entry_contract(stage: str) -> str:
     """Return the stage-entry contract text for ``stage`` (empty if none)."""
     return _STAGE_ENTRY_CONTRACTS.get((stage or "").strip().lower(), "")
+
+
+def stage_completion_issues(stage: str, project_root: Path) -> tuple[str, ...]:
+    """Return deterministic blockers before the stage can be marked done."""
+    if (stage or "").strip().lower() != "manuscript":
+        return ()
+    from .manuscript import verify_all_deliverables
+
+    return tuple(verify_all_deliverables(project_root))
 
 
 def _mode_banner(project_root: object = None) -> str:
@@ -612,5 +623,6 @@ __all__ = [
     "WORKFLOW_MODE",
     "completion_gate",
     "role_banner",
+    "stage_completion_issues",
     "stage_entry_contract",
 ]

@@ -1,56 +1,18 @@
-"""Exemplar-grounding structural gate.
+"""Validate that manuscript structure is grounded in real venue exemplars.
 
-Forces the paper-exemplar-pdf-learning skill to actually produce the
-artifacts it advertises. Closes the same loop as
-``paper_structural_minimums`` did for figures: skill prompt says "study
-2+ top-venue EMNLP/ACL papers and adapt their structure"; without a
-harness gate, the agent skips it and freestyles the section order. The
-v1 failure mode ("doesn't even count as 八股") was this gate missing.
+Before a draft advances, the project must provide:
 
-Required artifacts before a draft can advance past the draft stage:
+* ``paper/style_ref/EXEMPLAR.json`` with at least two accessible papers,
+  source metadata, file hashes, structural profiles, figure inventories, and
+  extracted format facts;
+* a substantive ``STYLE_PROFILE.md`` and ``PAPER_STRUCTURE_BLUEPRINT.md``;
+* ``EXEMPLAR_SUITABILITY.json`` naming the primary exemplar and attesting that
+  prose was not copied;
+* ``paper/PAPER_FORMAT_FACTS.json`` for comparison with the primary exemplar.
 
-* ``paper/style_ref/EXEMPLAR.json`` (``exemplar_schema_version=2``)
-  with ≥2 exemplars, each carrying ``title``, ``url``, ``venue``,
-  ``year``, ``local_pdf`` (file present on disk), non-empty
-  ``pdf_sha256``, and a ``structural_profile`` object that includes a
-  figure inventory (``figure_inventory`` / ``figures`` /
-  ``figure_table_inventory``). The figure inventory is the user's
-  third explicit requirement: "分析他们具体做了哪些图，并按照分析结果
-  来执行."
-* ``paper/style_ref/STYLE_PROFILE.md`` ≥ 2000 chars (not a one-line
-  stub). Captures top-conference formatting observations the agent
-  must internalise.
-* ``paper/style_ref/EXEMPLAR_SUITABILITY.json``:
-  ``verdict=="PASS"`` + ``primary_exemplar`` matching one of the
-  EXEMPLAR slugs + ``no_prose_copy_attestation==true``.
-* ``paper/style_ref/PAPER_STRUCTURE_BLUEPRINT.md`` ≥ 1500 chars.
-
-At submission stage only, additionally:
-
-* ``paper/style_ref/STRUCTURE_CONFORMANCE.json`` with
-  ``conformance_schema_version=1``, ``verdict=="PASS"``, and a non-empty
-  ``section_mappings`` array — proves the final LaTeX section order
-  was kept aligned with the blueprint.
-
-**Format-conformance check** (added 2026-06-05):
-
-  Pure-text exemplar grounding wasn't enough — v2 produced a passing
-  STRUCTURE_CONFORMANCE.json while still leaving real format problems
-  in the paper. The gate now also requires:
-
-  * Each exemplar entry contains a ``format_facts`` object (or
-    ``format_facts_path`` pointing at one) — produced by
-    ``argus_skill.verticals.research.format_facts``.
-  * ``paper/PAPER_FORMAT_FACTS.json`` exists (the paper's own facts,
-    same shape).
-  * For draft+ stages: the paper's format facts are compared with the primary
-    exemplar and surfaced to the Reviewer. Differences are observations, not a
-    mechanical style verdict.
-
-This is structural / anti-fab. We do NOT score whether the exemplars
-are "the right" exemplars or whether the style profile is "deep
-enough" beyond a character floor — those are quality judgments and
-belong to the reviewer.
+Submission additionally requires ``STRUCTURE_CONFORMANCE.json`` with a passing
+verdict and section mappings. This gate checks artifact integrity and structural
+coverage; exemplar quality and stylistic judgment remain Reviewer decisions.
 
 CLI:
     python -m argus_skill.verticals.research.exemplar_grounding --project-root .

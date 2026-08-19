@@ -21,7 +21,7 @@ from ...core.file_lock import exclusive_file_lock
 
 SCHEMA_VERSION = 1
 LEDGER_SCHEMA_VERSION = 1
-STAGES = ("scope", "environment", "baseline", "optimize", "validate", "report")
+STAGES = ("scope", "discover", "environment", "baseline", "optimize", "validate", "report")
 REQUIRED_SURFACES = frozenset({"target_repository", "official_toolchains", "research_frontier"})
 PRIMARY_SOURCE_TYPES = frozenset(
     {

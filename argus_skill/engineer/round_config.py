@@ -16,22 +16,30 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..core.role_session import (
+    ROLE_SESSION_POLICIES,
+    configured_role_session_policy,
+)
+
 _RUNNER_HARD_IDLE_ENV = "ARGUS_SKILL_RUNNER_HARD_IDLE_SECONDS"
-_SHIFT_ROUND_LIMIT_ENV = "ARGUS_SKILL_SHIFT_ROUND_LIMIT"
-_THREAD_TOKEN_LIMIT_ENV = "ARGUS_SKILL_THREAD_TOKEN_LIMIT"
 _DECISION_PROGRESS_TIMEOUT_ENV = "ARGUS_SKILL_DECISION_PROGRESS_TIMEOUT_SECONDS"
 # Toggle for the background-subagent advisory + agent-driven cadence wait. When
 # unset/true, each round surfaces in-flight supervised subagents so the engineer
 # does not babysit a self-watched run. Set to 0 to disable (e.g. tests).
 _BG_SUBAGENT_ADVISORY_ENV = "ARGUS_SKILL_BG_SUBAGENT_ADVISORY"
 _COMPACT_CONTINUATION_PROMPTS_ENV = "ARGUS_SKILL_COMPACT_CONTINUATION_PROMPTS"
+_ROLE_SESSION_MAX_TURNS_ENV = "ARGUS_SKILL_ROLE_SESSION_MAX_TURNS"
+_ROLE_SESSION_MAX_INPUT_TOKENS_ENV = "ARGUS_SKILL_ROLE_SESSION_MAX_INPUT_TOKENS"
 _CONTINUE_WORK_SENTINEL = "CONTINUE_WORK:"
 _CONTINUE_WORK_MAX_CHARS = 500
-# Compatibility defaults for the retired resumed-thread policy. Autonomous
-# Engineer/Reviewer calls are always fresh, so no token roll is needed.
-_DEFAULT_THREAD_TOKEN_LIMIT = 0
 _DEFAULT_DECISION_PROGRESS_TIMEOUT_SECONDS = 30 * 60
 _RUNNER_DEFAULT_HARD_IDLE_SECONDS = 45 * 60
+# Framework-owned fallback for ``EngineerConfig.live_search_stages``: the
+# research stage, where idea discovery / literature grounding happens. A
+# vertical that owns a different pipeline (math runs scope/solve/review and has
+# no research stage at all) declares its own set through the vertical contract;
+# this stays the answer for every vertical that declares nothing.
+DEFAULT_LIVE_SEARCH_STAGES: frozenset[str] = frozenset({"research"})
 
 
 def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
@@ -81,6 +89,7 @@ class EngineerConfig:
     reasoning_effort: str | None = None
     initial_reasoning_effort: str | None = None
     extra_args: list[str] | None = None
+    skill_paths: list[str] | None = None
     full_auto: bool = True
     skip_git_repo_check: bool = True
     dangerous_yolo: bool = False
@@ -89,8 +98,11 @@ class EngineerConfig:
     # Pipeline stages in which the engineer runs with codex's native live
     # web_search enabled (``codex exec --search``). Default: the research stage,
     # so idea discovery / literature grounding does REAL live search instead of
-    # cached/recalled results. Empty set → never enable it.
-    live_search_stages: frozenset[str] = frozenset({"research"})
+    # cached/recalled results. Empty set → never enable it. The active vertical
+    # may override this per mission (``ENGINEER_LIVE_SEARCH_STAGES`` on its
+    # provider, resolved through ``VerticalContract.live_search_stages``); a
+    # vertical that declares nothing keeps this default unchanged.
+    live_search_stages: frozenset[str] = DEFAULT_LIVE_SEARCH_STAGES
 
 
 def _engineer_live_search(workdir: Any, stages: "frozenset[str]") -> bool:
@@ -117,7 +129,7 @@ def _fit_guard(threshold: int, reachable_max: int) -> int:
 
     ``0`` means "explicitly disabled" for every guard that uses this, so it is
     returned untouched. A guard that already fits is returned unchanged, which
-    keeps the default 500-round budget byte-for-byte identical. Anything larger
+    keeps the default 32-round budget byte-for-byte identical. Anything larger
     is pulled down to ``reachable_max`` but never below 1, because a guard at 0
     would read as "disabled" rather than "fires immediately".
     """
@@ -146,7 +158,10 @@ def _fit_stall_guard(threshold: int, budget: int) -> int:
 class SupervisedConfig:
     """Knobs for the round-loop control."""
 
-    max_rounds: int = 500
+    max_rounds: int = 32
+    # Keep the historical reviewed loop by default. Planner-classified
+    # low-risk bounded work may opt into an Engineer self-review completion.
+    require_independent_review: bool = True
     no_progress_threshold: int = 2  # consecutive rounds with no engineer message before bailing
     # Consecutive ``continue`` rounds for which the Reviewer explicitly reports
     # ``FORWARD_PROGRESS=false``. Missing signals never count: the harness does
@@ -170,16 +185,31 @@ class SupervisedConfig:
     # nondecision work. A mission that makes evidence progress every round but
     # never passes its gate would otherwise drift to ``max_rounds``.
     # At ``soft_round_limit`` the reviewer is instructed to return ``blocked`` if
-    # the binding constraint is an external/unresolvable dependency; at
-    # ``hard_escalate_rounds`` the loop force-ends as ``blocked`` so the planner
-    # re-plans/decomposes and the operator inbox is re-read on the next mission.
-    # The continuous planner makes many SHORT missions, so a single mission this
-    # long without finishing is anomalous. 0 disables either guard.
+    # the binding constraint is an external/unresolvable dependency. At
+    # ``hard_escalate_rounds`` the loop requires an explicit Reviewer progress
+    # judgment: known progress (including a short bounded regression before the
+    # stall threshold) may continue, while a missing signal ends the mission so
+    # the planner can re-plan instead of letting the harness continue blind.
+    # 0 disables either guard.
     soft_round_limit: int = 12
     hard_escalate_rounds: int = 24
     backend_failure_threshold: int = 2
     backend_failure_backoff_seconds: float = 15.0
     session_id: str | None = None
+    # Product-wide policy: ``auto`` selects bounded rolling sessions for
+    # resumable native CLIs and fresh turns for others. Explicit fresh/mission/
+    # rolling values remain available for rollback and evaluation.
+    role_session_policy: str = field(default_factory=configured_role_session_policy)
+    role_session_max_turns: int = field(
+        default_factory=lambda: _env_int(_ROLE_SESSION_MAX_TURNS_ENV, 6)
+    )
+    role_session_max_input_tokens: int = field(
+        default_factory=lambda: _env_int(
+            _ROLE_SESSION_MAX_INPUT_TOKENS_ENV,
+            120_000,
+        )
+    )
+    role_session_dir: Path | None = None
     # Absolute path to THIS mission's engineer execution log (the per-project
     # ``<life_dir>/events.jsonl``). The reviewer runs in the project work-tree
     # and only sees the engineer's final summary, so it cannot otherwise tell
@@ -190,34 +220,17 @@ class SupervisedConfig:
     # byte-for-byte unchanged. The engineer's shell commands land in the
     # ``text`` field of each ``engineer.progress`` event in this file.
     engineer_log_path: str = ""
-    # Retained as a compatibility knob for callers that still construct the
-    # config explicitly. Autonomous Engineer/Reviewer calls now always start a
-    # fresh provider session, so the value is no longer consulted by the loop.
-    shift_round_limit: int = field(default_factory=lambda: _env_int(_SHIFT_ROUND_LIMIT_ENV, 1))
-    # Compatibility-only alongside ``shift_round_limit``; fresh-per-round calls
-    # do not carry a thread whose token count needs policing.
-    thread_token_limit: int = field(
-        default_factory=lambda: _env_int(_THREAD_TOKEN_LIMIT_ENV, _DEFAULT_THREAD_TOKEN_LIMIT)
-    )
     # Ordinary Markdown file edited directly by Engineer and Reviewer. None
     # disables the shared checkpoint for callers that intentionally opt out.
     checkpoint_path: Path | None = None
     # Mission-level canonical packet. Round handoffs are written beside it.
     context_packet_path: str = ""
-    # Constructor compatibility for older callers. Semantic progress is never
-    # inferred from provider-private session files or project mtimes.
-    effective_progress_warning_seconds: int = 0
-    effective_progress_stalled_seconds: int = 0
-    effective_progress_timeout_seconds: int = 0
-    effective_progress_check_interval_seconds: float = 0.0
     runner_hard_idle_seconds: int = field(
         default_factory=lambda: _env_int(
             _RUNNER_HARD_IDLE_ENV,
             _RUNNER_DEFAULT_HARD_IDLE_SECONDS,
         )
     )
-    # Constructor compatibility; provider-private compaction logs are not read.
-    round_compaction_limit: int = 0
     # Surface in-flight SUPERVISED subagents (read from
     # ``<workdir>/.argus_subagents``) in the engineer prompt each round so the
     # agent does not burn rounds babysitting a self-watched long job, and can
@@ -227,18 +240,15 @@ class SupervisedConfig:
     background_subagent_advisory: bool = field(
         default_factory=lambda: _env_bool(_BG_SUBAGENT_ADVISORY_ENV, True)
     )
-    # Retained only for source compatibility with older callers.
-    review_deferral_limit: int = 0
-
     def __post_init__(self) -> None:
         """Keep the round-budget guards reachable when ``max_rounds`` shrinks.
 
         ``stall_threshold`` / ``soft_round_limit`` / ``hard_escalate_rounds``
-        are ABSOLUTE round counts sized for the default ``max_rounds`` (500).
-        A caller may lower the budget far below them for one mission —
-        ``bounded_dag_node_max_rounds()`` yields 3 — and a guard whose
-        threshold is not strictly reachable within the budget can then never
-        fire. Nothing reports this: the value stays in the config, is passed
+        are ABSOLUTE round counts sized for the default ``max_rounds`` (32).
+        A specialized caller may explicitly lower the budget for one mission,
+        and a guard whose threshold is not strictly reachable within that
+        budget can then never fire. Nothing reports this: the value stays in
+        the config, is passed
         to the classifier, and evaluates to ``False`` on every round.
 
         Semantic stall is counted only from the Reviewer's structured
@@ -262,14 +272,17 @@ class SupervisedConfig:
           when a two-round budget should stop after its first negative verdict.
         * ``soft_round_limit`` advises the Reviewer partway through, so it
           must also land strictly inside the budget.
-        * ``hard_escalate_rounds`` force-ends the loop with a planner-readable
-          reason; firing on the final round is still better than the generic
-          ``Hit max_rounds`` path, so ``<= max_rounds`` is enough.
+        * ``hard_escalate_rounds`` is the point where continuation must be backed
+          by the Reviewer's explicit progress judgment. A missing signal ends
+          with a planner-readable reason; reaching this boundary on the final
+          round is still useful, so ``<= max_rounds`` is enough.
 
         A guard explicitly disabled with ``0`` stays disabled, and a budget
         large enough for the configured values is left byte-for-byte
         unchanged.
         """
+        if self.role_session_policy not in ROLE_SESSION_POLICIES:
+            raise ValueError("role_session_policy must be auto, fresh, mission, or rolling")
         budget = int(self.max_rounds)
         if budget <= 0:
             return

@@ -184,7 +184,7 @@ function OperationsPanel({
   height: number;
 }) {
   if (!snap) {
-    return <Frame title="Operations" hint="Ctrl+O close"><Text dimColor>loading…</Text></Frame>;
+    return <Frame title="Operations" hint="Esc close"><Text dimColor>loading…</Text></Frame>;
   }
   const activities = activityHistory(events, 8);
   const slo = snap.observability?.slo;
@@ -193,7 +193,7 @@ function OperationsPanel({
   const veryCompact = height <= 20;
   const visibleRoles = veryCompact ? snap.roles.slice(0, 2) : snap.roles;
   return (
-    <Frame title="Operations" hint="Ctrl+O close · /status and /doctor for details">
+    <Frame title="Operations" hint="Esc close · /status and /doctor for details">
       <Row k="daemon" v={snap.daemon.alive ? `● pid ${snap.daemon.pid ?? '—'} · ${Math.floor((snap.daemon.uptime_seconds ?? 0) / 60)}m` : '○ stopped'} c={snap.daemon.alive ? theme.success : 'gray'} />
       <Row k="backend" v={snap.daemon.backend_label || snap.daemon.backend || '—'} />
       {!veryCompact ? <Row k="protocol" v={`${snap.daemon.protocol?.name || '—'}/${snap.daemon.protocol?.major ?? '—'}.${snap.daemon.protocol?.minor ?? '—'}`} /> : null}

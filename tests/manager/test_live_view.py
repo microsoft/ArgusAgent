@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import json
 import threading
 
@@ -219,6 +218,7 @@ def test_manager_presentation_is_written_by_confined_harness(tmp_path) -> None:
 
 
 def test_manager_rendering_does_not_reenter_wiki_lock(tmp_path) -> None:
+    fcntl = pytest.importorskip("fcntl", reason="requires POSIX advisory locking")
     wiki_lock = tmp_path / ".autors" / "demo" / "wiki" / "data" / ".wiki.lock"
     wiki_lock.parent.mkdir(parents=True)
     raw = json.dumps({
@@ -369,7 +369,10 @@ def test_manager_can_author_supported_presentation_formats(
     assert (tmp_path / path).read_text(encoding="utf-8") == "content"
 
 
-def test_manager_presentation_refuses_symlinked_live_directory(tmp_path) -> None:
+def test_manager_presentation_refuses_symlinked_live_directory(
+    tmp_path,
+    require_symlink_support,
+) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
     (tmp_path / ".argus").mkdir()
@@ -413,7 +416,10 @@ def test_manager_rendering_rejects_payload_atomically(tmp_path) -> None:
     assert current.read_text(encoding="utf-8") == "old\n"
 
 
-def test_manager_clear_refuses_symlinked_argus_directory(tmp_path) -> None:
+def test_manager_clear_refuses_symlinked_argus_directory(
+    tmp_path,
+    require_symlink_support,
+) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "live-view.json").write_text("keep\n", encoding="utf-8")

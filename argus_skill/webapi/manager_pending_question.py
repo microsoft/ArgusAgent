@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 from ..core import paths as core_paths
-from .manager_state import _chat_state_for
 
 
 def _bridge():
@@ -124,6 +123,177 @@ def _parse_pending_question_decision(text: str) -> dict[str, Any] | None:
     return None
 
 
+def _decision_stale(reason: str) -> dict[str, Any]:
+    return {
+        "error": f"stale decision: {reason}",
+        "application_status": "stale",
+    }
+
+
+def _resolved_decision_replay(
+    mem: Any,
+    item: Any,
+    *,
+    decision_id: str,
+    option_id: str,
+    note: str,
+) -> dict[str, Any] | None:
+    """Return an idempotent result for the exact choice already on disk."""
+    card = item.operator_decision
+    if str(card.get("status") or "") != "resolved":
+        return None
+    same_request = (
+        str(card.get("id") or "") == decision_id
+        and str(card.get("selected_option") or "") == option_id
+        and str(card.get("note") or "").strip() == note.strip()
+    )
+    if not same_request:
+        return _decision_stale("another choice was already applied")
+    continuation_id = str(card.get("continuation_item_id") or "").strip()
+    continuation = next(
+        (row for row in mem.backlog.all() if row.id == continuation_id),
+        None,
+    ) if continuation_id else None
+    if option_id != "stop" and continuation is None:
+        return {
+            "error": "resolved decision is missing its continuation item",
+            "application_status": "stale",
+        }
+    result: dict[str, Any] = {
+        "answered_item_id": item.id,
+        "decision_id": decision_id,
+        "resolved": True,
+        "application_status": "already_applied",
+        "resolution_id": str(card.get("resolution_id") or ""),
+        "resume_requested": bool(card.get("resume_requested", option_id != "stop")),
+        "reply": str(card.get("reply") or "").strip()
+        or (
+            "Campaign stopped. Current work was preserved."
+            if option_id == "stop"
+            else "This decision was already delivered to the team."
+        ),
+    }
+    if option_id == "stop":
+        result["stopped"] = True
+    else:
+        result["manager_decision"] = str(card.get("manager_decision") or "")
+        result["item"] = continuation.to_jsonable()
+    return result
+
+
+def _reconcile_campaign_after_decision(
+    mem: Any,
+    *,
+    stopped: bool,
+) -> tuple[bool, str]:
+    """Project a resolved card onto continuous state; safe to call again."""
+    from ..daemon.state import read_continuous_state, write_continuous_config
+
+    before = read_continuous_state(mem.project_root)
+    if stopped:
+        if before.enabled:
+            write_continuous_config(
+                mem.project_root,
+                enabled=False,
+                objective=before.objective,
+                done_reason="operator chose to stop the campaign",
+            )
+        after = read_continuous_state(mem.project_root)
+        if after.enabled:
+            return False, "campaign stop is recorded but continuous state is still enabled"
+        return False, ""
+    if before.objective.strip() and not before.enabled:
+        write_continuous_config(
+            mem.project_root,
+            enabled=True,
+            objective=before.objective,
+        )
+        after = read_continuous_state(mem.project_root)
+        if not after.enabled:
+            return False, "decision is recorded but continuous resume is still pending"
+        return True, ""
+    return False, ""
+
+
+def _apply_operator_answer(
+    mem: Any,
+    item: Any,
+    answer: str,
+    *,
+    manager_decision: str,
+    manager_reply: str,
+    decision_option: str = "custom",
+    decision_id: str = "",
+    decision_note: str = "",
+) -> dict[str, Any]:
+    """Persist an explicit operator answer and enqueue its continuation."""
+    from ..apps._inbox import queue_inbox_message
+    from ..core.event_catalog import EventType
+    from ..life.event_log import JsonlEventSink
+
+    question = str(getattr(item, "pending_question", "") or "").strip()
+    blocked, continuation = mem.backlog.continue_with_operator_reply(
+        item.id,
+        answer,
+        manager_decision=manager_decision,
+        decision_option=decision_option,
+        decision_id=decision_id,
+        decision_note=decision_note,
+        manager_reply=manager_reply,
+    )
+    if blocked is None:
+        return {"error": "unknown backlog item", "answered_item_id": item.id}
+    if continuation is None:
+        if decision_id:
+            replay = _resolved_decision_replay(
+                mem,
+                blocked,
+                decision_id=decision_id,
+                option_id=decision_option,
+                note=decision_note,
+            )
+            if replay is not None:
+                return replay
+        return {
+            "error": "question is no longer pending",
+            "answered_item_id": item.id,
+        }
+
+    life_dir = Path(mem.project_root)
+    directive = (
+        "[MANAGER OPERATOR-ANSWER DECISION] "
+        f"Blocked item {item.id} was answered and continuation {continuation.id} "
+        f"was durably enqueued with this decision: {manager_decision} "
+        "Treat this as authority/context and deactivate any stale waiting contract. "
+        "Do not enqueue duplicate work if that continuation is already terminal."
+    )
+    queue_inbox_message(life_dir, directive, source="manager.answer")
+    JsonlEventSink(None, life_dir=life_dir).append({
+        "type": EventType.LIFE_OPERATOR_QUESTION_ANSWERED,
+        "item_id": item.id,
+        "continuation_item_id": continuation.id,
+        "question": question,
+        "manager_decision": manager_decision,
+        "decision_id": decision_id,
+        "decision_revision": blocked.operator_decision.get(
+            "resolved_from_revision"
+        ),
+    })
+    return {
+        "answered_item_id": item.id,
+        "answer_intent": True,
+        "resolved": True,
+        "application_status": "accepted",
+        "resolution_id": str(
+            blocked.operator_decision.get("resolution_id") or ""
+        ),
+        "resume_requested": True,
+        "reply": manager_reply or "I have delivered your decision to the team.",
+        "manager_decision": manager_decision,
+        "item": continuation.to_jsonable(),
+    }
+
+
 def _resolve_pending_question_with_manager(
     mem: Any,
     item: Any,
@@ -132,14 +302,12 @@ def _resolve_pending_question_with_manager(
     *,
     root_task_id: str | None = None,
     decision_option: str = "custom",
+    decision_id: str = "",
+    decision_note: str = "",
 ) -> dict[str, Any]:
-    from ..apps._inbox import queue_inbox_message
-    from ..core.event_catalog import EventType
-    from ..life.event_log import JsonlEventSink
     from ..manager.front_door import manager_triage
     from ..roles.prompts.manager import build_pending_question_prompt
 
-    question = str(getattr(item, "pending_question", "") or "").strip()
     prompt = build_pending_question_prompt(item, answer)
     try:
         manager_reply = manager_triage(
@@ -179,44 +347,18 @@ def _resolve_pending_question_with_manager(
             "reply": parsed["reply"] or "Please clarify the requested decision.",
         }
 
-    blocked, continuation = mem.backlog.continue_with_operator_reply(
-        item.id,
+    return _apply_operator_answer(
+        mem,
+        item,
         answer,
         manager_decision=parsed["decision"],
+        manager_reply=(
+            parsed["reply"] or "I have delivered your decision to the team."
+        ),
         decision_option=decision_option,
+        decision_id=decision_id,
+        decision_note=decision_note,
     )
-    if blocked is None:
-        return {"error": "unknown backlog item", "answered_item_id": item.id}
-    if continuation is None:
-        return {
-            "error": "question is no longer pending",
-            "answered_item_id": item.id,
-        }
-
-    life_dir = Path(mem.project_root)
-    directive = (
-        "[MANAGER OPERATOR-ANSWER DECISION] "
-        f"Blocked item {item.id} was answered and continuation {continuation.id} "
-        f"was durably enqueued with this decision: {parsed['decision']} "
-        "Treat this as authority/context and deactivate any stale waiting contract. "
-        "Do not enqueue duplicate work if that continuation is already terminal."
-    )
-    queue_inbox_message(life_dir, directive, source="manager.answer")
-    JsonlEventSink(None, life_dir=life_dir).append({
-        "type": EventType.LIFE_OPERATOR_QUESTION_ANSWERED,
-        "item_id": item.id,
-        "continuation_item_id": continuation.id,
-        "question": question,
-        "manager_decision": parsed["decision"],
-    })
-    return {
-        "answered_item_id": item.id,
-        "answer_intent": True,
-        "resolved": True,
-        "reply": parsed["reply"] or "I have delivered your decision to the team.",
-        "manager_decision": parsed["decision"],
-        "item": continuation.to_jsonable(),
-    }
 
 
 def manager_answer_pending_question(
@@ -226,8 +368,10 @@ def manager_answer_pending_question(
     *,
     global_root: Path | str | None = None,
     decision_option: str = "custom",
+    decision_id: str = "",
+    decision_note: str = "",
 ) -> dict[str, Any] | None:
-    """Have Manager interpret and atomically deliver one operator answer."""
+    """Treat an explicit operator answer as authoritative and continue the item."""
     from ..core.transcript import append_turn
     from ..life.memory import MemoryBundle
 
@@ -242,24 +386,43 @@ def manager_answer_pending_question(
         if item is None:
             return None
         if not str(item.pending_question or "").strip():
+            if decision_id:
+                replay = _resolved_decision_replay(
+                    mem,
+                    item,
+                    decision_id=decision_id,
+                    option_id=decision_option,
+                    note=decision_note,
+                )
+                if replay is not None:
+                    return replay
             return {"error": "question is no longer pending"}
-        chat_state = _chat_state_for(sid)
-        chat_state["session_id"] = sid
-        chat_state["global_root"] = str(mem.global_root)
-        turn_id = f"web-{time.time_ns()}"
-        append_turn(mem.project_root, "operator", text.strip())
+        turn_id = (
+            f"decision-{decision_id}"
+            if decision_id
+            else f"web-{time.time_ns()}"
+        )
+        append_turn(
+            mem.project_root,
+            "operator",
+            text.strip(),
+            message_id=f"{turn_id}-operator",
+        )
         _emit_ui_turn(
             mem.project_root,
             "operator",
             text.strip(),
             message_id=f"{turn_id}-operator",
         )
-        result = _resolve_pending_question_with_manager(
+        result = _apply_operator_answer(
             mem,
             item,
-            text,
-            chat_state,
+            text.strip(),
+            manager_decision=text.strip(),
+            manager_reply="I delivered your decision to the team.",
             decision_option=decision_option,
+            decision_id=decision_id,
+            decision_note=decision_note,
         )
         reply = str(
             result.get("reply")
@@ -267,17 +430,20 @@ def manager_answer_pending_question(
             or "Manager could not resolve the pending question."
         )
         if result.get("resolved"):
-            from ..daemon.state import read_continuous_state, write_continuous_config
-
-            continuous = read_continuous_state(mem.project_root)
-            if continuous.objective.strip() and not continuous.enabled:
-                write_continuous_config(
-                    mem.project_root,
-                    enabled=True,
-                    objective=continuous.objective,
-                )
+            resumed, projection_error = _reconcile_campaign_after_decision(
+                mem,
+                stopped=False,
+            )
+            if resumed:
                 result["continuous"] = True
-        append_turn(mem.project_root, "argus", reply)
+            if projection_error:
+                result["projection_error"] = projection_error
+        append_turn(
+            mem.project_root,
+            "argus",
+            reply,
+            message_id=f"{turn_id}-argus",
+        )
         _emit_ui_turn(
             mem.project_root,
             "argus",
@@ -293,65 +459,155 @@ def manager_resolve_operator_decision(
     option_id: str,
     note: str = "",
     *,
-    expected_revision: int | None = None,
     global_root: Path | str | None = None,
 ) -> dict[str, Any] | None:
-    """Resolve one visible decision-card option."""
+    """Resolve one visible decision-card option with idempotent replay."""
     from ..core.operator_decision import selected_decision_text
-    from ..daemon.state import read_continuous_state, write_continuous_config
     from ..life.memory import MemoryBundle
 
     mem = MemoryBundle.for_cwd(
         fingerprint=sid,
         global_root=Path(global_root) if global_root else None,
     )
-    item = next(
-        (
-            row
-            for row in mem.backlog.all()
-            if str(row.operator_decision.get("id") or "") == decision_id
-        ),
-        None,
-    )
-    if item is None:
-        return None
-    card = item.operator_decision
-    if card.get("status") != "pending":
-        return {"error": "decision is no longer pending"}
-    if expected_revision is not None and int(card.get("revision", 1)) != expected_revision:
-        return {"error": "decision changed; reload before choosing"}
-    if option_id == "stop":
-        stopped = mem.backlog.stop_for_operator_decision(item.id, note=note)
-        if stopped is None:
-            return {"error": "decision is no longer pending"}
-        continuous = read_continuous_state(mem.project_root)
-        if continuous.enabled:
-            write_continuous_config(
-                mem.project_root,
-                enabled=False,
-                objective=continuous.objective,
-                done_reason="operator chose to stop the campaign",
+    with _bridge()._lock_for(sid):
+        item = next(
+            (
+                row
+                for row in mem.backlog.all()
+                if str(row.operator_decision.get("id") or "") == decision_id
+            ),
+            None,
+        )
+        if item is None:
+            return None
+
+        replay = _resolved_decision_replay(
+            mem,
+            item,
+            decision_id=decision_id,
+            option_id=option_id,
+            note=note,
+        )
+        if replay is not None:
+            if replay.get("application_status") == "already_applied":
+                resumed, projection_error = _reconcile_campaign_after_decision(
+                    mem,
+                    stopped=option_id == "stop",
+                )
+                if resumed:
+                    replay["continuous"] = True
+                if projection_error:
+                    replay["projection_error"] = projection_error
+            return replay
+
+        card = item.operator_decision
+        if (
+            str(card.get("status") or "") != "pending"
+            or not str(item.pending_question or "").strip()
+        ):
+            conflict = _decision_stale("decision is no longer pending")
+            conflict["decision_id"] = decision_id
+            conflict["answered_item_id"] = item.id
+            return conflict
+        if option_id == "stop":
+            try:
+                operator_text = selected_decision_text(card, option_id, note)
+            except ValueError as exc:
+                return {"error": str(exc)}
+            stopped = mem.backlog.stop_for_operator_decision(
+                item.id,
+                note=note,
+                decision_id=decision_id,
             )
-        return {
-            "resolved": True,
-            "stopped": True,
-            "decision_id": decision_id,
-            "reply": "Campaign stopped. Current work was preserved.",
-        }
-    try:
-        answer = selected_decision_text(card, option_id, note)
-    except ValueError as exc:
-        return {"error": str(exc)}
-    result = manager_answer_pending_question(
-        sid,
-        item.id,
-        answer,
-        global_root=global_root,
-        decision_option=option_id,
-    )
-    if result is not None:
-        result["decision_id"] = decision_id
-    return result
+            if stopped is None:
+                current = next(
+                    (row for row in mem.backlog.all() if row.id == item.id),
+                    item,
+                )
+                replay = _resolved_decision_replay(
+                    mem,
+                    current,
+                    decision_id=decision_id,
+                    option_id=option_id,
+                    note=note,
+                )
+                return replay or _decision_stale("decision changed while applying")
+            _resumed, projection_error = _reconcile_campaign_after_decision(
+                mem,
+                stopped=True,
+            )
+            result = {
+                "answered_item_id": item.id,
+                "resolved": True,
+                "stopped": True,
+                "decision_id": decision_id,
+                "application_status": "accepted",
+                "resolution_id": str(
+                    stopped.operator_decision.get("resolution_id") or ""
+                ),
+                "resume_requested": False,
+                "reply": "Campaign stopped. Current work was preserved.",
+            }
+            if projection_error:
+                result["projection_error"] = projection_error
+            from ..core.event_catalog import EventType
+            from ..core.transcript import append_turn
+            from ..life.event_log import JsonlEventSink
+
+            turn_id = f"decision-{decision_id}"
+            append_turn(
+                mem.project_root,
+                "operator",
+                operator_text,
+                message_id=f"{turn_id}-operator",
+            )
+            append_turn(
+                mem.project_root,
+                "argus",
+                result["reply"],
+                message_id=f"{turn_id}-argus",
+            )
+            _emit_ui_turn(
+                mem.project_root,
+                "operator",
+                operator_text,
+                message_id=f"{turn_id}-operator",
+            )
+            _emit_ui_turn(
+                mem.project_root,
+                "argus",
+                result["reply"],
+                message_id=f"{turn_id}-argus",
+            )
+            JsonlEventSink(None, life_dir=mem.project_root).append({
+                "type": EventType.LIFE_OPERATOR_QUESTION_ANSWERED,
+                "item_id": item.id,
+                "continuation_item_id": item.id,
+                "question": str(item.pending_question or ""),
+                "manager_decision": "stop campaign",
+                "decision_id": decision_id,
+                "decision_revision": stopped.operator_decision.get(
+                    "resolved_from_revision"
+                ),
+                "stopped": True,
+            })
+            return result
+        try:
+            answer = selected_decision_text(card, option_id, note)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        result = manager_answer_pending_question(
+            sid,
+            item.id,
+            answer,
+            global_root=global_root,
+            decision_option=option_id,
+            decision_id=decision_id,
+            decision_note=note,
+        )
+        if result is not None:
+            result["decision_id"] = decision_id
+        return result
 
 
 def record_task_dispatch_ack(
@@ -378,7 +634,29 @@ def record_task_dispatch_ack(
     daemon_alive = result.get("daemon_alive", False)
 
     # Derive truthful human-readable text
-    if daemon is None and daemon_alive:
+    dispatch_state = result.get("dispatch_state")
+    if dispatch_state == "already_queued":
+        status = str((result.get("item") or {}).get("status") or "queued")
+        text = (
+            f"request already queued ({status}); no duplicate task was created"
+        )
+    elif dispatch_state == "queued_after_current":
+        text = (
+            "queued after current work; the active executor remains on its "
+            "current mission"
+        )
+    elif dispatch_state == "queued":
+        text = "queued; the active executor will pick up this task"
+    elif dispatch_state == "running":
+        text = "task is running on the active executor"
+    elif dispatch_state == "planner_pending":
+        text = (
+            "campaign updated; the active executor will sequence this objective "
+            "through Planner after current work"
+            if daemon_alive
+            else "campaign updated; executor is starting and Planner will sequence it"
+        )
+    elif daemon is None and daemon_alive:
         text = "executor already running"
     elif isinstance(daemon, dict):
         if daemon.get("admission_required"):

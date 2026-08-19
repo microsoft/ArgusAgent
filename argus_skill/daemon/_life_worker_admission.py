@@ -14,8 +14,11 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
+
+import portalocker
 
 try:
     import fcntl as _fcntl
@@ -29,9 +32,17 @@ from .handoff import (
     _acquire_daemon_lock_with_timeout as _acquire_daemon_lock_with_timeout_impl,
 )
 from .handoff import run_handoff_child_process
-from .process import run_foreground_process, spawn_detached_process
+from .process import (
+    _WINDOWS_DAEMON_PUBLISH_TIMEOUT_SECONDS,
+    run_foreground_process,
+    spawn_detached_process,
+)
 
 log = logging.getLogger(__name__)
+
+_CLEAN_LAUNCH_TIMEOUT_SECONDS = 15.0
+_CLEAN_LAUNCH_WINDOWS_MARGIN_SECONDS = 15.0
+_SPAWN_ERROR_MAX_CHARS = 8_000
 
 
 def run_handoff_child() -> int:
@@ -124,17 +135,27 @@ def _active_workspace_owner(
             if not status.alive:
                 continue
             if status.project_workdir:
-                owner_workdir = Path(status.project_workdir).expanduser().resolve(
+                owner_base = Path(status.project_workdir).expanduser().resolve(
                     strict=True
                 )
             else:
                 meta = read_session_meta(root, life_dir.name)
-                owner_workdir = resolve_session_workdir(meta, state_dir=life_dir)
-            if owner_workdir == target:
+                owner_base = resolve_session_workdir(meta, state_dir=life_dir)
+            from ..core.campaign_workdir import active_campaign_workdir
+
+            owner_workdir = (
+                active_campaign_workdir(life_dir, owner_base) or owner_base
+            )
+            overlaps = (
+                owner_workdir == target
+                or owner_workdir in target.parents
+                or target in owner_workdir.parents
+            )
+            if overlaps:
                 return {
                     "sid": life_dir.name,
                     "pid": status.pid,
-                    "workdir": str(target),
+                    "workdir": str(owner_workdir),
                 }
         except (OSError, RuntimeError, ValueError):
             continue
@@ -149,6 +170,8 @@ def _workspace_start_error(config: LifeWorkerConfig) -> str:
         configured = Path(config.project_workdir).expanduser().resolve(strict=True)
     except (OSError, RuntimeError) as exc:
         return f"configured workdir is unavailable: {exc}"
+    if not configured.is_dir():
+        return f"configured workdir is not a directory: {configured}"
     root = _daemon_global_root(config)
     from ..core.session import read_session_meta, resolve_session_workdir
 
@@ -238,14 +261,15 @@ def _active_daemon_count(config: LifeWorkerConfig) -> int:
 
 def _acquire_daemon_spawn_lock(config: LifeWorkerConfig) -> int | None:
     """Serialize host-wide daemon admission through fork + pid publication."""
-    if _fcntl is None:
-        return None
     root = _daemon_global_root(config)
     root.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(root / "daemon-spawn.lock"), os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        _fcntl.flock(fd, _fcntl.LOCK_EX)
-    except OSError:
+        if _fcntl is not None:
+            _fcntl.flock(fd, _fcntl.LOCK_EX)
+        else:
+            portalocker.lock(fd, portalocker.LOCK_EX)
+    except (OSError, portalocker.exceptions.LockException):
         os.close(fd)
         raise
     return fd
@@ -254,10 +278,13 @@ def _acquire_daemon_spawn_lock(config: LifeWorkerConfig) -> int | None:
 def _release_daemon_spawn_lock(fd: int | None, *, unlock: bool = True) -> None:
     if fd is None:
         return
-    if unlock and _fcntl is not None:
+    if unlock:
         try:
-            _fcntl.flock(fd, _fcntl.LOCK_UN)
-        except OSError:
+            if _fcntl is not None:
+                _fcntl.flock(fd, _fcntl.LOCK_UN)
+            else:
+                portalocker.unlock(fd)
+        except (OSError, portalocker.exceptions.LockException):
             pass
     try:
         os.close(fd)
@@ -284,6 +311,100 @@ def spawn_detached_daemon(config: LifeWorkerConfig, *, quiet: bool = False) -> i
     )
 
 
+def _clean_launch_timeout_seconds() -> float:
+    if os.name == "nt":
+        # The helper synchronously waits for the Windows worker to publish its
+        # pid/status.  Its parent must outlive that inner contract.
+        return (
+            _WINDOWS_DAEMON_PUBLISH_TIMEOUT_SECONDS
+            + _CLEAN_LAUNCH_WINDOWS_MARGIN_SECONDS
+        )
+    return _CLEAN_LAUNCH_TIMEOUT_SECONDS
+
+
+def _bounded_spawn_error(detail: str) -> str:
+    cleaned = detail.strip()
+    if len(cleaned) <= _SPAWN_ERROR_MAX_CHARS:
+        return cleaned
+    return "[earlier launch output truncated]\n" + cleaned[-_SPAWN_ERROR_MAX_CHARS:]
+
+
+def _record_spawn_error(config: LifeWorkerConfig, detail: str) -> str:
+    bounded = _bounded_spawn_error(detail)
+    config.last_spawn_error = bounded
+    if bounded:
+        log.error("clean daemon launcher failed: %s", bounded)
+    return bounded
+
+
+def _spawn_output_text(value: str | bytes | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value or "")
+
+
+def _latest_daemon_log_tail(
+    config: LifeWorkerConfig,
+    *,
+    started_at: float,
+) -> str:
+    """Read only a log touched by this launch attempt, including on Windows.
+
+    Creating the stable ``daemon.log`` symlink can be unavailable without
+    Developer Mode, so inspect the per-boot directory as the authoritative
+    fallback.
+    """
+    candidates: list[Path] = []
+    if config.log_path is not None:
+        candidates.append(Path(config.log_path))
+    life_dir = Path(config.life_dir)
+    candidates.append(life_dir / "daemon.log")
+    try:
+        candidates.extend((life_dir / "daemons").glob("boot-*.log"))
+    except OSError:
+        pass
+
+    freshest: tuple[float, Path] | None = None
+    for candidate in candidates:
+        try:
+            modified = candidate.stat().st_mtime
+        except OSError:
+            continue
+        if modified < started_at - 2.0:
+            continue
+        if freshest is None or modified > freshest[0]:
+            freshest = (modified, candidate)
+    if freshest is None:
+        return ""
+    try:
+        text = freshest[1].read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return _bounded_spawn_error(text[-4_000:])
+
+
+def _clean_spawn_preflight(config: LifeWorkerConfig) -> tuple[int, str]:
+    executable = str(sys.executable or "").strip()
+    if not executable:
+        return 2, "Python interpreter is unavailable: sys.executable is empty"
+    try:
+        executable_path = Path(executable).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        return 2, f"Python interpreter is unavailable ({executable}): {exc}"
+    if not executable_path.is_file():
+        return 2, f"Python interpreter is not a file: {executable_path}"
+
+    if config.project_workdir is None:
+        return 0, ""
+    try:
+        workdir = Path(config.project_workdir).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        return 3, f"configured workdir is unavailable: {exc}"
+    if not workdir.is_dir():
+        return 3, f"configured workdir is not a directory: {workdir}"
+    return 0, ""
+
+
 def spawn_detached_daemon_clean(
     config: LifeWorkerConfig,
     *,
@@ -298,8 +419,17 @@ def spawn_detached_daemon_clean(
     """
     if getattr(sys, "frozen", False):
         return spawn_detached_daemon(config, quiet=quiet)
+    config.last_spawn_error = ""
+    preflight_rc, preflight_error = _clean_spawn_preflight(config)
+    if preflight_error:
+        detail = _record_spawn_error(config, preflight_error)
+        if not quiet:
+            sys.stderr.write(f"argus-skill: {detail}.\n")
+        return preflight_rc
     env = os.environ.copy()
     env["ARGUS_BINARY_MODE"] = "cli"
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     # The helper is framework control-plane code, not project code. Starting it
     # in the project workspace lets a generated ``argus_skill/`` package or
     # ``sitecustomize.py`` shadow the running Argus release during an upgrade
@@ -317,27 +447,83 @@ def spawn_detached_daemon_clean(
     ]
     env["PYTHONPATH"] = os.pathsep.join(pythonpath)
     env["PYTHONSAFEPATH"] = "1"
+    started_at = time.time()
+    timeout_s = _clean_launch_timeout_seconds()
     try:
         completed = subprocess.run(  # noqa: S603
             [sys.executable, "-m", "argus_skill.daemon.spawn_helper"],
             input=json.dumps(_config_payload(config)),
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             cwd=str(import_root),
             env=env,
             close_fds=True,
-            timeout=15.0,
+            timeout=timeout_s,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        output = _spawn_output_text(exc.stderr or exc.stdout).strip()
+        detail = (
+            f"clean daemon launcher timed out after {timeout_s:g}s"
+            + (f": {output}" if output else "")
+        )
+        detail = _record_spawn_error(config, detail)
         if not quiet:
-            sys.stderr.write(f"argus-skill: clean daemon launcher failed: {exc}\n")
+            sys.stderr.write(f"argus-skill: {detail}\n")
         return 2
-    if completed.returncode != 0 and not quiet:
+    except OSError as exc:
+        detail = _record_spawn_error(
+            config,
+            f"could not start Python interpreter {sys.executable}: "
+            f"{type(exc).__name__}: {exc}",
+        )
+        if not quiet:
+            sys.stderr.write(f"argus-skill: {detail}\n")
+        return 2
+    if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()
-        if detail:
+        log_tail = _latest_daemon_log_tail(config, started_at=started_at)
+        if log_tail and log_tail not in detail:
+            detail = f"{detail}\nDaemon log:\n{log_tail}" if detail else log_tail
+        if not detail:
+            detail = (
+                f"daemon spawn helper exited with rc={completed.returncode} "
+                "without diagnostic output"
+            )
+        detail = _record_spawn_error(config, detail)
+        if not quiet:
             sys.stderr.write(detail + "\n")
     return int(completed.returncode)
+
+
+def _launcher_failure_message(detail: str, returncode: int) -> str:
+    """Summarize the helper's stderr without truncating an actionable refusal.
+
+    This used to keep only the last non-empty line. That is the right rule for
+    a traceback, where the last line is the exception, and exactly the wrong
+    rule for an admission refusal: the workspace-lease message is deliberately
+    multi-line (owning pid, session, project, then the three ways out), and
+    collapsing it left the operator with "- or start this objective in a
+    different directory" and no idea what was holding the directory.
+
+    So anchor on the framework's own ``argus-skill:`` prefix when it is there
+    and keep that message whole, and fall back to the last-line rule only for
+    output the framework did not format — which in practice means a crash.
+    """
+    lines = detail.splitlines()
+    starts = [
+        index
+        for index, line in enumerate(lines)
+        if line.strip().startswith("argus-skill:")
+    ]
+    if starts:
+        return "\n".join(lines[starts[-1]:]).strip()
+    return next(
+        (line.strip() for line in reversed(lines) if line.strip()),
+        f"clean daemon launcher exited with code {returncode}",
+    )
 
 
 def run_foreground(config: LifeWorkerConfig) -> int:

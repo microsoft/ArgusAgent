@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "argus": {
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/bin/argus-plugin-mcp.mjs"]
+    }
+  }
+}

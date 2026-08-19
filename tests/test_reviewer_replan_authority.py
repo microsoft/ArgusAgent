@@ -97,6 +97,34 @@ def test_explicit_reviewer_replan_verdict_is_authoritative(tmp_path) -> None:
     assert "invalidated" in reason
 
 
+def test_locally_done_result_stops_for_later_better_plan(tmp_path) -> None:
+    backend = MemoryBackend()
+    backend.queue("engineer-r1", CannedResponse(message="implemented skip-zero"))
+    backend.queue("reviewer", CannedResponse(message=json.dumps({
+        "status": "done",
+        "reason": "The skip-zero candidate works, but later evidence refutes its necessity.",
+        "next_action": "Use the no-gap validator alternative.",
+        "planner_report": {
+            "forward_progress": True,
+            "plan_signal": "reconsider",
+            "challenge": "The preselected skip-zero candidate is no longer required.",
+            "alternative": "Use the no-gap validator alternative.",
+            "authority_impact": "technical",
+        },
+    })))
+
+    status, rounds, _final, reason, _thread = _engineer(backend).run(
+        objective="Generate the skip-zero candidate.",
+        engineer_prompt_builder=lambda _next, _static=True: "Do the task.",
+        supervised_config=SupervisedConfig(max_rounds=4),
+        workdir=tmp_path,
+    )
+
+    assert status == "replan_requested"
+    assert len(rounds) == 1
+    assert "skip-zero" in reason
+
+
 def test_compact_engineer_prompt_omits_static_skill_and_objective() -> None:
     full = SkillLoop._build_engineer_prompt(
         task="very long task " * 100,

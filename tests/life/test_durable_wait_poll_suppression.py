@@ -1,0 +1,489 @@
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+from argus_skill.engineer.external_work import ExternalWorkState, ExternalWorkStatus
+from argus_skill.life.event_log import JsonlEventSink
+from argus_skill.life.memory import LifeMemory
+from argus_skill.life.supervisor import LifeBudget, LifeSupervisor, LifeSupervisorConfig
+from argus_skill.life.supervisor._constants import PLAN_AWAITING
+from argus_skill.life.supervisor._planning_cycle import PlanningCycleMixin
+from argus_skill.planner import PlannerVerdict, TaskSpec, WaitingContract
+from argus_skill.skills.vertical_select import persist_vertical
+
+
+class _Runner:
+    pass
+
+
+class _NormalizationProbe(PlanningCycleMixin):
+    def __init__(self, jobs: list[ExternalWorkStatus]) -> None:
+        self.jobs = jobs
+        self.events: list[dict] = []
+        self._planning_cycles = 1
+
+    def _waitable_subagent_jobs(self) -> list[ExternalWorkStatus]:
+        return self.jobs
+
+    def _emit(self, event: dict) -> None:
+        self.events.append(event)
+
+    def _planner_waiting_observed_revision(self, **_kwargs) -> str:
+        return "live-revision"
+
+
+def _direct_job() -> ExternalWorkStatus:
+    return ExternalWorkStatus(
+        work_id="data-build",
+        run_id="data-build-run-1",
+        state=ExternalWorkState.RUNNING_HEALTHY,
+        source="subagent",
+    )
+
+
+def test_status_only_task_becomes_deterministic_event_wait() -> None:
+    probe = _NormalizationProbe([_direct_job()])
+    verdict = PlannerVerdict(
+        project_done=False,
+        reason="check it",
+        new_tasks=[
+            TaskSpec(
+                title="Observe live data build",
+                objective=(
+                    "Run python -m argus_skill.tools.subagent status "
+                    "--task-id data-build. If it remains live, stop."
+                ),
+            )
+        ],
+    )
+
+    normalized = probe._normalize_live_subagent_wait(verdict)
+
+    assert normalized.waiting is True
+    assert normalized.new_tasks == []
+    assert normalized.waiting_contract is not None
+    assert normalized.waiting_contract.wait_mode == "event"
+    assert normalized.waiting_contract.wake_on == ("subagent_state",)
+    assert probe.events[-1]["type"] == "life.planner.external_poll_suppressed"
+
+
+def test_uncontracted_live_job_wait_gets_persistent_event_identity() -> None:
+    probe = _NormalizationProbe([_direct_job()])
+    verdict = PlannerVerdict(
+        project_done=False,
+        reason="observe only data-build; check its status and, if still running, stop",
+        waiting=True,
+        waiting_reason=(
+            "observe only data-build; check its status and, if still running, stop"
+        ),
+    )
+
+    normalized = probe._normalize_live_subagent_wait(verdict)
+
+    assert normalized.waiting_contract is not None
+    assert normalized.waiting_contract.blocker_fingerprint.startswith(
+        "live-subagents:"
+    )
+    assert normalized.waiting_contract.recheck_token
+    assert normalized.waiting_contract.wake_on == ("subagent_state",)
+
+
+def test_poll_mode_live_job_wait_is_upgraded_to_event_wait() -> None:
+    probe = _NormalizationProbe([_direct_job()])
+    verdict = PlannerVerdict(
+        project_done=False,
+        reason="observe only data-build; check its status and, if still running, stop",
+        waiting=True,
+        waiting_reason=(
+            "observe only data-build; check its status and, if still running, stop"
+        ),
+        waiting_contract=WaitingContract(
+            blocker_fingerprint="data-build",
+            recheck_condition="check data-build again",
+            recheck_token="run-1",
+        ),
+    )
+
+    normalized = probe._normalize_live_subagent_wait(verdict)
+
+    assert normalized.waiting_contract is not None
+    assert normalized.waiting_contract.wait_mode == "event"
+    assert normalized.waiting_contract.wake_on == ("subagent_state",)
+    assert probe.events[-1]["source"] == "poll_wait_contract"
+
+
+def test_unrelated_contract_that_mentions_live_job_is_not_rewritten() -> None:
+    probe = _NormalizationProbe([_direct_job()])
+    verdict = PlannerVerdict(
+        project_done=False,
+        reason="operator approval is required before inspecting data-build artifacts",
+        waiting=True,
+        waiting_reason=(
+            "operator approval is required before inspecting data-build artifacts"
+        ),
+        waiting_contract=WaitingContract(
+            blocker_fingerprint="approval:artifact-inspection",
+            recheck_condition="operator approves artifact inspection",
+            recheck_token="approval-v1",
+        ),
+    )
+
+    assert probe._normalize_live_subagent_wait(verdict) is verdict
+    assert probe.events == []
+
+
+def test_model_event_wait_is_rebound_to_host_observed_revision() -> None:
+    probe = _NormalizationProbe([_direct_job()])
+    verdict = PlannerVerdict(
+        project_done=False,
+        reason="data-build is still running",
+        waiting=True,
+        waiting_reason="data-build is still running",
+        waiting_contract=WaitingContract(
+            blocker_fingerprint="data-build",
+            recheck_condition="check data-build again",
+            recheck_token="run-1",
+            wait_mode="event",
+            wake_on=("subagent_state",),
+        ),
+    )
+
+    normalized = probe._normalize_live_subagent_wait(verdict)
+
+    assert normalized.waiting_contract is not None
+    assert normalized.waiting_contract.observed_revision == "live-revision"
+    assert probe.events[-1]["source"] == "unvalidated_event_wait_contract"
+
+
+def test_unrelated_uncontracted_wait_is_not_rewritten() -> None:
+    probe = _NormalizationProbe([_direct_job()])
+    verdict = PlannerVerdict(
+        project_done=False,
+        reason="operator credentials are required",
+        waiting=True,
+        waiting_reason="operator credentials are required",
+    )
+
+    assert probe._normalize_live_subagent_wait(verdict) is verdict
+    assert probe.events == []
+
+
+def test_independent_task_is_not_suppressed() -> None:
+    probe = _NormalizationProbe([_direct_job()])
+    verdict = PlannerVerdict(
+        project_done=False,
+        reason="independent work",
+        new_tasks=[
+            TaskSpec(
+                title="Implement parser",
+                objective="Implement and test the manifest parser.",
+            )
+        ],
+    )
+
+    assert probe._normalize_live_subagent_wait(verdict) is verdict
+    assert probe.events == []
+
+
+def test_status_check_inside_independent_task_is_not_suppressed() -> None:
+    probe = _NormalizationProbe([_direct_job()])
+    verdict = PlannerVerdict(
+        project_done=False,
+        reason="independent work",
+        new_tasks=[
+            TaskSpec(
+                title="Implement parser while data build runs",
+                objective=(
+                    "Run argus_skill.tools.subagent status --task-id data-build once, "
+                    "if it remains live, independently implement and test the "
+                    "manifest parser now."
+                ),
+            )
+        ],
+    )
+
+    assert probe._normalize_live_subagent_wait(verdict) is verdict
+    assert probe.events == []
+
+
+def test_do_not_relaunch_prefix_does_not_discard_substantive_work() -> None:
+    probe = _NormalizationProbe([_direct_job()])
+    verdict = PlannerVerdict(
+        project_done=False,
+        reason="repair now",
+        new_tasks=[
+            TaskSpec(
+                title="Repair manifest parser",
+                objective=(
+                    "Do not relaunch data-build. Repair and test the manifest "
+                    "parser now."
+                ),
+            )
+        ],
+    )
+
+    assert probe._normalize_live_subagent_wait(verdict) is verdict
+    assert probe.events == []
+
+
+def test_substantive_work_before_terminal_clause_is_not_suppressed() -> None:
+    probe = _NormalizationProbe([_direct_job()])
+    verdict = PlannerVerdict(
+        project_done=False,
+        reason="repair now",
+        new_tasks=[
+            TaskSpec(
+                title="Repair manifest parser",
+                objective=(
+                    "Repair and test the manifest parser for data-build now. "
+                    "When it reaches terminal, validate its final receipt."
+                ),
+            )
+        ],
+    )
+
+    assert probe._normalize_live_subagent_wait(verdict) is verdict
+    assert probe.events == []
+
+
+def test_analysis_before_terminal_clause_is_not_suppressed() -> None:
+    probe = _NormalizationProbe([_direct_job()])
+    verdict = PlannerVerdict(
+        project_done=False,
+        reason="analyze now",
+        new_tasks=[
+            TaskSpec(
+                title="Analyze data build artifacts",
+                objective=(
+                    "Analyze the existing data-build artifacts now. Once terminal, "
+                    "validate its final receipt."
+                ),
+            )
+        ],
+    )
+
+    assert probe._normalize_live_subagent_wait(verdict) is verdict
+    assert probe.events == []
+
+
+def test_job_id_in_title_and_pronoun_objective_is_suppressed() -> None:
+    probe = _NormalizationProbe([_direct_job()])
+    verdict = PlannerVerdict(
+        project_done=False,
+        reason="observe only",
+        new_tasks=[
+            TaskSpec(
+                title="Observe data-build",
+                objective="Check its status; if it remains live, stop.",
+            )
+        ],
+    )
+
+    normalized = probe._normalize_live_subagent_wait(verdict)
+
+    assert normalized.waiting is True
+    assert normalized.new_tasks == []
+
+
+def test_operator_wait_that_mentions_live_job_is_not_suppressed() -> None:
+    probe = _NormalizationProbe([_direct_job()])
+    verdict = PlannerVerdict(
+        project_done=False,
+        reason="operator credentials are required to inspect data-build",
+        waiting=True,
+        waiting_reason="operator credentials are required to inspect data-build",
+    )
+
+    assert probe._normalize_live_subagent_wait(verdict) is verdict
+    assert probe.events == []
+
+
+def _supervisor(project: Path, life: Path) -> LifeSupervisor:
+    memory = LifeMemory.open(life)
+    supervisor = LifeSupervisor(
+        memory=memory,
+        runner=_Runner(),
+        sink=JsonlEventSink(None, life_dir=memory.root, verbosity="full"),
+        config=LifeSupervisorConfig(
+            budget=LifeBudget(),
+            poll_interval_seconds=0.01,
+            continuous=True,
+            continuous_objective="finish the durable data build",
+            open_ended=False,
+            final_certification_gate=False,
+            project_worktree=project,
+            artifact_root=life,
+        ),
+        planner_runner=object(),
+    )
+    persist_vertical(project, "software", workflow_mode="direct")
+    supervisor._vertical_resolved = True
+    return supervisor
+
+
+def _write_direct_job(project: Path, *, state: str = "running") -> Path:
+    registry = project / ".argus_subagents"
+    registry.mkdir(exist_ok=True)
+    path = registry / "data-build.json"
+    path.write_text(
+        json.dumps(
+            {
+                "task_id": "data-build",
+                "run_id": "data-build-run-1",
+                "mode": "direct",
+                "state": state,
+                "worker_pid": os.getpid(),
+                "started_at": 123.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_unchanged_live_job_skips_planner_across_restart(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    life = tmp_path / "life"
+    job_path = _write_direct_job(project)
+    calls = 0
+
+    def _plan_next(_planner, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return PlannerVerdict(
+            project_done=False,
+            reason="observe only",
+            new_tasks=[
+                TaskSpec(
+                    title="Observe live data build",
+                    objective=(
+                        "Run python -m argus_skill.tools.subagent status "
+                        "--task-id data-build. If it remains live, stop."
+                    ),
+                )
+            ],
+        )
+
+    monkeypatch.setattr("argus_skill.planner.Planner.plan_next", _plan_next)
+    first = _supervisor(project, life)
+
+    assert first._plan_next_work() == PLAN_AWAITING
+    assert first._plan_next_work() == PLAN_AWAITING
+    assert calls == 1
+
+    restarted = _supervisor(project, life)
+    assert restarted._plan_next_work() == PLAN_AWAITING
+    assert calls == 1
+
+    wait_state = json.loads(
+        next(life.glob("planner-waiting-contract-*.json")).read_text(encoding="utf-8")
+    )
+    assert wait_state["active"] is True
+    assert wait_state["wait_mode"] == "event"
+    assert wait_state["wake_on"] == ["subagent_state"]
+
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+    job["state"] = "done"
+    job_path.write_text(json.dumps(job), encoding="utf-8")
+
+    assert restarted._plan_next_work() is True
+    assert calls == 2
+
+
+def test_wait_persistence_rejects_state_change_after_discovery(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    supervisor = _supervisor(project, tmp_path / "life")
+    revisions = iter(["terminal"])
+    monkeypatch.setattr(
+        supervisor,
+        "_planner_waiting_observed_revision",
+        lambda **_kwargs: next(revisions),
+    )
+    contract = WaitingContract(
+        blocker_fingerprint="live-subagents:abc",
+        recheck_condition="data-build changes state",
+        recheck_token="run-1",
+        wait_mode="event",
+        wake_on=("subagent_state",),
+        observed_revision="live",
+    )
+
+    assert supervisor._persist_planner_waiting_contract(contract) is None
+    assert list((tmp_path / "life").glob("planner-waiting-contract-*.json")) == []
+
+
+def test_subagent_event_wait_without_host_revision_is_not_persisted(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    supervisor = _supervisor(project, tmp_path / "life")
+    contract = WaitingContract(
+        blocker_fingerprint="live-subagents:abc",
+        recheck_condition="data-build changes state",
+        recheck_token="run-1",
+        wait_mode="event",
+        wake_on=("subagent_state",),
+    )
+
+    assert supervisor._persist_planner_waiting_contract(contract) is None
+    assert list((tmp_path / "life").glob("planner-waiting-contract-*.json")) == []
+
+
+def test_event_wait_without_wake_source_is_not_persisted(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    supervisor = _supervisor(project, tmp_path / "life")
+    contract = WaitingContract(
+        blocker_fingerprint="external:abc",
+        recheck_condition="external state changes",
+        recheck_token="run-1",
+        wait_mode="event",
+    )
+
+    assert supervisor._persist_planner_waiting_contract(contract) is None
+    assert list((tmp_path / "life").glob("planner-waiting-contract-*.json")) == []
+
+
+def test_event_wait_with_unknown_wake_source_is_not_persisted(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    supervisor = _supervisor(project, tmp_path / "life")
+    contract = WaitingContract(
+        blocker_fingerprint="external:abc",
+        recheck_condition="external state changes",
+        recheck_token="run-1",
+        wait_mode="event",
+        wake_on=("unknown_source",),
+    )
+
+    assert supervisor._persist_planner_waiting_contract(contract) is None
+    assert list((tmp_path / "life").glob("planner-waiting-contract-*.json")) == []
+
+
+def test_artifact_event_wait_without_paths_is_not_persisted(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    supervisor = _supervisor(project, tmp_path / "life")
+    contract = WaitingContract(
+        blocker_fingerprint="external:abc",
+        recheck_condition="artifact changes",
+        recheck_token="run-1",
+        wait_mode="event",
+        wake_on=("artifact_revision",),
+    )
+
+    assert supervisor._persist_planner_waiting_contract(contract) is None
+    assert list((tmp_path / "life").glob("planner-waiting-contract-*.json")) == []

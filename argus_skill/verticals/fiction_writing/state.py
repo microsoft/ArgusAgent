@@ -224,8 +224,8 @@ def _op_add_open_thread(s: dict[str, Any], op: dict[str, Any]) -> None:
 def _op_resolve_thread(s: dict[str, Any], op: dict[str, Any]) -> None:
     tid = op.get("id")
     thread = next((t for t in s["open_threads"] if t["id"] == tid), None)
-    _require(thread is not None, f"resolve_thread: unknown thread {tid!r}")
-    assert thread is not None  # for type-checkers
+    if thread is None:
+        raise PatchError(f"resolve_thread: unknown thread {tid!r}")
     thread["status"] = "resolved"
 
 
@@ -247,8 +247,8 @@ def _op_add_foreshadowing(s: dict[str, Any], op: dict[str, Any]) -> None:
 def _op_resolve_foreshadowing(s: dict[str, Any], op: dict[str, Any]) -> None:
     fid = op.get("id")
     fore = next((f for f in s["foreshadowing"] if f["id"] == fid), None)
-    _require(fore is not None, f"resolve_foreshadowing: unknown id {fid!r}")
-    assert fore is not None
+    if fore is None:
+        raise PatchError(f"resolve_foreshadowing: unknown id {fid!r}")
     fore["status"] = "paid_off"
     fore["payoff_chapter"] = op.get("payoff_chapter", fore.get("payoff_chapter"))
 
@@ -376,8 +376,8 @@ def apply_patch(
     scratch = copy.deepcopy(working)
     for idx, op in enumerate(patch["ops"]):
         handler = _HANDLERS.get(op["op"])
-        _require(handler is not None, f"op[{idx}]: unknown op {op['op']!r}")
-        assert handler is not None
+        if handler is None:
+            raise PatchError(f"op[{idx}]: unknown op {op['op']!r}")
         try:
             handler(scratch, op)
         except PatchError as exc:

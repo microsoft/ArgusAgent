@@ -95,15 +95,11 @@ produces a result no main-conference reviewer will believe.
    downloads fast. Verify the family is current by checking the Hugging Face
    model hub / trending / a recent open-LLM leaderboard at decision time —
    exactly as you verify framework recency.
-2. **Size the model to the hardware, not to convenience.** Read your real GPU
-   budget first with `nvidia-smi` or a project-owned probe. On a
-   multi-H200 box (hundreds of GB of aggregate VRAM) a **7B–14B** backbone
-   trains comfortably with LoRA/QLoRA, and an 8–9B model trains comfortably
-   even with full fine-tuning + FSDP/DeepSpeed-ZeRO. **The headline result must
-   use a model in at least the ~8–9B class** unless the research question is
-   specifically about small models. A 1–3B model is acceptable **only** as an
-   ablation/scaling point or a fast smoke run — never as the paper's main
-   claim when the GPUs can clearly train bigger.
+2. **Size the model to measured constraints, not convenience.** Probe the
+   actual accelerator memory and topology, then justify model size, precision,
+   optimizer state, activation/checkpointing strategy, and parallelism against
+   the research objective and measured budget. No GPU SKU or parameter-count
+   floor in a generic Skill can substitute for that project-specific evidence.
 3. **Justify the choice in writing.** `research/INFRA_CHOICE.md` (and the
    `## Infra` section of `research/EXPERIMENT_PLAN.md`) must name the exact
    backbone (org/model id + parameter count + release date), state the VRAM
@@ -200,30 +196,52 @@ The headline run must actually *use* the machine.
    few-GB / low-util footprint on a 140GB+ card — or that crawled at a tiny batch
    while the card sat mostly idle between steps — has not used the hardware and
    must be rescaled before it counts.
-6. **Stay unblocked.** Saturating the GPUs does not mean blocking on them:
-   submit the heavy job through `argus_skill.tools.subagent --mode supervised`
-   and keep working. A healthy `running` job is **not** a failure — see the
-   Subagent note below.
+6. **Stay unblocked without spending model calls on waiting.** Submit a stable
+   long run through `argus_skill.tools.subagent --mode direct` and let its
+   deterministic in-process guard/watchdog own timeout, process, checkpoint,
+   GPU-isolation, and metric-integrity checks. Use `--mode supervised` only when
+   the run genuinely needs semantic trend judgement while it is live. A healthy
+   `running` job is **not** a failure — see the Subagent note below.
 
-## 🧠 Run health: emit metrics, let the LLM judge (no brittle hard gates)
+## 🧠 Run health: hard facts first, bounded LLM judgement second
 
 Who decides whether a finished run is usable is split deliberately:
 
-- **Mechanical is OK for binary, unambiguous FAILURE only** — a real crash,
-  CUDA OOM, NaN/Inf loss, process non-zero exit, a hard timeout, or a launch
-  config that is mechanically unlearnable (caught by the supervisor preflight).
-  An **early-abort** health gate that kills a *truly collapsed* run mid-flight
-  to save GPU is also fine.
+- **Mechanical checks own binary facts and explicit operator contracts** — a
+  real crash, CUDA OOM, NaN/Inf loss, process non-zero exit, hard timeout,
+  exact target-shape mismatch, incomplete checkpoint, failed restore, configured
+  retention breach, GPU ownership/isolation violation, or a launch knob that
+  differs from the frozen run contract. These are deterministic facts, not
+  model judgements, and may fail hard.
 - **The LLM (supervisor + reviewer) owns every JUDGEMENT call** — learning
   health, clipping/truncation severity, reward-collapse vs noise, KL/entropy
   trends, and the terminal judgment on whether a completed run produced
-  usable evidence**. These are trend judgements, not threshold checks.
+  usable evidence. These are trend judgements, not threshold checks. Invoke the
+  model once at a meaningful transition (new anomaly, terminal state, or
+  operator request), not on every unchanged healthy poll.
 
 Therefore, when you author a training/eval script:
 
 - **DO** write the full metric series (`progress.jsonl`) and a *non-authoritative*
   health summary (e.g. `health_gate.json` with the raw numbers). Diagnostics are
   good.
+- **DO** share one canonical receipt/checkpoint path across Manager, Planner,
+  Engineer, and Reviewer. A role may read that compact handoff and referenced
+  deltas; it must not repeatedly ingest the complete runner log, mission record,
+  and artifact tree when their semantic state is unchanged.
+- **DO** freeze and mechanically verify the binding model structure before a
+  costly run: parameter count, layer/hidden/FFN sizes, attention head counts and
+  explicit head dimension, projection shapes, vocabulary, RoPE settings, and
+  any architecture-specific invariants. A framework-compatible approximation
+  is infrastructure evidence, not target-complete model evidence.
+- **DO** preserve the original failed/blocked run record. If later checkpoint or
+  teardown evidence changes its interpretation, append a correction through
+  `EvidenceLedger` or `append_experiment_correction`; never rewrite the original
+  exit code or delete the failed attempt.
+- **DO** model protected GPU ownership as pinned process identity and lineage,
+  not as "the protected GPUs must be empty". `argus_skill.tools.gpu_ownership`
+  can pin an existing owner and authorize a short-lived stale `nvidia-smi` row
+  only when the same GPU/PID/process was recently verified as campaign-owned.
 - **DO NOT** convert a metric-threshold breach into a TERMINAL verdict that flips
   a finished run to `status.json state="failed"` and
   forces a relaunch. A single noisy tail step (e.g. `clipped_ratio=0.5` at one
@@ -246,10 +264,9 @@ These resources are allocated to you. Use them.
 - `CUDA_VISIBLE_DEVICES` is auto-set by the daemon. All training/inference inherits it.
 
 **API (for reward models, VLM scoring, image generation)**:
-- Config file: `~/.argus-skill/capabilities/model_api.json`
-- Read API key: `json.load(open(os.path.expanduser('~/.argus-skill/capabilities/model_api.json')))['capabilities']['model_api']['routes']['text']['api_key']`
-- Available routes: `text` (LLM), `image` (generation), `image_review` (VLM)
-- Use for: reward model scoring, VLM-based image quality evaluation, Qwen-VL as reward
+- Load named routes with `argus_skill.tools.capability_vault.load_model_api_route`; never open or print the capability file directly.
+- Available routes: `text` (LLM), `image` (generation), `image_review` (VLM).
+- Keep credentials in the capability vault or process environment and out of logs, prompts, and artifacts.
 
 **Project venv** (for ML dependencies):
 - Path: `.venv/bin/python` (in project directory)
@@ -283,11 +300,15 @@ These resources are allocated to you. Use them.
 - Skip the download entirely if the model is served via the model API route in `~/.argus-skill/capabilities/model_api.json`.
 
 **Subagent** (for long GPU tasks):
-- Submit: `python -m argus_skill.tools.subagent submit --task-id <id> --mode supervised --run-dir experiments/<id> --command '.venv/bin/python ...'`
+- Default stable launch: `python -m argus_skill.tools.subagent submit --task-id <id> --mode direct --command '.venv/bin/python ...'`
+- Semantic live supervision, only when justified: `python -m argus_skill.tools.subagent submit --task-id <id> --mode supervised --run-dir experiments/<id> --command '.venv/bin/python ...'`
 - For CPU-exclusive preprocessing/evaluation, add `--cpu-count N` (automatic
   disjoint selection) or `--cpu-ids i,j` (exact allocation). Admission happens
   before task/log/run artifacts, and the child process inherits the selected
   affinity; insufficient or overlapping requests fail closed.
+- `--mode direct` is durable and uses zero supervisor-model tokens. Put
+  deterministic safety checks in the launched command/watchdog and let the
+  terminal task state wake the Engineer.
 - `--mode supervised` attaches an RL-aware LLM watcher: it polls the log on an
   increasing interval (backs off while healthy to save tokens, tightens when it
   sees trouble), judges reward/KL/response-length (not just SFT loss), and writes
@@ -301,9 +322,9 @@ These resources are allocated to you. Use them.
   do not "repair" it. The JSON includes `live` (worker process alive) and a
   `progress` summary (rows written + last progress line + age), so one poll
   answers "is it alive and advancing" without hand-reading `progress.jsonl`.
-- Poll with backoff (the supervised watcher already does); do not spam `status`
-  every few seconds. Inspect the run directory directly only if `live` is true
-  but `progress` has stopped advancing.
+- Poll with backoff; do not spam `status` or wake an LLM every few seconds.
+  Inspect the run directory directly only if `live` is true but the compact
+  progress signature has stopped advancing.
 - Do NOT block — submit and continue other work.
 No project helper code is pre-seeded. Inspect the repository first, then create only
 the smallest helpers the actual experiment needs. GPU discovery, run bookkeeping,
@@ -402,11 +423,12 @@ All API-based inference MUST use the **OpenAI client interface**:
 
 ```python
 from openai import OpenAI
+from argus_skill.tools.capability_vault import load_model_api_route
 
-client = OpenAI(
-    api_key="...",
-    base_url="https://api.openai.com/v1",  # or Azure/compatible endpoint
-)
+route = load_model_api_route("text")
+if route is None:
+    raise RuntimeError("text model route is not configured")
+client = OpenAI(api_key=route.api_key, base_url=route.base_url)
 response = client.chat.completions.create(
     model="gpt-4o-mini",
     messages=[{"role": "user", "content": prompt}],
@@ -416,10 +438,12 @@ response = client.chat.completions.create(
 For Azure:
 ```python
 from openai import AzureOpenAI
+import os
+
 client = AzureOpenAI(
-    api_key="...",
-    api_version="2024-06-01",
-    azure_endpoint="https://your-resource.openai.azure.com",
+    api_key=os.environ["AZURE_OPENAI_API_KEY"],
+    api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-06-01"),
+    azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
 )
 ```
 

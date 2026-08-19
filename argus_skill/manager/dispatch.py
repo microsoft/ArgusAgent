@@ -24,11 +24,17 @@ def _resolve_manager_workdir(mem: Any) -> Path:
         str(getattr(meta, "workdir", "") or "").strip()
         or str(getattr(meta, "cwd", "") or "").strip()
     ):
-        return resolve_session_workdir(meta, state_dir=life_dir)
-    configured = getattr(mem, "project_worktree", None)
-    if configured is not None:
-        return Path(configured).expanduser().resolve()
-    return resolve_session_workdir(meta, state_dir=life_dir)
+        base = resolve_session_workdir(meta, state_dir=life_dir)
+    else:
+        configured = getattr(mem, "project_worktree", None)
+        base = (
+            Path(configured).expanduser().resolve()
+            if configured is not None
+            else resolve_session_workdir(meta, state_dir=life_dir)
+        )
+    from ..core.campaign_workdir import active_campaign_workdir
+
+    return active_campaign_workdir(life_dir, base) or base
 
 
 def _stable_topological_nodes(tasks: tuple[Any, ...]) -> list[Any]:
@@ -46,6 +52,53 @@ def _stable_topological_nodes(tasks: tuple[Any, ...]) -> list[Any]:
     return ordered
 
 
+def _merge_context_refs(
+    *groups: list[dict[str, Any]] | None,
+) -> list[dict[str, str]]:
+    merged: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for group in groups:
+        for raw_ref in group or []:
+            if not isinstance(raw_ref, dict):
+                continue
+            ref = {
+                str(key): str(value)
+                for key, value in raw_ref.items()
+                if str(key).strip() and str(value).strip()
+            }
+            target = str(ref.get("ref") or "").strip()
+            if not target:
+                continue
+            key = (
+                str(ref.get("kind") or "").strip(),
+                target,
+                str(ref.get("attachment_id") or "").strip(),
+                str(ref.get("why") or "").strip(),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(ref)
+    return merged
+
+
+def _bounded_dag_model() -> str:
+    """Model for decomposing a bounded Manager task into backlog DAG nodes.
+
+    Deliberately compact — this is a structural decomposition, not the plan
+    itself. See ``core.knobs.resolve_cheap_route_model`` for why the backend,
+    not just the knob, decides the fallback.
+    """
+    from ..core.knobs import resolve_cheap_route_model
+
+    return resolve_cheap_route_model(
+        knob="ARGUS_SKILL_BOUNDED_DAG_MODEL",
+        catalog_default="gpt-5.4-mini",
+        role="planner",
+        role_env="ARGUS_SKILL_PLAN_MODEL",
+    )
+
+
 def _plan_bounded_execution(
     mem: Any,
     execution_body: str,
@@ -60,29 +113,11 @@ def _plan_bounded_execution(
             "bounded Planner backend unavailable; refusing an atomic fallback "
             "that cannot preserve review and stage-transition semantics"
         )
-    from ..agent_cli.runner_backend import normalize_runner_backend
-    from ..core.knobs import (
-        resolve_knob,
-        resolve_role_backend,
-        resolve_role_model,
-        resolve_role_reasoning_effort,
-    )
+    from ..core.knobs import resolve_role_reasoning_effort
     from ..planner.bounded_dag import plan_bounded_dag
 
     workdir = _resolve_manager_workdir(mem)
-    configured_model = resolve_knob(
-        "ARGUS_SKILL_BOUNDED_DAG_MODEL",
-        "auto",
-    ).value.strip()
-    if configured_model.lower() in {"", "auto", "inherit", "default"}:
-        planner_backend = normalize_runner_backend(resolve_role_backend("planner"))
-        model = (
-            "gpt-5.4-mini"
-            if planner_backend in {"codex", "copilot", "pi"}
-            else resolve_role_model("planner", role_env="ARGUS_SKILL_PLAN_MODEL")
-        )
-    else:
-        model = configured_model
+    model = _bounded_dag_model()
     usage_scope = getattr(runner, "task_usage_context", None)
     scope = usage_scope(root_task_id) if callable(usage_scope) and root_task_id else nullcontext()
     with scope:
@@ -184,6 +219,7 @@ def enqueue_mission(
     root_task_id: str | None = None,
     cancelled: Callable[[], bool] | None = None,
     prepared_handoff: front_door.PreparedManagerHandoff | None = None,
+    context_refs: list[dict[str, str]] | None = None,
 ) -> tuple[Any | None, bool, int | None]:
     """Persist one Manager-authored mission and report executor availability."""
     if chat_state.get("blocked_item_id"):
@@ -212,6 +248,88 @@ def enqueue_mission(
         pending_auto_promote = bool(
             chat_state.pop("_continuous_pending_manager_handoff", False)
         )
+        persisted: dict[str, Any] = {}
+
+        def _persist_operator_priority_item(
+            execution_body: str,
+            division: Any,
+        ) -> Any:
+            pending = mem.backlog.pending()
+            head_priority = min((item.priority for item in pending), default=100)
+            from ..life.memory import BacklogItem
+            from ..life.supervisor.backlog_guard import decision_evidence
+
+            compact = " ".join(body.split()).replace("`", "")
+            title = compact if len(compact) <= 96 else compact[:93] + "..."
+            item = BacklogItem.new(
+                item_id=root_task_id,
+                title=title,
+                objective=execution_body,
+                priority=min(head_priority - 1, -1),
+                tags=[
+                    "manager",
+                    # Deliberately NOT "planner": that tag is a claim of Planner
+                    # authorship, and the mission runtime reads it as exactly
+                    # that — ``preplanned = "planner" in tags`` — to skip the
+                    # advisory planning pass on the ground that a Planner has
+                    # already decomposed the work. This item is a raw operator
+                    # message the Manager routed; nothing decomposed it. Tagging
+                    # it here suppressed the Planner for the one case
+                    # ``_maybe_draft_plan`` documents as needing it ("user-
+                    # authored bounded work now follows the full team chain:
+                    # Manager → Planner → Engineer → Reviewer"), sending the
+                    # objective straight to a single Engineer. The Planner-
+                    # authored path below keeps the tag, alongside the
+                    # ``bounded_dag_node`` that shows where its plan came from.
+                    "operator",
+                    "operator_priority",
+                    "scope:bounded",
+                    # Paired with "stage_transition:skip" on purpose. Twenty
+                    # lines below, ``_prepare_persist`` REJECTS a Planner node
+                    # that sets ``skip_stage_transition`` without
+                    # ``require_independent_review`` as "an invalid review-only
+                    # stage transition contract" — and this item was setting
+                    # exactly that combination, so the Manager was exempting
+                    # itself from the contract it enforces on the Planner.
+                    #
+                    # Untagged, ``round_self_review`` closes the mission the
+                    # first time the Engineer writes MILESTONE_STATUS=DONE, with
+                    # no second pair of eyes; the observed run settled a claimed
+                    # proof of an open conjecture that way, in one round. It
+                    # also inverted the skip: ``_should_run_stage_transition``
+                    # only honors ``skip_stage_transition`` alongside
+                    # ``require_independent_review`` on a bounded scope, so
+                    # without this tag the mission fell through to the
+                    # ``review_source == "engineer_self_review"`` arm and ran
+                    # the stage transition the tag exists to prevent.
+                    "review:required",
+                    "stage_transition:skip",
+                ],
+                iterate=False,
+                iteration_max_cycles=1,
+                context_refs=_merge_context_refs(context_refs),
+                original_objective=execution_body,
+                manager_decision=decision_evidence(division) or {"routed": True},
+            )
+            mem.backlog.add(item)
+            persisted["item"] = item
+            try:
+                from ..life.event_log import JsonlEventSink
+
+                JsonlEventSink(None, life_dir=Path(life_dir)).append({
+                    "type": "life.planner.task_added",
+                    "item_id": item.id,
+                    "title": item.title,
+                    "objective": item.objective,
+                    "deps": [],
+                    "priority": item.priority,
+                    "source": "manager_operator",
+                    "operator_priority": True,
+                })
+            except Exception:  # noqa: BLE001 - backlog persistence is authoritative
+                pass
+            return item
+
         try:
             execution_body = front_door.manager_continuous_handoff(
                 mem,
@@ -220,6 +338,7 @@ def enqueue_mission(
                 root_task_id=root_task_id,
                 cancelled=cancelled,
                 prepared_handoff=prepared_handoff,
+                persist=_persist_operator_priority_item,
             )
         except Exception:
             if pending_auto_promote:
@@ -228,24 +347,51 @@ def enqueue_mission(
                 ] = False
                 chat_state["continuous_objective"] = ""
             raise
+        item = persisted.get("item")
+        if item is None:
+            item = _persist_operator_priority_item(
+                execution_body,
+                getattr(prepared_handoff, "decision", None),
+            )
         chat_state["last_objective"] = execution_body
         chat_state["continuous_objective"] = execution_body
-        front_door._maybe_name_session(chat_state, execution_body)
+        front_door._maybe_name_session(
+            chat_state,
+            execution_body,
+            promote_task_name=True,
+        )
         alive, pid = _daemon_status(life_dir)
-        return None, alive, pid
+        return item, alive, pid
 
     planned: dict[str, Any] = {}
 
     def _hydrate_context_refs(nodes: list[Any]) -> dict[str, list[dict[str, Any]]]:
+        from ..core.campaign_workdir import resolve_task_workdir
         from ..planner.planner import hydrate_task_context_refs
 
         workdir = _resolve_manager_workdir(mem)
         hydrated_refs: dict[str, list[dict[str, Any]]] = {}
         for node in nodes:
             try:
-                hydrated_refs[node.key] = hydrate_task_context_refs(
-                    list(getattr(node, "context_refs", ()) or ()),
-                    workdir,
+                raw_refs = list(getattr(node, "context_refs", ()) or ())
+                try:
+                    context_root = resolve_task_workdir(
+                        workdir,
+                        getattr(node, "execution_workdir", ""),
+                    )
+                except ValueError:
+                    if (
+                        str(getattr(node, "execution_workdir", "") or "").strip()
+                        and list(getattr(node, "deps", ()) or ())
+                        and not raw_refs
+                    ):
+                        context_root = None
+                    else:
+                        raise
+                hydrated_refs[node.key] = (
+                    []
+                    if context_root is None
+                    else hydrate_task_context_refs(raw_refs, context_root)
                 )
             except ValueError as exc:
                 raise front_door.ManagerHandoffError(
@@ -306,6 +452,12 @@ def enqueue_mission(
         from ..life.memory import BacklogItem
 
         plan_id = f"bounded-{uuid.uuid4().hex[:12]}"
+        from ..life.supervisor.backlog_guard import decision_evidence
+
+        manager_decision = decision_evidence(_division) or {"routed": True}
+        learned_candidate = (
+            manager_decision.get("learned_vertical_status") == "candidate"
+        )
         ids = {
             node.key: (
                 str(root_task_id)
@@ -316,18 +468,42 @@ def enqueue_mission(
         }
         items: list[BacklogItem] = []
         priority = min(head_priority - 1, -1)
+        from ..core.campaign_workdir import normalize_task_workdir
+        from ..skills.stage_machine import current_stage
+
+        stage = current_stage(_resolve_manager_workdir(mem))
         for index, node in enumerate(nodes):
             stage_closing = bool(getattr(node, "stage_closing", False))
             require_review = bool(
                 getattr(node, "require_independent_review", False)
-            )
+            ) or learned_candidate
             skip_stage_transition = bool(
                 getattr(node, "skip_stage_transition", False)
             )
-            context_refs = hydrated_refs.get(node.key, [])
+            item_context_refs = _merge_context_refs(
+                hydrated_refs.get(node.key, []),
+                context_refs,
+            )
+            node_manager_decision = dict(manager_decision)
+            node_vertical = str(getattr(node, "vertical", "") or "").strip()
+            if node_vertical:
+                from ..skills.vertical_select import (
+                    UnknownVerticalError,
+                    require_vertical,
+                )
+
+                try:
+                    require_vertical(node_vertical, _resolve_manager_workdir(mem))
+                except UnknownVerticalError as exc:
+                    raise front_door.ManagerHandoffError(
+                        f"bounded Planner selected unknown vertical {node_vertical!r}"
+                    ) from exc
+                node_manager_decision["vertical"] = node_vertical
+                node_manager_decision["route_source"] = "planner"
+                node_manager_decision["routed"] = True
             item = BacklogItem.new(
                 item_id=ids[node.key],
-                title=node.title,
+                title=str(node.title).replace("`", ""),
                 objective=node.objective,
                 priority=priority + index,
                 tags=[
@@ -350,6 +526,12 @@ def enqueue_mission(
                         if skip_stage_transition
                         else []
                     ),
+                    *(
+                        ["skill_changes:allowed"]
+                        if bool(getattr(node, "allow_skill_changes", False))
+                        else []
+                    ),
+                    *([f"stage:{stage}"] if stage else []),
                 ],
                 iterate=False,
                 iteration_max_cycles=1,
@@ -357,9 +539,21 @@ def enqueue_mission(
                 plan_id=plan_id,
                 plan_version=1,
                 node_key=node.key,
-                context_refs=context_refs,
+                context_refs=item_context_refs,
                 acceptance_check=str(getattr(node, "acceptance_check", "") or ""),
+                plan_hypothesis=str(getattr(node, "hypothesis", "") or ""),
+                goal_contribution=str(
+                    getattr(node, "goal_contribution", "") or ""
+                ),
+                expected_regressions=str(
+                    getattr(node, "expected_regressions", "") or ""
+                ),
+                decision_rule=str(getattr(node, "decision_rule", "") or ""),
+                execution_workdir=normalize_task_workdir(
+                    getattr(node, "execution_workdir", "")
+                ),
                 non_goals=list(getattr(node, "non_goals", ()) or ()),
+                manager_decision=node_manager_decision,
             )
             item.original_objective = execution_body
             items.append(item)
@@ -395,7 +589,11 @@ def enqueue_mission(
                 })
         except Exception:  # noqa: BLE001
             pass
-        front_door._maybe_name_session(chat_state, execution_body)
+        front_door._maybe_name_session(
+            chat_state,
+            execution_body,
+            promote_task_name=True,
+        )
         return item
 
     item = front_door.manager_bounded_handoff(
@@ -431,8 +629,10 @@ def maybe_promote_to_continuous(
     """
     del root_task_id
     lifetime = str(
-        chat_state.pop("_frontdoor_lifetime", "standing") or "standing"
+        chat_state.pop("_frontdoor_lifetime", "bounded") or "bounded"
     ).strip().lower()
+    if lifetime not in {"bounded_increment", "bounded", "standing"}:
+        lifetime = "bounded"
     normalized_workflow = str(workflow_mode or "").strip().lower()
     if lifetime == "bounded_increment" or (
         lifetime == "bounded" and normalized_workflow != "staged"
@@ -441,6 +641,7 @@ def maybe_promote_to_continuous(
             "continuous"
         ] = False
         chat_state["continuous_objective"] = ""
+        chat_state.pop("_continuous_open_ended", None)
         chat_state.pop("_continuous_pending_manager_handoff", None)
         return False
 
@@ -467,6 +668,7 @@ def maybe_promote_to_continuous(
             "continuous"
         ] = True
         chat_state["continuous_objective"] = persisted.objective
+        chat_state["_continuous_open_ended"] = persisted.open_ended
         chat_state.pop("_continuous_pending_manager_handoff", None)
         return True
 
@@ -474,6 +676,7 @@ def maybe_promote_to_continuous(
         "continuous"
     ] = True
     chat_state["_continuous_pending_manager_handoff"] = True
+    chat_state["_continuous_open_ended"] = lifetime == "standing"
     chat_state["continuous_objective"] = ""
     return True
 

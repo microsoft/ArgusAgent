@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import pytest
 
-from argus_skill.builtin_skills.engineer.figure_spec_scripts import paper_chart_style as pcs
+from argus_skill.verticals.research.skills.engineer.figure_spec_scripts import (
+    paper_chart_style as pcs,
+)
 
 # ---- pure helpers (no matplotlib) -----------------------------------------
 

@@ -34,7 +34,7 @@ class _SecretReplyRunner:
     last_thread_id = "thread-1"
 
     def chat_reply_if_conversational(self, **kwargs) -> bool:  # noqa: ANN001
-        secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345678901"
+        secret = "ghp_" + "A" * 36
         sink = kwargs["sink"]
         sink.handle_event({
             "type": "engineer.progress",
@@ -53,7 +53,7 @@ class _LegacySecretProgressRunner:
     last_thread_id = "thread-1"
 
     def chat_reply_if_conversational(self, objective, sink, seed_thread_id):  # noqa: ANN001
-        secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345678901"
+        secret = "ghp_" + "A" * 36
         sink.handle_event({
             "type": "engineer.progress",
             "kind": "command_execution",
@@ -116,7 +116,7 @@ def test_manager_triage_streams_all_reply_progress_kinds(reply_kind: str) -> Non
 
 
 def test_manager_triage_redacts_direct_reply_progress_before_streaming() -> None:
-    secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345678901"
+    secret = "ghp_" + "A" * 36
     fragments: list[tuple[str, dict]] = []
 
     reply = manager_triage(
@@ -155,7 +155,7 @@ def test_manager_triage_streams_only_the_authoritative_final_answer() -> None:
 
 
 def test_manager_triage_redacts_legacy_progress_phase_fallback() -> None:
-    secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345678901"
+    secret = "ghp_" + "A" * 36
     fragments: list[tuple[str, dict]] = []
 
     manager_triage(

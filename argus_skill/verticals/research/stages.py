@@ -14,7 +14,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from ...skills.stage_machine import ChecklistItem
-from ...skills.venue_profiles import VenueProfile, resolve_venue_profile
+from . import library_preparation
+from .prompt_policy import render_role_prompt_fragment
+from .venue_profiles import VenueProfile, resolve_venue_profile
+
+LIBRARY_PREPARER = library_preparation.prepare_skill_libraries
 
 CANONICAL_STAGE_ORDER: tuple[str, ...] = (
     "research",
@@ -39,15 +43,41 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
             statement=(
                 "The canonical literature ledger covers the claims the project "
                 "actually depends on: the nearest competing methods, the relevant "
-                "lineage/classic anchors, contradictory or negative evidence, and "
-                "the unresolved frontier. Each retained source has a verifiable "
-                "primary URL and a project-relevant implication. Judge connected "
-                "claim coverage, not a fixed paper or query count."
+                "AI-venue/recent-arXiv frontier, lineage/classic foundations, "
+                "contradictory evidence, and unresolved frontier. The Reviewer flags "
+                "source-mix imbalance as an advisory risk, not a fixed quota or "
+                "completion blocker. Each retained source has a verifiable primary URL "
+                "and project implication; judge connected coverage and documented "
+                "limitations, not category counts."
             ),
             evidence_hint=(
                 "research/LITERATURE_GROUNDING.json (canonical); "
                 "research/LIT_MATRIX.tsv is generated with "
                 "`python -m argus_skill.verticals.research.literature_ledger sync`"
+            ),
+        ),
+        ChecklistItem(
+            id="research.idea_portfolio",
+            statement=(
+                "A 12-route team explores concurrently; each result gets an independent "
+                "review, and a fresh selector acts at the 80% review quorum without "
+                "waiting for the final routes."
+            ),
+            evidence_hint=(
+                "research/IDEA_PORTFOLIO.json + research/ideation/portfolios/**/"
+                "{routes,reviews,probes} + team tasks/shards"
+            ),
+        ),
+        ChecklistItem(
+            id="research.adversarial_selection",
+            statement=(
+                "After at least 80% of reviews (10/12 by default), a fresh Agent selects "
+                "qualitatively by theory, novelty, generality, and top-conference "
+                "potential. Probe metrics cannot veto the choice; final routes do not "
+                "block planning."
+            ),
+            evidence_hint=(
+                "research/IDEA_SELECTION.json + selected route/review/EVIDENCE.json"
             ),
         ),
         ChecklistItem(
@@ -61,34 +91,39 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
         ChecklistItem(
             id="research.thesis",
             statement=(
-                "The project states why its proposed thesis would matter to the "
-                "target community, what evidence could falsify it, and whether it is "
-                "worth the experiment budget. A paper-shaped deliverable is not itself "
-                "a reason to continue."
+                "The selected thesis has a plausible nontrivial technical core, "
+                "originality, formal/causal structure, field-level potential, and an "
+                "evidence path. Research review is qualitative: no finished theorem, "
+                "fixed implementation, or reliable effect size is required. Reject only "
+                "clear duplicates, trivial prompt/schema/wrapper/scale variants, "
+                "incoherent mechanisms, or decorative math. Before any probe is designed "
+                "or executed, lock method reasonableness; the thesis may evolve later."
             ),
-            evidence_hint="research/RESEARCH_BRIEF.md and the primary sources it cites",
+            evidence_hint=(
+                "research/RESEARCH_BRIEF.md and research/ideation/{routes,debates}/"
+            ),
         ),
         ChecklistItem(
             id="research.signal_derisk",
             statement=(
-                "Before leaving research, the locked idea survives the cheapest REAL "
-                "falsification probe that tests its binding premise on this machine. "
-                "The Planner authors the evidence contract for the research shape: a "
-                "comparative method may use measured baseline/proposed deltas; a "
-                "systems or architecture idea may test fidelity plus the claimed "
-                "resource/stability signal; theoretical or survey work uses its own "
-                "decisive counterexample/coverage test. Prefer <=10 minutes / <=$1 "
-                "when faithful, but do not substitute a toy proxy merely to meet that "
-                "budget. Preserve commands and raw outputs. Store the outcome without "
-                "turning it into a mechanical routing decision; the Planner reads it "
-                "and decides what it changes. A passed wiring-only smoke does not prove "
-                "the thesis. "
-                "`argus_skill.skills.signal_derisk validate` is available only for "
+                "Only after research.thesis has qualitatively admitted a candidate, "
+                "run one REAL advisory probe, normally <=10 minutes / <=$1; never run "
+                "the formal benchmark, training, broad sweep, or publication-scale "
+                "multi-seed study. The Planner authors the evidence contract. Preserve "
+                "commands/raw outputs and record untested/inconclusive/supported/refuted "
+                "honestly. The probe cannot kill or block a qualified idea or become a "
+                "mechanical routing decision: infrastructure/implementation failures, "
+                "baseline ceiling/floor saturation, and missing predeclared power and "
+                "headroom are limitations. Later stages own decisive benchmarks. "
+                "`argus_skill.verticals.research.signal_derisk validate` is available "
+                "only for "
                 "the default scalar-comparison shape and never decides quality."
             ),
             evidence_hint=(
                 "Planner-authored research.signal_derisk evidence paths; for the "
-                "default scalar shape use research/SIGNAL_DERISK.json + raw log"
+                "default scalar shape use research/SIGNAL_DERISK.json + raw log; "
+                "verdict in research/ideas/<id>/EVIDENCE.json, checked by "
+                "`...verticals.research.idea_evidence check`"
             ),
         ),
     ),
@@ -98,8 +133,11 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
             statement=(
                 "Experiment plan states the hypothesis, the proposed method, the "
                 "baselines (including the strongest feasible prior work), the "
-                "ablations, the metrics, the success threshold, and the compute / "
-                "API budget."
+                "ablations, the metrics, the interpretation and stopping criteria, "
+                "and the compute / API budget. Numeric keep/reject cutoffs require "
+                "an external utility, risk, domain-standard, prior-evidence, theory, "
+                "or prospective-sensitivity basis; unsupported round-number gains "
+                "must not become binary gates."
             ),
             evidence_hint="research/EXPERIMENT_PLAN.md",
         ),
@@ -209,8 +247,13 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
                 "pipeline loads the cited public source records, constructs the "
                 "prespecified observation-level outcome, retains exclusions and "
                 "failures, and computes the reported estimate and uncertainty from "
-                "those records. Never invent an evaluator, gold label, participant, "
-                "visit, or task merely to satisfy this item."
+                "those records. Candidate and baseline prediction paths cannot read "
+                "gold labels, expected outcomes, or scorer-derived fields; removing "
+                "or permuting hidden labels must not change predictions. Online "
+                "intervention claims require executable comparisons with the same "
+                "decision-time information, not only historical traces or post-hoc "
+                "judges. Never invent an evaluator, gold label, participant, visit, "
+                "or task merely to satisfy this item."
             ),
             evidence_hint=(
                 "computational: evaluator source + official scorer outputs; "
@@ -269,8 +312,8 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
                 "scorer before completing run."
             ),
             evidence_hint=(
-                "`jq -r .score experiments/runs/<id>/results/<family>/scored_rows.jsonl"
-                " | sort -u | wc -l` should be > 1 per file with >3 rows"
+                "`python -m argus_skill.verticals.research.integrity_check scores` "
+                "fails on any scored_rows.jsonl whose scorer returned one value"
             ),
         ),
         ChecklistItem(
@@ -329,11 +372,14 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
             statement=(
                 "The evidence supports one defensible, venue-relevant thesis. Internal "
                 "records preserve all valid outcomes, but the proposed paper is a "
-                "selective argument: claim-critical contrary evidence remains visible; "
+                "selective argument: it leads with the strongest valid evidence for the "
+                "thesis, retains claim-critical contrary evidence, and keeps "
                 "misconfigured runs, exploratory dead ends, and secondary diagnostics "
-                "are kept in audit artifacts or an appendix rather than dumped into "
-                "the main narrative. If the original method claim failed and no "
-                "standalone insight remains, return to research/plan instead of drafting."
+                "in audit artifacts or an appendix rather than dumping them into the "
+                "main narrative. A selected idea with a plausible mechanism receives "
+                "credible targeted repair before weak results are reframed for a paper. "
+                "If no strong thesis survives, return to implementation, experiments, "
+                "or research/plan instead of drafting."
             ),
             evidence_hint="paper/main.tex + canonical raw evidence + Reviewer judgment",
         ),
@@ -343,10 +389,15 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
             id="draft.tex",
             statement=(
                 "paper/main.tex uses the selected venue's official structure and tells "
-                "one coherent argument. The title, abstract, introduction, method, and "
-                "experiments all serve the same thesis; the paper does not introduce "
+                "one coherent argument, not a chronological experiment report. The "
+                "title, abstract, introduction, method, and experiments all serve the "
+                "same thesis; the paper does not introduce "
                 "a method as its contribution and then make that method's failure the "
-                "main conclusion without an independently valuable insight."
+                "main conclusion without an independently valuable insight. A "
+                "literature review instead aligns its scope, taxonomy/comparison "
+                "frame, source evidence, synthesis, limitations, and conclusions; it "
+                "must not invent a method or experiment section merely to mimic an "
+                "empirical paper."
             ),
             evidence_hint="paper/main.tex + research/VENUE_PROFILE.json + research/NARRATIVE_REPORT.md",
         ),
@@ -356,7 +407,7 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
                 "paper/main.pdf compiles cleanly: no '??' citations, no undefined "
                 "references, no material overflow, and no LaTeX errors. Its body and "
                 "back matter obey the selected venue's actual page and format rules; "
-                "do not pad a weak argument to fill a historical page quota."
+                "do not pad a weak argument merely to fill a page quota."
             ),
             evidence_hint="paper/main.pdf + paper/main.log",
         ),
@@ -367,7 +418,11 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
                 "ACL Anthology, DBLP, CrossRef, Semantic Scholar) — none invented "
                 "or auto-completed."
             ),
-            evidence_hint="paper/references.bib + verification log",
+            evidence_hint=(
+                "paper/references.bib + verification log; resolve mechanically "
+                "with `python -m argus_skill.verticals.research.integrity_check "
+                "citations`"
+            ),
         ),
         ChecklistItem(
             id="draft.figures",
@@ -388,8 +443,8 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
         ChecklistItem(
             id="review.infrastructure",
             statement=(
-                "Paper prose contains no local paths (/root/, /home/), no Argus / "
-                "Codex / daemon route names, no capability vault references, no "
+                "Paper prose contains no local paths (/root/, /home/), no internal "
+                "orchestration or daemon route names, no capability-vault references, no "
                 "device IDs, no API keys — the manuscript is publication-clean."
             ),
             evidence_hint="grep main.tex for '/root/', 'CUDA_VISIBLE_DEVICES', 'argus-skill', 'codex', 'OPENAI_API_KEY'",
@@ -424,13 +479,15 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
             id="review.language",
             statement=(
                 "Academic prose reads like a real selected-venue paper, not generic agent "
-                "output: the Abstract states problem, gap, method, evidence, and "
+                "output: the Abstract states problem, gap, article approach, evidence, and "
                 "implication (no result-first opening, no validator-checklist "
                 "phrasing); the Introduction grounds the gap in cited prior work, "
-                "then gives the method insight, a quantified result preview, and a "
-                "contribution roadmap before Related Work; the Method/Setup lets an "
-                "outside reviewer identify the evaluated system, baselines, task "
-                "source, metrics, evaluated model/backend, and budget; every "
+                "then gives the organizing insight and contribution roadmap. For an "
+                "empirical article, Method/Setup identifies the system, baselines, "
+                "task source, metrics, backend, budget, and result preview. For a "
+                "literature review, the scope/method explains source selection and "
+                "the body provides a defensible taxonomy, fair comparisons, conflicts, "
+                "gaps, and limitations. Every "
                 "headline claim is tied to reported evidence; no unsupported hype, "
                 "template LLM openings, experiment-report narration, or repeated "
                 "not-X-but-Y caveats. Limitations bound the thesis instead of becoming "
@@ -446,10 +503,11 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
             statement=(
                 "As a venue reviewer, identify the strongest accept argument before "
                 "passing. A valid experiment, transparent failure report, or complete "
-                "artifact bundle is not enough: the manuscript must deliver a clear "
-                "insight, capable method/system, theorem, or genuinely surprising and "
-                "decision-relevant boundary. A weak result cannot be rescued by "
-                "renaming it a diagnostic."
+                "artifact bundle is not enough. Original research must deliver a clear "
+                "insight, method/system, theorem, or decision-relevant boundary. A "
+                "weak result cannot be rescued by renaming it a diagnostic. A "
+                "literature review must deliver valuable coverage, synthesis, critique, "
+                "and a defensible map of the field rather than a paper-by-paper list."
             ),
             evidence_hint="paper/main.tex + paper/main.pdf + canonical evidence",
         ),
@@ -459,10 +517,14 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
             id="submission.upstream",
             statement=(
                 "All upstream stage checklists (research → review) are themselves "
-                "marked done by a prior reviewer round — submission readiness is "
-                "not a way to retro-fix missing evidence."
+                "marked done by a prior reviewer round or explicitly skipped by a "
+                "recorded Manager decision because they do not apply to this article "
+                "form. Submission readiness is not a way to retro-fix missing evidence."
             ),
-            evidence_hint="research/PIPELINE_STATE.json shows every stage status=done",
+            evidence_hint=(
+                ".argus/PIPELINE_STATE.json shows each stage status=done or "
+                "status=skipped with skip_reason/skipped_by and stage_history evidence"
+            ),
         ),
         ChecklistItem(
             id="submission.readiness",
@@ -503,6 +565,14 @@ def get_stage_checklist(stage: str) -> tuple[ChecklistItem, ...]:
     """Return the checklist items for ``stage``; empty tuple if unknown."""
 
     return STAGE_CHECKLISTS.get(str(stage).strip().lower(), ())
+
+
+def stage_completion_issues(stage: str, project_root: Path) -> tuple[str, ...]:
+    if str(stage or "").strip().lower() != "research":
+        return ()
+    from .idea_portfolio import idea_portfolio_completion_issues
+
+    return idea_portfolio_completion_issues(project_root)
 
 
 
@@ -553,10 +623,11 @@ def _unresolved_venue_checklist(
         "### venue resolution\n"
         f"- [ ] `venue.profile` — {error}. `target_venue` must name a real "
         "publication venue, not planning commentary. If no venue was specified, "
-        "live-search domain-appropriate CCF-A conferences whose deadline has not "
-        "passed, record the official CCF/CFP/deadline evidence in "
-        "`research/VENUE_SELECTION.md`, and write `research/VENUE_PROFILE.json` "
-        f"from the selected official author kit. {instruction}"
+        "do not infer or search for one; ask the operator to name a venue or "
+        "explicitly request venue discovery. For an explicit venue, record its "
+        "official CFP/deadline evidence in `research/VENUE_SELECTION.md` and write "
+        "`research/VENUE_PROFILE.json` from its official author kit. "
+        f"{instruction}"
     )
 
 
@@ -595,14 +666,14 @@ def _apply_venue_to_checklist_body(body: str, venue: VenueProfile) -> str:
         replacements = {
             (
                 "paper/main.tex uses the official Frontiers in Sleep journal-article "
-                "sections and tells one coherent argument."
+                "sections and tells one coherent argument"
             ): (
                 "paper/main.tex uses the Frontiers in Sleep Hypothesis and "
                 "Theory sections in a coherent order: one-paragraph Abstract, "
                 "Introduction, subject-relevant evidence and theory subsections, "
                 "discriminating tests or proposed study, Discussion, Conclusion, "
                 "required declarations, and References. The article tells one "
-                "coherent argument."
+                "coherent argument"
             ),
             (
                 "Every BibTeX entry is verified through a scholarly source (arXiv, "
@@ -614,8 +685,8 @@ def _apply_venue_to_checklist_body(body: str, venue: VenueProfile) -> str:
                 "official repository); none is invented or auto-completed."
             ),
             (
-                "Paper prose contains no local paths (/root/, /home/), no Argus / "
-                "Codex / daemon route names, no capability vault references, no "
+                "Paper prose contains no local paths (/root/, /home/), no internal "
+                "orchestration or daemon route names, no capability-vault references, no "
                 "device IDs, no API keys — the manuscript is publication-clean."
             ): (
                 "Paper prose contains no local paths, credentials, capability-vault "
@@ -658,6 +729,10 @@ def _apply_venue_to_checklist_body(body: str, venue: VenueProfile) -> str:
         }
         for old, new in replacements.items():
             body = body.replace(old, new)
+        body = body.replace(
+            "irrelevant cross-benchmark matrix",
+            "irrelevant omnibus benchmark matrix",
+        )
         body = body.replace(
             "Academic prose reads like a real EMNLP paper, not generic agent output:",
             "Academic prose reads like a real Frontiers in Sleep Hypothesis and "
@@ -759,7 +834,9 @@ CHECKLIST_STAGE_ORDER = CANONICAL_STAGE_ORDER
 CHECKLIST_ITEMS = STAGE_CHECKLISTS
 
 #: Research missions complete on the selected venue's full-paper submission gate.
-completion_gate = "full_paper"
+completion_gate = "certified"
+MISSION_KIND = "research"
+PAPER_MISSION = True
 
 # Research proceeds through strict stage gates, but evidence reuse within those
 # stages is proportional: once a Reviewer certifies a source or artifact, later
@@ -767,21 +844,61 @@ completion_gate = "full_paper"
 # reopens it. This keeps scientific integrity without repeatedly rebuilding the
 # same provenance tree.
 WORKFLOW_MODE = "proportional"
+VERIFICATION_STAGE_PROFILES = {
+    "research": "explore",
+    "plan": "explore",
+    "benchmark": "develop",
+    "run": "develop",
+    "analysis": "develop",
+    "draft": "develop",
+    "review": "certify",
+    "submission": "certify",
+}
 
 # Scientific implementation and experiment claims always require a fresh,
 # independent Reviewer; an Engineer verifier cannot waive this review.
 REQUIRE_INDEPENDENT_REVIEW = True
 
 _REVIEWER_ENGINEERING_AUDIT = (
-    "For experiment claims, inspect the relevant implementation and raw rows once, "
-    "then reuse that reviewed evidence until a dependency changes. Distinguish the "
-    "method result from infrastructure or evaluator failure.\n"
+    "For experiment claims, inspect implementation and raw rows once, then reuse "
+    "them until a dependency changes. Separate method results from infrastructure "
+    "or evaluator failure. Research-stage smoke probes are short advisory "
+    "observations, not miniature benchmarks or idea-kill gates: judge the idea "
+    "primarily from theory, novelty, mechanism, generality, and professional "
+    "plausibility. Weak, null, noisy, underpowered, misconfigured, or inconclusive "
+    "smoke results cannot by themselves trigger replan or reject a review-qualified "
+    "idea; record limitations for later iterative engineering. Source-mix imbalance "
+    "between AI-frontier and foundational work is advisory, never a quota.\n"
+)
+
+_PLANNER_RESEARCH_ORCHESTRATION = (
+    "Research orchestration: run routes and reviews concurrently. At an 80% review "
+    "quorum (10/12 by default), let a fresh selector Agent choose qualitatively by "
+    "theory, novelty, generality, top-conference shape, and evidence path; do not "
+    "wait for the final routes. Probe only that winner with one advisory observation "
+    "normally below ten minutes; never use a full benchmark, training run, broad "
+    "sweep, or publication-scale multi-seed study as a research probe. The smoke "
+    "result cannot kill or block the selected idea. Keep the resulting critical path "
+    "below one hour when default resources allow it. A failed hypothesis or rejected "
+    "direction is project memory, not automatic completion or a forced next action; "
+    "only the independently reviewed research target closes the project.\n"
+)
+
+_ENGINEER_RESEARCH_EXECUTION = (
+    "Research execution: keep independent work file-disjoint and parallel. Respect "
+    "the route/review/selector/probe time boxes, stop searching once the novelty "
+    "boundary is credible, and treat source-balance gaps and smoke outcomes as "
+    "documented limitations rather than reasons to stall.\n"
 )
 
 
 def role_banner(role: str = "engineer") -> str:
-    """Add the research-specific engineering contract to Reviewer prompts."""
-    return _REVIEWER_ENGINEERING_AUDIT if role == "reviewer" else ""
+    """Add research-only role policy without affecting other verticals."""
+    return {
+        "planner": _PLANNER_RESEARCH_ORCHESTRATION,
+        "reviewer": _REVIEWER_ENGINEERING_AUDIT,
+        "engineer": _ENGINEER_RESEARCH_EXECUTION,
+    }.get(role, "")
 
 
 __all__ = [
@@ -796,7 +913,11 @@ __all__ = [
     "CHECKLIST_STAGE_ORDER",
     "CHECKLIST_ITEMS",
     "WORKFLOW_MODE",
+    "VERIFICATION_STAGE_PROFILES",
     "REQUIRE_INDEPENDENT_REVIEW",
     "role_banner",
+    "render_role_prompt_fragment",
+    "stage_completion_issues",
     "completion_gate",
+    "PAPER_MISSION",
 ]

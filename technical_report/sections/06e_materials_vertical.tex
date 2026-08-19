@@ -1,0 +1,100 @@
+\subsection{Simplifying a Published Method: Materials Generation}
+\label{sec:materials-vertical}
+
+The verticals above are evaluated by a proof checker, a venue format, and a
+synthesis toolchain. This one is evaluated by an external chemistry validator that
+the runtime does not own, against two published models it did not write. The
+campaign targets metal--organic framework (MOF) generation, and its outcome is the
+sharpest instance in this report of the pattern Section~\ref{sec:method} describes:
+the admitted result is \emph{simpler} than the method it replaces, and it was
+admitted only after a confound in the original comparison was removed.
+
+\paragraph{Adding a control the base model lacked.} MOFFlow-2 generates
+building-block sequences with an autoregressive language model and then places them
+by flow matching. Its published conditioning accepts a single continuous property
+and cannot address chemical identity. \systemname added metal element, node
+nuclearity, and ligand family as three discrete condition tokens read through
+cross-attention, each with its own \code{ANY} token and independent condition
+dropout, so one model serves unconditional, partial, and joint requests. Continuing
+to train the full decoder raised validation loss, so the language model was frozen
+and only the condition encoder and six cross-attention modules were updated:
+12.69M trainable parameters of 75.8M, or 16.7\%. Over 3{,}300 balanced condition
+requests weighted toward rare chemistry, adherence reaches 92.5\% on metal
+(17.4\% under a permuted-condition control), 100.0\% on nuclearity (24.3\%), and
+74.5\% on ligand family (39.0\%). The effect concentrates in the tail the corpus
+under-represents: nickel rises from a 2.1\% corpus base rate to 83.7\%, trinuclear
+nodes from 3.9\% to 100.0\%, and pyrazolate ligands from 2.0\% to 46.0\%. Unconditional
+structure-level validity also improves, from 30.61\% for the local MOFFlow-2
+reproduction to 37.12\%. The control is not free: at guidance $w{=}2$ structural
+validity falls to 17.18\%, and the campaign records that trade-off rather than
+reporting only the adherence numbers.
+
+\paragraph{Replacing the score, then questioning the method.} A failure census over
+19{,}483 paired structures found that the published steering potential penalizes
+atom overlap, while the dominant failures of the all-atom model are the opposite:
+under-coordination, fragments, and floating components. \systemname built a scoring
+function aligned to the external \code{MOFChecker} criteria instead, with radii
+derived from covalent and van der Waals tables rather than tuned by hand. Against
+the external validator it separates passing from failing structures at
+AUC 0.833, versus 0.594 for the overlap-only potential.
+
+That gain then exposed a measurement problem. Enabling the published Feynman--Kac
+steering also switches the integrator from ODE to SDE, so the reported improvement
+mixes two changes. Separating them attributes $+1.92$ points to the integrator alone,
+which does not reach significance ($p{=}0.238$), and $+9.00$ points to the score
+inside a fixed SDE ($p{=}2.0\times10^{-9}$). With that confound removed, the runtime
+tested whether the particle interaction was doing any work at all, by holding model,
+integrator, score, forward-pass budget, and the same 989 crystals fixed and simply
+generating $K$ independent trajectories and keeping the best-scoring final structure.
+
+\begin{table}[H]
+\centering
+\small
+\renewcommand{\arraystretch}{1.16}
+\begin{tabularx}{\linewidth}{@{}Xp{2.5cm}p{2.5cm}p{1.9cm}@{}}
+\toprule
+\rowcolor{papersand}
+\textbf{Forward passes} & \textbf{Feynman--Kac} & \textbf{\systemname best-of-$K$} & \textbf{Difference} \\
+\midrule
+$K=4$ & --- & 53.39\% & --- \\
+$K=8$ & 52.38\% & \textbf{55.21\%} & \textbf{$+2.83$} \\
+$K=16$ & 57.94\% & \textbf{59.76\%} & $+1.82$ \\
+$K=32$ & 59.96\% & \textbf{61.38\%} & $+1.42$ \\
+\bottomrule
+\end{tabularx}
+\caption{External \code{MOFChecker} pass rate on 989 paired crystals at matched
+forward-pass budget, model, integrator, and score. Single-sample SDE decoding passes
+43.38\%. Independent generation followed by best-of-$K$ selection beats the published
+Feynman--Kac steering at every budget; the $K{=}8$ difference survives a paired test
+($p{=}0.0486$). Best-of-4 at 53.39\% already exceeds Feynman--Kac at $K{=}8$ while
+spending half the compute.}
+\label{tab:mof-bestofk}
+\end{table}
+
+Table~\ref{tab:mof-bestofk} reports the result. The mechanism is visible in the
+particle statistics: at $\lambda{=}2$ the median effective sample size is
+approximately one, and 72.1\% of crystals collapse to a single particle after
+resampling, after which the remaining SDE noise does not restore diversity. The
+published method pays for $K$ forward passes and then discards most of the
+exploration it bought. Keeping the trajectories independent costs nothing extra and
+retains it.
+
+\paragraph{Where the campaign stops.} This is a research candidate, not a
+state-of-the-art claim, and the runtime records why. The 989-crystal subset is the
+same data on which the score was designed, so the numbers above are not an
+independent holdout. The full 19{,}483-structure leaderboard has not been run. The
+matched-compute MOFFlow-2 comparison was interrupted by a parameter error that
+enumerated all 19{,}792 test structures instead of the intended 1{,}500, and its
+export is incomplete. Conditional sequence generation and best-of-$K$ structure
+prediction have not been joined into one end-to-end system. No relaxation, machine-learned
+interatomic potential, or DFT check has been run, so every number here is scored by
+the same validator the selection optimizes against, which is exactly the failure mode
+Section~\ref{sec:limitations} names for verifier-shaped objectives. The campaign
+therefore holds at a candidate version rather than declaring a release, and the
+outstanding items are enumerated rather than deferred silently.
+
+What this vertical contributes to the argument of the report is not the pass rate.
+It is that a runtime given a published method, a fixed compute budget, and an
+external validator arrived at a smaller method than the one it started from, and
+that the step which made this admissible was removing a confound rather than adding
+a component.

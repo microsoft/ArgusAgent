@@ -1,3 +1,4 @@
+import { isImeComposing } from '../lib/ime';
 import { useEffect, useState } from 'react';
 import { api, type MetricsSnapshot, type Snapshot, type TrashEntry } from '../api';
 import { Modal, ModalHeader } from './Modal';
@@ -16,6 +17,7 @@ import {
   faRotateLeft,
   faTrashArrowUp,
 } from '@fortawesome/free-solid-svg-icons';
+import { useI18n } from '../i18n';
 
 type QuickAction = 'task' | 'nudge' | 'note' | 'plan';
 type OperationTab = 'work' | 'runtime' | 'system' | 'recovery';
@@ -54,6 +56,7 @@ export function OperationsModal({
   onChanged: () => void;
   onRestored: (sid: string) => void | Promise<void>;
 }) {
+  const { t } = useI18n();
   const [action, setAction] = useState<QuickAction>('task');
   const [text, setText] = useState('');
   const [workdir, setWorkdir] = useState(snap.session.workdir ?? snap.session.cwd ?? '');
@@ -143,22 +146,22 @@ export function OperationsModal({
   };
 
   return (
-    <Modal open={open} onClose={() => !busy && onClose()} label="Operations" width="max-w-5xl">
-      <ModalHeader title="Operations" sub={snap.session.display_name || sid} />
+    <Modal open={open} onClose={() => !busy && onClose()} label={t('operations.title')} width="max-w-5xl">
+      <ModalHeader title={t('operations.title')} sub={snap.session.display_name || sid} />
       <div className="flex gap-1 border-b border-line bg-panel px-4 py-2">
         {([
-          ['work', 'Work', faListCheck],
-          ['runtime', 'Runtime', faGear],
-          ['system', 'System', faChartLine],
-          ['recovery', 'Recovery', faTrashArrowUp],
+          ['work', t('operations.work'), faListCheck],
+          ['runtime', t('operations.runtime'), faGear],
+          ['system', t('operations.system'), faChartLine],
+          ['recovery', t('operations.recovery'), faTrashArrowUp],
         ] as const).map(([value, label, icon]) => (
           <button key={value} type="button" onClick={() => { setTab(value); setOutput(''); }} title={label} aria-label={label} className={`flex h-8 w-9 items-center justify-center rounded-md text-xs ${tab === value ? 'bg-blue-deep text-white' : 'text-ink-faint hover:bg-bg hover:text-ink'}`}><FontAwesomeIcon icon={icon} /></button>
         ))}
       </div>
       <div className="grid max-h-[76vh] gap-3 overflow-y-auto bg-bg p-3 scroll-thin lg:grid-cols-2">
         {tab === 'work' ? <section className="rounded-lg border border-line bg-panel p-4 lg:col-span-2">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-dim">Work input</h3>
-          <p className="mt-1 text-xs text-ink-faint">Queue work, guide the active task, save a note, or preview a plan without dispatching it.</p>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-dim">{t('operations.workInput')}</h3>
+          <p className="mt-1 text-xs text-ink-faint">{t('operations.workHint')}</p>
           <div className="mt-3 flex gap-1">
             {([
               ['task', faListCheck],
@@ -169,26 +172,26 @@ export function OperationsModal({
               <button key={value} type="button" onClick={() => setAction(value)} title={value} aria-label={value} className={`flex h-8 w-9 items-center justify-center rounded text-xs capitalize ${action === value ? 'bg-blue-deep text-white' : 'bg-bg text-ink-dim'}`}><FontAwesomeIcon icon={icon} /></button>
             ))}
           </div>
-          <textarea value={text} onChange={(event) => setText(event.target.value)} rows={5} placeholder={action === 'plan' ? 'Objective to preview; preview never queues work' : `${action} text`} className="mt-3 w-full resize-y rounded border border-line bg-bg p-3 text-sm text-ink outline-none focus:border-blue" />
-          <button type="button" onClick={() => void runQuickAction()} disabled={!!busy || !text.trim()} title={action === 'plan' ? 'Preview plan' : `Submit ${action}`} aria-label={action === 'plan' ? 'Preview plan' : `Submit ${action}`} className="mt-2 flex h-9 w-9 items-center justify-center rounded bg-blue-deep text-xs font-medium text-white disabled:opacity-40">{busy === 'quick' ? '…' : <FontAwesomeIcon icon={actionIcon} />}</button>
+          <textarea value={text} onChange={(event) => setText(event.target.value)} rows={5} placeholder={action === 'plan' ? t('operations.planPlaceholder') : t('operations.actionPlaceholder', { action })} className="mt-3 w-full resize-y rounded border border-line bg-bg p-3 text-sm text-ink outline-none focus:border-blue" />
+          <button type="button" onClick={() => void runQuickAction()} disabled={!!busy || !text.trim()} title={action === 'plan' ? t('operations.previewPlan') : t('operations.submitAction', { action })} aria-label={action === 'plan' ? t('operations.previewPlan') : t('operations.submitAction', { action })} className="mt-2 flex h-9 w-9 items-center justify-center rounded bg-blue-deep text-xs font-medium text-white disabled:opacity-40">{busy === 'quick' ? '…' : <FontAwesomeIcon icon={actionIcon} />}</button>
         </section> : null}
 
         {tab === 'runtime' ? <section className="rounded-lg border border-line bg-panel p-4 lg:col-span-2">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-dim">Runtime</h3>
-          <p className="mt-1 text-xs text-ink-faint">Change where this session runs, reset Manager context, or safely reload the daemon.</p>
-          <label className="mt-3 block text-[10px] uppercase tracking-wide text-ink-faint">Working directory</label>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-dim">{t('operations.runtime')}</h3>
+          <p className="mt-1 text-xs text-ink-faint">{t('operations.runtimeHint')}</p>
+          <label className="mt-3 block text-[10px] uppercase tracking-wide text-ink-faint">{t('operations.workdir')}</label>
           <div className="mt-1 flex gap-2">
             <input value={workdir} onChange={(event) => setWorkdir(event.target.value)} className="h-9 min-w-0 flex-1 rounded border border-line bg-bg px-2 font-mono text-xs text-ink outline-none focus:border-blue" />
-            <button type="button" onClick={() => void run('cwd', () => api.setWorkdir(sid, workdir), 'Working directory updated.')} disabled={!!busy || !workdir.trim()} title="Apply working directory" aria-label="Apply working directory" className="flex h-9 w-9 items-center justify-center rounded border border-blue/50 text-xs text-blue disabled:opacity-40"><FontAwesomeIcon icon={faCheck} /></button>
+            <button type="button" onClick={() => void run('cwd', () => api.setWorkdir(sid, workdir), t('operations.workdirUpdated'))} disabled={!!busy || !workdir.trim()} title={t('operations.applyWorkdir')} aria-label={t('operations.applyWorkdir')} className="flex h-9 w-9 items-center justify-center rounded border border-blue/50 text-xs text-blue disabled:opacity-40"><FontAwesomeIcon icon={faCheck} /></button>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
-            <button type="button" onClick={() => void run('reset', () => api.resetManager(sid), 'Manager context reset.')} disabled={!!busy} title="Reset Manager context" aria-label="Reset Manager context" className="flex h-9 w-9 items-center justify-center rounded border border-line text-xs text-ink-dim disabled:opacity-40"><FontAwesomeIcon icon={faRotateLeft} /></button>
+            <button type="button" onClick={() => void run('reset', () => api.resetManager(sid), 'Manager context reset.')} disabled={!!busy} title={t('operations.resetManager')} aria-label={t('operations.resetManager')} className="flex h-9 w-9 items-center justify-center rounded border border-line text-xs text-ink-dim disabled:opacity-40"><FontAwesomeIcon icon={faRotateLeft} /></button>
             <button type="button" onClick={() => void run('upgrade', () => requireCommandSuccess(api.upgradeDaemon(sid, snap.daemon_commands?.revision)), 'Current-release daemon started after safely draining active work.')} disabled={!!busy || externalDaemon} title={externalDaemon ? 'Externally supervised daemon cannot be restarted from this Web host' : incompatible ? 'Upgrade incompatible daemon' : 'Restart on current release'} aria-label={externalDaemon ? 'Externally supervised daemon' : incompatible ? 'Upgrade incompatible daemon' : 'Restart on current release'} className={`flex h-9 w-9 items-center justify-center rounded border text-xs disabled:opacity-40 ${incompatible ? 'border-err/60 bg-err/10 text-err' : 'border-line text-ink-dim'}`}><FontAwesomeIcon icon={faArrowRotateRight} /></button>
           </div>
           {snap.daemon.protocol_error ? <p className="mt-2 text-xs text-err">{snap.daemon.protocol_error}</p> : null}
           {replacements.length ? (
             <div className="mt-4">
-              <div className="text-[10px] uppercase tracking-wide text-ink-faint">Replace a running daemon slot</div>
+              <div className="text-[10px] uppercase tracking-wide text-ink-faint">{t('operations.replaceSlot')}</div>
               <div className="mt-2 space-y-1">
                 {replacements.map((row) => (
                   <button key={row.id} type="button" disabled={!!busy} onClick={() => void run(`replace:${row.id}`, () => requireCommandSuccess(api.replaceDaemon(sid, row.id, Boolean(snap.continuous?.enabled), snap.daemon_commands?.revision)), `Parked ${row.label || row.id} and started this session.`)} title={`Replace ${row.label || row.id}`} aria-label={`Replace ${row.label || row.id}`} className="flex w-full items-center justify-between rounded border border-line bg-bg px-2 py-1.5 text-left text-xs text-ink-dim disabled:opacity-40"><span className="truncate">{row.label || row.id}</span><FontAwesomeIcon icon={faArrowRotateRight} className="ml-2 text-warn" /></button>
@@ -199,16 +202,16 @@ export function OperationsModal({
         </section> : null}
 
         {tab === 'system' ? <section className="rounded-lg border border-line bg-panel p-4">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-dim">Skills</h3>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-dim">{t('operations.skills')}</h3>
           <div className="mt-3 flex gap-2">
             <input value={skillsArgs} onChange={(event) => setSkillsArgs(event.target.value)} className="h-9 min-w-0 flex-1 rounded border border-line bg-bg px-2 font-mono text-xs text-ink outline-none focus:border-blue" placeholder="ls, stats, show NAME…" />
-            <button type="button" disabled={!!busy} onClick={() => void run('skills', async () => { const result = await api.skills(sid, skillsArgs); setSkillsOutput(result); return result; }, null)} title="Run skill command" aria-label="Run skill command" className="flex h-9 w-9 items-center justify-center rounded border border-blue/50 text-xs text-blue disabled:opacity-40"><FontAwesomeIcon icon={faPlay} /></button>
+            <button type="button" disabled={!!busy} onClick={() => void run('skills', async () => { const result = await api.skills(sid, skillsArgs); setSkillsOutput(result); return result; }, null)} title={t('operations.runSkill')} aria-label={t('operations.runSkill')} className="flex h-9 w-9 items-center justify-center rounded border border-blue/50 text-xs text-blue disabled:opacity-40"><FontAwesomeIcon icon={faPlay} /></button>
           </div>
           {skillsOutput ? <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-bg p-3 font-mono text-xs text-ink-dim scroll-thin">{skillsOutput}</pre> : null}
         </section> : null}
 
         {tab === 'system' ? <section className="rounded-lg border border-line bg-panel p-4">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-dim">System metrics</h3>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-dim">{t('operations.metrics')}</h3>
           <div className="mt-3 flex items-center gap-3">
             <span className={`rounded px-2 py-1 text-xs font-semibold ${metrics?.slo?.status === 'healthy' ? 'bg-ok/10 text-ok' : 'bg-warn/10 text-warn'}`}>{metrics?.slo?.status ?? 'loading'}</span>
             <span className="text-xs text-ink-faint">event validation failures: {metrics?.event_validation_failures ?? '—'}</span>
@@ -218,11 +221,11 @@ export function OperationsModal({
 
         {tab === 'recovery' ? <section className="rounded-lg border border-line bg-panel p-4 lg:col-span-2">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="mr-auto text-xs font-semibold uppercase tracking-wide text-ink-dim">Recoverable trash · {trashTotal}</h3>
-            <input value={trashQuery} onChange={(event) => setTrashQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void searchTrash(); }} placeholder="Search trash" className="h-8 min-w-52 rounded border border-line bg-bg px-2 text-xs text-ink outline-none focus:border-blue" />
-            <button type="button" disabled={!!busy} onClick={() => void searchTrash()} title="Search trash" aria-label="Search trash" className="flex h-8 w-8 items-center justify-center rounded border border-blue/50 text-xs text-blue disabled:opacity-40"><FontAwesomeIcon icon={faMagnifyingGlass} /></button>
+            <h3 className="mr-auto text-xs font-semibold uppercase tracking-wide text-ink-dim">{t('operations.trash')} · {trashTotal}</h3>
+            <input value={trashQuery} onChange={(event) => setTrashQuery(event.target.value)} onKeyDown={(event) => { if (!isImeComposing(event) && event.key === 'Enter') void searchTrash(); }} placeholder={t('operations.searchTrash')} className="h-8 min-w-52 rounded border border-line bg-bg px-2 text-xs text-ink outline-none focus:border-blue" />
+            <button type="button" disabled={!!busy} onClick={() => void searchTrash()} title={t('operations.searchTrash')} aria-label={t('operations.searchTrash')} className="flex h-8 w-8 items-center justify-center rounded border border-blue/50 text-xs text-blue disabled:opacity-40"><FontAwesomeIcon icon={faMagnifyingGlass} /></button>
           </div>
-          {!trash.length ? <p className="mt-3 text-xs text-ink-faint">Trash is empty.</p> : (
+          {!trash.length ? <p className="mt-3 text-xs text-ink-faint">{t('operations.trashEmpty')}</p> : (
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               {trash.map((entry) => (
                 <div key={entry.trash_id} className="flex items-center gap-3 rounded border border-line bg-bg p-2">

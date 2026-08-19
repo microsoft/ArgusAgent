@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from argus_skill.skills.signal_derisk import (
+from argus_skill.verticals.research.signal_derisk import (
     COST_CEILING_USD,
     DURATION_CEILING_S,
     load_signal_derisk,

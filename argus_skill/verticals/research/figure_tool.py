@@ -27,7 +27,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from argus_skill.skills.venue_profiles import VenueProfile, get_venue_profile
 from argus_skill.tools.image_api import (
     _DEFAULT_MAX_RETRIES,
     _DEFAULT_TIMEOUT_SECONDS,
@@ -47,6 +46,10 @@ from argus_skill.tools.image_api import (
     inspect_image,
 )
 from argus_skill.tools.image_api import review_image as _generic_review_image
+from argus_skill.verticals.research.venue_profiles import (
+    VenueProfile,
+    get_venue_profile,
+)
 
 PAPER_FIGURE_PROMPT_TEMPLATE_ID = "argus-image2-paper-prompt-v1"
 PAPER_FIGURE_STUDIO_SOURCE_ID = "paper-framework-figure-studio-pro-v3.1.4a"

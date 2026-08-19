@@ -57,6 +57,13 @@ def vertical_plugins() -> dict[str, VerticalPlugin]:
         if version != VERTICAL_API_VERSION or not purpose:
             log.warning("vertical plugin %r has an incompatible contract", name)
             continue
+        try:
+            from ..core.vertical_contract import vertical_contract
+
+            vertical_contract(name, module)
+        except ValueError as exc:
+            log.warning("vertical plugin %r has an incompatible contract: %s", name, exc)
+            continue
         plugins[name] = VerticalPlugin(
             name=name,
             purpose=purpose,

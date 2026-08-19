@@ -95,10 +95,10 @@ ITER <n> — <what this candidate is>
 
 ## Real trace: KernelBench 36_RMSNorm_ on B200
 
-Run in `/home/argustest/kb-hands-on-trace`, copied from the real
-`kernelbench-mission-b200` scaffold. Target: `solutions/36_RMSNorm_.py`. Official
-scoring: `./eval_solution.sh solutions` (frozen B200 eval server at
-`http://127.0.0.1:2232`). Debug runs: `python gpu_run.py <script.py>`.
+Run in an operator-provided KernelBench workspace. Target:
+`solutions/36_RMSNorm_.py`. Official scoring:
+`./eval_solution.sh solutions` against the frozen scorer URL declared by
+`$KERNELBENCH_SCORER_URL`. Debug runs: `python gpu_run.py <script.py>`.
 
 Reference op — RMSNorm along `dim=1` for shape `(112, 64, 512, 512)`, fp32:
 
@@ -217,12 +217,12 @@ The chain above is the clean story. In the real run, four infra/correctness nail
 came first — each one would have produced a *fake* chain link if not caught. Record
 them too, because "the first failure is usually infrastructure, not algorithm."
 
-- **Nail 1 — scorer bridge down.** `ERROR: B200 eval server unreachable at
-  http://127.0.0.1:2232 ([Errno 111] Connection refused)`. Do not infer a score
+- **Nail 1 — scorer bridge down.** `ERROR: B200 eval server unreachable`.
+  Do not infer a score
   when the scorer is down — there is no measured link without it. Use
   `set -o pipefail` so a piped scorer failure cannot look successful. Recovery:
-  `kubectl port-forward pod/argus-kbench-evalsrv 2232:9000 --address 127.0.0.1`
-  then `curl -fsS http://127.0.0.1:2232/health`.
+  use the operator-provided bridge command, then
+  `curl -fsS "$KERNELBENCH_SCORER_URL/health"`.
 - **Nail 2 — baseline file was not a valid candidate.** Scorer said
   `candidate defines no ModelNew`. `baseline/*.py` has `Model`; `solutions/*.py`
   must define `ModelNew`. A "score" that is really a no-ModelNew error is a

@@ -10,6 +10,7 @@ flag ordering, or sandbox-mode semantics changed.
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -17,16 +18,23 @@ from .runner_backend import (
     BACKEND_CLAUDE,
     BACKEND_CODEX,
     BACKEND_COPILOT,
+    BACKEND_DSH,
+    BACKEND_GROK,
     BACKEND_OPENCODE,
     BACKEND_PI,
+    BACKEND_QODER,
+    CLAUDE_FAMILY,
     RunnerBackend,
 )
+
+log = logging.getLogger(__name__)
 
 # Shared with ``_prompt_delivery.py`` (the read-only OpenCode agent config
 # injected into the child env must name the same agent this builder selects
 # via ``--agent``).
 _OPENCODE_READ_ONLY_AGENT = "argus-read-only"
 _OPENCODE_FULL_ACCESS_AGENT = "argus-full-access"
+_OPENCODE_NO_TOOLS_AGENT = "argus-no-tools"
 
 
 def _pi_session_dir() -> str:
@@ -40,17 +48,91 @@ def _pi_session_dir() -> str:
 
 
 def _pi_model(model: str) -> str:
-    """Qualify a bare Pi model so duplicate provider catalogs are unambiguous."""
+    """Qualify a bare Pi model id ONLY when the operator named a provider.
+
+    Pi is a provider-agnostic front: ``--model`` resolves against whichever
+    catalogs are authenticated (DeepSeek, Anthropic, Azure, a local vLLM, a
+    Copilot proxy). This used to force a ``github-copilot/`` prefix, so every
+    Pi deployment that was NOT fronting Copilot failed on every single call
+    with ``No API key found for github-copilot`` — while ``pi --list-models``,
+    and therefore ``argus --doctor``, still reported the backend healthy.
+
+    Passing a bare id through is both correct and provider-neutral. The knob
+    stays for the one case Pi cannot resolve alone: two authenticated catalogs
+    carrying the same id (``claude-opus-5`` lives on both ``anthropic`` and a
+    Copilot proxy). ``argus --doctor`` names that collision — see
+    ``core.backend_readiness``.
+
+    中文：Pi 的 provider 由运维认证决定，Argus 不再替它假设 ``github-copilot``；
+    仅当运维显式配置 ``ARGUS_SKILL_PI_PROVIDER`` 时才加前缀。
+    """
     value = str(model or "").strip()
     if not value or "/" in value:
         return value
+    provider = _configured_provider("ARGUS_SKILL_PI_PROVIDER")
+    return f"{provider}/{value}" if provider else value
+
+
+def _opencode_model(model: str) -> str:
+    """Qualify a bare OpenCode model id, or return ``""`` when it must be dropped.
+
+    ``opencode run --model`` only accepts ``provider/id``, so a bare id cannot
+    be forwarded at all. Dropping it SILENTLY (the previous behaviour) made
+    every Argus model knob a no-op on this backend: OpenCode ran its own
+    default and nothing distinguished that from Argus honouring the setting.
+    Qualify when the operator named a provider; otherwise still drop, but say
+    so once.
+    """
+    value = str(model or "").strip()
+    if not value:
+        return ""
+    provider_part, separator, model_id = value.partition("/")
+    if separator:
+        # Already qualified — forward verbatim. A malformed half ("a/" or
+        # "/b") is not a usable selector, so it falls through to the warning.
+        if provider_part and model_id:
+            return value
+    else:
+        provider = _configured_provider("ARGUS_SKILL_OPENCODE_PROVIDER")
+        if provider:
+            return f"{provider}/{value}"
+    _warn_unqualified_model_once(BACKEND_OPENCODE, value)
+    return ""
+
+
+def _configured_provider(knob: str) -> str:
+    """Operator-configured provider prefix for a backend, or ``""`` if unset."""
     from ..core.knobs import resolve_knob
 
-    provider = resolve_knob(
-        "ARGUS_SKILL_PI_PROVIDER",
-        "github-copilot",
-    ).value.strip() or "github-copilot"
-    return f"{provider}/{value}"
+    return resolve_knob(knob, "").value.strip().strip("/")
+
+
+# Command construction runs once per provider call, so an unqualified model id
+# must not narrate itself into every log line. Warn once per (backend, model).
+_UNQUALIFIED_MODEL_WARNED: set[tuple[str, str]] = set()
+
+
+def _warn_unqualified_model_once(backend: str, model: str) -> None:
+    key = (backend, model)
+    if key in _UNQUALIFIED_MODEL_WARNED:
+        return
+    _UNQUALIFIED_MODEL_WARNED.add(key)
+    log.warning(
+        "%s cannot use the configured model %r: its `--model` requires a "
+        "provider-qualified id. Set ARGUS_SKILL_%s_PROVIDER, or configure the "
+        "model as 'provider/%s'. Until then %s runs its OWN default model and "
+        "the Argus model setting has no effect.",
+        backend,
+        model,
+        backend.upper(),
+        model,
+        backend,
+    )
+
+
+def reset_unqualified_model_warnings() -> None:
+    """Test seam: forget which unqualified-model warnings were already issued."""
+    _UNQUALIFIED_MODEL_WARNED.clear()
 
 
 _READ_ONLY_FLAG_SWITCHES = frozenset({
@@ -156,7 +238,8 @@ class CommandBuilderMixin:
     def _build_command(
         self, *, resume_thread_id: str | None, options
     ) -> list[str]:
-        if self.backend == BACKEND_CLAUDE:
+        if self.backend in CLAUDE_FAMILY:
+            # qoder is a Claude Code fork; it takes the same headless argv.
             return self._build_claude_command(resume_thread_id=resume_thread_id, options=options)
         if self.backend == BACKEND_COPILOT:
             return self._build_copilot_command(
@@ -170,28 +253,40 @@ class CommandBuilderMixin:
             return self._build_pi_command(
                 resume_thread_id=resume_thread_id, options=options
             )
+        if self.backend == BACKEND_GROK:
+            return self._build_grok_command(
+                resume_thread_id=resume_thread_id, options=options
+            )
+        if self.backend == BACKEND_DSH:
+            return self._build_dsh_command(
+                resume_thread_id=resume_thread_id, options=options
+            )
         return self._build_codex_command(resume_thread_id=resume_thread_id, options=options)
 
     def _apply_sandbox_policy(self, options):
-        """Gated, default-OFF containment chokepoint for codex builder roles.
+        """Apply the operator's single global access policy."""
+        import dataclasses
 
-        When ``ARGUS_SKILL_ENGINEER_SANDBOX`` is set, convert EVERY codex role
-        into ``-s <mode>`` confined to its workdir plus the writable allowlist,
-        clear the dangerous flags, and pin a ``-C`` (falling closed to a private
-        scratch dir when the caller passed no workdir, so the writable workspace
-        is NEVER the inherited cwd ``/``). This single chokepoint covers every
-        AgentCliRunner role (engineer / reviewer / planner / manager classify /
-        plan-mode), including ones that today fall through to codex's config
-        default (danger-full-access on the box) because they set neither
-        ``dangerous_yolo`` nor ``full_auto``. No-op when the gate is off, when an
-        explicit ``sandbox_mode`` was already chosen, or for non-codex backends —
-        so the default path stays byte-for-byte unchanged.
-        """
+        safe_mode = options.force_safe_mode or (
+            os.environ.get("ARGUS_SKILL_SAFE_MODE", "0").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        if not safe_mode:
+            return dataclasses.replace(
+                options,
+                sandbox_mode=None,
+                isolate_workdir=False,
+                dangerous_yolo=True,
+                full_auto=False,
+            )
         if self.backend in (
             BACKEND_CLAUDE,
             BACKEND_COPILOT,
+            BACKEND_GROK,
             BACKEND_OPENCODE,
             BACKEND_PI,
+            BACKEND_QODER,
+            BACKEND_DSH,
         ):
             return options
         if options.sandbox_mode is not None:
@@ -206,8 +301,6 @@ class CommandBuilderMixin:
         if mode is None:
             # Gate OFF: byte-for-byte legacy behaviour for EVERY role.
             return options
-        import dataclasses
-
         merged = list(dict.fromkeys([*(options.add_dirs or []), *writable_roots()]))
         # Fail closed: a sandboxed role with no -C would root its writable
         # workspace at the inherited cwd (the daemon's "/"). Pin a contained dir.
@@ -297,28 +390,37 @@ class CommandBuilderMixin:
     def _build_claude_command(
         self, *, resume_thread_id: str | None, options
     ) -> list[str]:
-        command = [
-            self.agent_bin,
-            "-p",
-            "--verbose",
-            "--output-format",
-            "stream-json",
-        ]
+        command = [self.agent_bin, "-p"]
+        # qodercli is a Claude Code fork that shares claude's headless surface
+        # but differs on three flags: it REJECTS --verbose, spells reasoning
+        # effort as --reasoning-effort (claude uses --effort), and takes
+        # snake_case permission modes (bypass_permissions / accept_edits).
+        is_qoder = self.backend == BACKEND_QODER
+        if not is_qoder:
+            command.append("--verbose")
+        command.extend(["--output-format", "stream-json"])
         if options.model:
             command.extend(["--model", options.model])
         if options.reasoning_effort:
-            effort = (
-                "high"
-                if options.reasoning_effort == "xhigh"
-                else options.reasoning_effort
+            # Both Claude and Qoder accept the full configured effort range.
+            command.extend(
+                ["--reasoning-effort" if is_qoder else "--effort",
+                 options.reasoning_effort]
             )
-            command.extend(["--effort", effort])
-        if options.sandbox_mode == "read-only":
+        if options.disable_tools:
+            command.extend(["--tools", ""])
+        elif options.sandbox_mode == "read-only":
             command.extend(["--tools", "Read,Glob,Grep"])
         elif options.dangerous_yolo:
-            command.extend(["--permission-mode", "bypassPermissions"])
+            command.extend([
+                "--permission-mode",
+                "bypass_permissions" if is_qoder else "bypassPermissions",
+            ])
         elif options.full_auto:
-            command.extend(["--permission-mode", "acceptEdits"])
+            command.extend([
+                "--permission-mode",
+                "accept_edits" if is_qoder else "acceptEdits",
+            ])
         # --add-dir
         if options.add_dirs:
             for dir_path in options.add_dirs:
@@ -375,7 +477,9 @@ class CommandBuilderMixin:
                 "--no-custom-instructions",
                 "--disable-builtin-mcps",
             ])
-        if options.sandbox_mode == "read-only":
+        if options.disable_tools:
+            command.extend(["--available-tools=", "--deny-tool=*"])
+        elif options.sandbox_mode == "read-only":
             command.extend([
                 "--available-tools", "view,rg,glob",
                 "--allow-tool", "view,rg,glob",
@@ -425,15 +529,16 @@ class CommandBuilderMixin:
         options,
     ) -> list[str]:
         command = [self.agent_bin, "run", "--format", "json"]
-        model = str(options.model or "").strip()
-        provider, separator, model_id = model.partition("/")
-        if separator and provider and model_id:
+        model = _opencode_model(options.model)
+        if model:
             command.extend(["--model", model])
         if options.reasoning_effort:
             command.extend(["--variant", options.reasoning_effort])
         if options.working_dir:
             command.extend(["--dir", options.working_dir])
-        if options.sandbox_mode == "read-only":
+        if options.disable_tools:
+            command.extend(["--agent", _OPENCODE_NO_TOOLS_AGENT])
+        elif options.sandbox_mode == "read-only":
             command.extend(["--agent", _OPENCODE_READ_ONLY_AGENT])
         elif options.dangerous_yolo or options.full_auto:
             command.extend(["--agent", _OPENCODE_FULL_ACCESS_AGENT])
@@ -474,8 +579,8 @@ class CommandBuilderMixin:
         else:
             command.extend(["--session-dir", _pi_session_dir()])
         command.extend([
-            # Argus supplies the complete role prompt and owns tool policy. Do
-            # not let interactive Pi packages or project context alter it.
+            # Disable ambient resources. Explicit ``--skill`` paths below remain
+            # additive, so only the current Argus role libraries are visible.
             "--no-extensions",
             "--no-skills",
             "--no-prompt-templates",
@@ -483,11 +588,15 @@ class CommandBuilderMixin:
             "--no-context-files",
             "--no-approve",
         ])
+        for path in options.skill_paths or []:
+            command.extend(["--skill", path])
         if options.model:
             command.extend(["--model", _pi_model(options.model)])
         if options.reasoning_effort:
             command.extend(["--thinking", options.reasoning_effort])
-        if options.sandbox_mode == "read-only":
+        if options.disable_tools:
+            command.append("--no-tools")
+        elif options.sandbox_mode == "read-only":
             command.extend(["--tools", "read,grep,find,ls"])
         merged_extra_args = [*self.default_extra_args]
         if options.extra_args:
@@ -504,3 +613,98 @@ class CommandBuilderMixin:
         # Pi reads non-TTY stdin into the initial message in JSON mode. Keeping
         # the prompt out of argv avoids E2BIG and process-list disclosure.
         return command
+
+    def _build_grok_command(
+        self,
+        *,
+        resume_thread_id: str | None,
+        options,
+    ) -> list[str]:
+        """Build a Grok Build headless turn using its Messages-compatible stream."""
+        if options.isolate_workdir:
+            raise ValueError(
+                "isolated Grok calls are not supported because Grok authentication "
+                "and session state are intentionally hidden by worktree isolation"
+            )
+        command = [
+            self.agent_bin,
+            "--no-auto-update",
+            "--output-format",
+            "streaming-messages-json",
+            "--verbatim",
+        ]
+        if options.working_dir:
+            command.extend(["--cwd", options.working_dir])
+        if options.model:
+            command.extend(["--model", options.model])
+        if options.reasoning_effort:
+            command.extend(["--reasoning-effort", options.reasoning_effort])
+        if options.disable_tools:
+            command.extend(["--tools", ""])
+        elif options.sandbox_mode == "read-only":
+            command.extend(["--tools", "read_file,grep,list_dir"])
+        elif options.dangerous_yolo or options.full_auto:
+            command.append("--yolo")
+        merged_extra_args = [*self.default_extra_args]
+        if options.extra_args:
+            merged_extra_args.extend(options.extra_args)
+        if options.sandbox_mode == "read-only":
+            merged_extra_args = _read_only_extra_args(
+                merged_extra_args,
+                backend=BACKEND_GROK,
+            )
+        if merged_extra_args:
+            command.extend(merged_extra_args)
+        if resume_thread_id:
+            command.extend(["--resume", resume_thread_id])
+        # PromptDeliveryMixin appends --prompt-file with a private temporary file.
+        return command
+
+
+    def _build_dsh_command(
+        self,
+        *,
+        resume_thread_id: str | None,
+        options,
+    ) -> list[str]:
+        """Build a DeepSeek Harness one-shot turn.
+
+        dsh has no stream-json surface, no session resume, and no model flag:
+        its headless profile runs one full agent turn and prints only the
+        final assistant text (exit 0 on completion; see
+        ``_finalize_turn_result`` in ``_run_exec.py``). The per-role model
+        rides in through the env-driven overlay attached via ``--patch``
+        (``ARGUS_DSH_PROVIDER`` / ``ARGUS_DSH_MODEL``) and the role's access
+        policy through ``DSH_PERMISSION_MODE`` (see ``_apply_dsh_env`` in
+        ``_prompt_delivery.py``). ``resume_thread_id`` is intentionally
+        ignored: the headless runner creates a fresh session per boot, and
+        round context travels in the prompt instead. The task positional is
+        appended by ``_prepare_prompt_delivery``.
+        """
+        command = [
+            self.agent_bin,
+            "--profile",
+            "headless",
+            "--patch",
+            _dsh_overlay_patch_path(),
+        ]
+        merged_extra_args = [*self.default_extra_args]
+        if options.extra_args:
+            merged_extra_args.extend(options.extra_args)
+        if options.sandbox_mode == "read-only":
+            merged_extra_args = _read_only_extra_args(
+                merged_extra_args,
+                backend=BACKEND_DSH,
+            )
+        if merged_extra_args:
+            command.extend(merged_extra_args)
+        return command
+
+def _dsh_overlay_patch_path() -> str:
+    """Path of the env-driven overlay attached to every dsh headless boot.
+
+    The overlay re-targets the deployment default model from
+    ``ARGUS_DSH_PROVIDER`` / ``ARGUS_DSH_MODEL`` and pins the approval
+    policy; see the file itself for the evaluated rows.
+    """
+    return str(Path(__file__).parent / "_dsh_overlay.patch.yml")

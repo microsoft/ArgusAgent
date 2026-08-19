@@ -2,21 +2,94 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from ...core.model_visible_text import sanitize_model_visible_text
-from ..task_contract import EFFECTIVE_TASK_CONTRACT
+from ...core.role_decision import decision_event_instruction
+from ..task_contract import (
+    EFFECTIVE_TASK_CONTRACT,
+    native_shell_contract,
+    native_shell_summary,
+)
 from .types import RoleName, RolePromptRequest
 
 MISSION = "mission"
 OPERATIONS = frozenset({MISSION})
+_MANAGER_GROUNDING_HEADER = "\n\n## Manager project grounding (advisory evidence)\n"
 
-_LONG_EXPERIMENT_RULE = (
-    "Commands expected to run over two minutes must follow "
-    "`docs/LIVE_EXPERIMENT_PROTOCOL.md`: launch the supervised subagent, "
-    "record its run id, and yield or do independent work. Never hold this "
-    "provider turn open with foreground bash, `read_bash`, or polling."
+_POSIX_LONG_EXPERIMENT_RULE = (
+    "For commands over two minutes, use Argus's durable runner: "
+    "`\"${ARGUS_SKILL_PYTHON:-python3}\" -m "
+    "argus_skill.tools.subagent submit --task-id <id> --mode direct "
+    "--timeout <seconds> --command '<command>'`. Use `--mode supervised` only when "
+    "semantic monitoring is needed. Do not use `task(mode=\"background\")` or a "
+    "session-owned background shell. Keep the "
+    "`state=submitted`, `task_id`, `run_id`, and `check_with` receipt. On "
+    "`state=discussing`, answer with `reply_with`; do not poll in the foreground."
 )
+_PERFORMANCE_DIAGNOSTIC_TASK = re.compile(
+    r"\b(?:throughput|latency|performance|bottleneck|profil(?:e|ing|er)?|"
+    r"resource|cpu|gpu|scal(?:e|ing|ability)|benchmark)\b|"
+    r"吞吐|性能|瓶颈|延迟|剖析",
+    re.IGNORECASE,
+)
+_AUDIT_FIDELITY_TASK = re.compile(
+    r"\b(?:audit|ledger|command[ _-]?log|process[ _-]?trace|append[ _-]?only|"
+    r"provenance)\b|审计|账本|问题记录|命令日志|过程记录|只追加|来源归因",
+    re.IGNORECASE,
+)
+
+
+def _audit_fidelity_section(task: str) -> str:
+    if not _AUDIT_FIDELITY_TASK.search(task):
+        return ""
+    return (
+        "## Audit fidelity\n"
+        "An objective or inherited summary is a requirement, not observed evidence. "
+        "Attribute a fact to it only when the cited text actually says that fact; "
+        "otherwise label the claim unverified until a command or immutable artifact "
+        "establishes it. If the operator freezes mutation or names a ledger append-only, "
+        "stop installs and repairs immediately: never replace that file, even after "
+        "copying or archiving it; add a correction only through a verified append path. "
+        "Capture each result-bearing shell command byte-faithfully in a sidecar before "
+        "summarizing it. Do not embed Markdown backticks in an unquoted heredoc: use a "
+        "single-quoted delimiter or a literal file API, and judge inner stderr/status "
+        "rather than trusting an outer shell exit 0."
+    )
+
+
+def _performance_diagnostic_section(task: str) -> str:
+    if not _PERFORMANCE_DIAGNOSTIC_TASK.search(task):
+        return ""
+    return (
+        "## Performance diagnosis\n"
+        "An end-to-end threshold miss only shows that this run missed its target. Before "
+        "claiming a root cause, dominant/bottleneck stage, or replacement "
+        "architecture, inspect the code hot path and live resource/wait state, then "
+        "obtain phase timing/profiling or a controlled A/B that explains a material "
+        "share of elapsed time. Otherwise say that the cause is still unclear, "
+        "continue the diagnosis, and do not promote the hypothesis into a Skill."
+    )
+
+_WINDOWS_LONG_EXPERIMENT_RULE = (
+    "For commands over two minutes on native Windows, use Windows PowerShell 5.1 syntax "
+    "and Argus's durable runner: "
+    "`& '.\\.venv\\Scripts\\python.exe' -m argus_skill.tools.subagent submit "
+    "--task-id '<id>' --mode direct --timeout '<seconds>' --command '<command>'`. "
+    "Use `--mode supervised` only for semantic monitoring. Do not use "
+    "`task(mode=\"background\")` or a session-owned background shell. Keep the "
+    "`state=submitted`, `task_id`, `run_id`, and `check_with` receipt. On "
+    "`state=discussing`, answer with `reply_with`; do not poll in the foreground."
+)
+
+
+def _long_experiment_rule() -> str:
+    return (
+        _WINDOWS_LONG_EXPERIMENT_RULE
+        if native_shell_contract()
+        else _POSIX_LONG_EXPERIMENT_RULE
+    )
 
 
 def append_live_guidance(prompt: str, guidance: list[str]) -> str:
@@ -56,6 +129,28 @@ def assemble_round_prompt(
     return sanitize_model_visible_text(prompt + "\n\n" + "\n\n".join(tail))
 
 
+def _deduplicated_original_request(original_request: str, task: str) -> str:
+    original = original_request.strip()
+    current = task.strip()
+    if not original or original == current:
+        return ""
+    if (
+        _MANAGER_GROUNDING_HEADER in original
+        and _MANAGER_GROUNDING_HEADER in current
+    ):
+        original_base, original_grounding = original.split(
+            _MANAGER_GROUNDING_HEADER,
+            1,
+        )
+        _current_base, current_grounding = current.split(
+            _MANAGER_GROUNDING_HEADER,
+            1,
+        )
+        if original_grounding.strip() == current_grounding.strip():
+            original = original_base.strip()
+    return "" if original == current else original
+
+
 def _post_task_learning_section(
     *,
     require_post_task_learning: bool,
@@ -63,10 +158,9 @@ def _post_task_learning_section(
 ) -> str:
     """Render the Engineer's own durable-learning contract.
 
-    The Engineer ends the task holding the full execution context, so it is the
-    cheapest place to retain a reusable procedure. Roles edit the project skill
-    layer directly with their file tools; the legacy ``skill_action`` control
-    channel no longer exists, so the contract must name the directory.
+    The Engineer ends the task with the full execution context, making it the
+    right place to retain a reusable procedure. Roles edit the project Skill
+    layer directly, so the contract names the destination explicitly.
     """
     if not require_post_task_learning or project_skill_dir is None:
         return ""
@@ -80,7 +174,11 @@ def _post_task_learning_section(
         "done, create or update the applicable Engineer Skills directly in the "
         "project skill directory before you hand off.\n"
         + rules
-        + "\nIf there is no durable reusable procedure, make no Skill edit."
+        + "\nDo not turn task-specific hypotheses, causal attributions, failed "
+        "attempts, or replacement recommendations into Skills unless phase "
+        "attribution/profiling or a controlled comparison verified the causal rule. "
+        "Keep inconclusive findings out of Skills.\n"
+        "If there is no durable reusable procedure, make no Skill edit."
     )
 
 
@@ -93,25 +191,38 @@ def build_mission_prompt(
     include_static: bool = True,
     role_banner: str = "",
     require_post_task_learning: bool = False,
-    file_read_budget: int = 12,
-    test_run_budget: int = 3,
     project_root: Path | str | None = None,
     project_skill_dir: Path | str | None = None,
 ) -> str:
     """Build the complete per-round Engineer mission prompt."""
     sections: list[str] = [EFFECTIVE_TASK_CONTRACT]
+    shell_contract = native_shell_contract()
+    shell_summary = native_shell_summary()
+    if shell_summary:
+        sections.append(shell_summary)
     delta_sections: list[str] = []
     if role_banner.strip():
         sections.append("## Active vertical role\n" + role_banner.strip())
     if skill_text:
-        sections.append("## Skill library paths\n" + skill_text)
-    if original_request.strip():
+        sections.append(skill_text)
+    unique_original_request = _deduplicated_original_request(
+        original_request,
+        task,
+    )
+    if unique_original_request:
         sections.append(
             "## Original operator request\n"
             "Higher-priority live operator instructions may update this; "
-            "lower-authority guidance may not silently change it.\n\n" + original_request.strip()
+            "lower-authority guidance may not silently change it.\n\n"
+            + unique_original_request
         )
     sections.append("## Current mission task\n" + task)
+    diagnostic_block = _performance_diagnostic_section(task)
+    if diagnostic_block:
+        sections.append(diagnostic_block)
+    audit_fidelity_block = _audit_fidelity_section(task)
+    if audit_fidelity_block:
+        sections.append(audit_fidelity_block)
     # The Engineer is the role that can most easily satisfy a task while
     # missing the requirement the task exists to serve — the mission text
     # describes this increment, not what the operator agreed "done" means.
@@ -140,17 +251,19 @@ def build_mission_prompt(
         )
     sections.append(
         "## This turn\n"
-        "Land one coherent, verifiable increment; update "
-        "CHECKPOINT.md, then yield. Pure reading without an artifact or "
-        "measurement is not progress.\n"
-        "Work in the current directory. Unless required, do not write "
-        "planning/spec/brief documents, initialize Git, branch/worktree, commit, "
-        "spawn subagents, or invoke meta-workflows.\n"
-        f"Budget: inspect about {max(1, int(file_read_budget))} relevant files "
-        "before editing and avoid rereads; run at most "
-        f"{max(1, int(test_run_budget))} focused verification commands plus the "
-        "decisive verifier. Exceed only after a concrete failure or code change. "
-        "Use `.autors/*/wiki` only for durable declarative knowledge.\n" + _LONG_EXPERIMENT_RULE
+        "Own this task end to end. Plan your own steps, use tools, and iterate until "
+        "the task passes its check or reaches a real blocker. Work in the current "
+        "directory; pure reading without an artifact or measurement is not progress. "
+        "Write only the code this task needs; do not add hashes, UUIDs, retries, "
+        "fallbacks, locks, or abstractions without a concrete requirement. "
+        "Unless required, do not write planning/spec/brief documents, initialize Git, "
+        "branch/worktree, commit, or spawn subagents. Use subagents for operator-requested "
+        "parallelism or useful independent work.\n"
+        "Never repeat unchanged checks/reads; batch tools and cap results at 200 "
+        "lines. At 18 tool calls, synthesize or checkpoint/yield; never exceed 24.\n"
+        "Use primary sources when external behavior matters. If repeated attempts fail, "
+        "recheck the underlying assumption instead of making another cosmetic tweak.\n"
+        + _long_experiment_rule()
     )
     learning_block = _post_task_learning_section(
         require_post_task_learning=require_post_task_learning,
@@ -160,20 +273,16 @@ def build_mission_prompt(
         sections.append(learning_block)
     sections.append(
         "## Handoff\n"
-        "If you changed code, build it before you call the work finished: "
-        "compile or type-check the packages you touched, not just the tests you "
-        "happened to run. The tests in front of you are not necessarily the "
-        "tests you are judged on, so a rename, a signature, or an import you "
-        "left unreconciled can still break the build for whoever compiles it "
-        "next. It costs seconds and is the cheapest failure to catch before the "
-        "independent Reviewer examines the round.\n"
-        "An empty `git diff` is evidence only for tracked paths: check with "
-        "`git ls-files --error-unmatch -- <path>` first. For untracked or "
-        "outside-repository artifacts, verify their direct content instead.\n"
-        "End with a short, natural account of what changed and the decisive "
-        "check or observation. Do not recite a checklist or build an evidence "
-        "packet; include only details the next researcher needs. A fresh Reviewer "
-        "handles acceptance; do not spawn a Reviewer subagent.\n"
+        "CHECKPOINT.md is the only role-maintained cross-round handoff file; do not create "
+        "handoff or evidence packets. Host invokes Reviewer only when required; do not "
+        "spawn a Reviewer subagent. Normally set next_owner=reviewer. Use operator only "
+        "for a real operator decision; include one operator_question and at most five "
+        "operator_options; that parks the task, so record it and yield.\n\n"
+        + decision_event_instruction(
+            "engineer",
+            '{"status":"done","result":"what changed and the decisive check",'
+            '"next_owner":"reviewer"}',
+        )
     )
     static_text = "\n\n".join(sections)
     delta_text = "\n\n".join(delta_sections)
@@ -183,16 +292,27 @@ def build_mission_prompt(
         )
     compact = (
         "## Continuation turn\n"
-        "Read the shared CHECKPOINT.md first. Execute its current Next Action "
-        "and the Reviewer guidance below. Do not repeat an unchanged failing "
-        "command; reduce it to the cheapest decisive diagnostic. The original "
-        "task, active vertical, and repository instructions remain binding.\n"
-        + _LONG_EXPERIMENT_RULE
+        "Read CHECKPOINT.md, then execute the Reviewer next action. Do not repeat an "
+        "unchanged failure; use the cheapest decisive diagnostic. The original task "
+        "still applies.\n"
+        + _long_experiment_rule()
         + "\n\n"
         "## Handoff\n"
-        "End with a concise natural summary and decisive check. If you changed "
-        "code, build the packages you touched before calling it done."
+        "Use next_owner=operator only for an operator-owned choice; its question "
+        "parks the task. Include operator_question and operator_options in that "
+        "decision.\n"
+        + decision_event_instruction(
+            "engineer",
+            '{"status":"done","result":"short result and decisive check",'
+            '"next_owner":"reviewer"}',
+        )
     )
+    if diagnostic_block:
+        compact = diagnostic_block + "\n\n" + compact
+    if audit_fidelity_block:
+        compact = audit_fidelity_block + "\n\n" + compact
+    if shell_contract:
+        compact = shell_contract + "\n\n" + compact
     if learning_block:
         compact += "\n\n" + learning_block
     return sanitize_model_visible_text(
@@ -200,11 +320,16 @@ def build_mission_prompt(
     )
 
 
-def mission_request(project_root: Path | str) -> RolePromptRequest:
+def mission_request(
+    project_root: Path | str,
+    *,
+    vertical: str | None = None,
+) -> RolePromptRequest:
     return RolePromptRequest(
         role=RoleName.ENGINEER,
         operation=MISSION,
         project_root=project_root,
+        vertical=vertical,
     )
 
 

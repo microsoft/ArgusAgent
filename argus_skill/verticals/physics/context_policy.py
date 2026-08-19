@@ -80,10 +80,12 @@ def _summarize_json(root: Path, rel: str, keys: tuple[str, ...]) -> str:
 
 def build_context_digest(project_root: object) -> str:
     """A compact digest: current stage/tier, closure summary, and artifact POINTERS."""
+    from ...core.pipeline_state import read_pipeline_state
+
     root = Path(str(project_root or "."))
     state = {}
     try:
-        state = json.loads((root / "research" / "PIPELINE_STATE.json").read_text(encoding="utf-8"))
+        state = read_pipeline_state(root)
     except (OSError, ValueError):
         state = {}
     lines = [

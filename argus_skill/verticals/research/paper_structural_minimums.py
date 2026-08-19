@@ -597,7 +597,7 @@ def _read_bib(paper_dir: Path) -> tuple[int, set[str]]:
 
 
 def validate_paper_structural_minimums(project_root: Path) -> StructuralReport:
-    from ...skills.venue_profiles import resolve_venue_profile
+    from .venue_profiles import resolve_venue_profile
 
     venue = None
     venue_error: KeyError | None = None

@@ -15,6 +15,7 @@ import threading
 import time
 from pathlib import Path
 
+import portalocker
 import pytest
 
 from argus_skill.core import knob_store
@@ -99,15 +100,14 @@ def test_concurrent_writes_serialize_the_full_read_modify_write(
     }
 
 
-@pytest.mark.skipif(knob_store.fcntl is None, reason="requires POSIX flock")
 def test_writer_waits_for_cross_process_lock() -> None:
     from argus_skill.core.paths import config_path
 
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(".lock")
-    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-    knob_store.fcntl.flock(lock_fd, knob_store.fcntl.LOCK_EX)
+    lock_handle = lock_path.open("a+b")
+    portalocker.lock(lock_handle, portalocker.LOCK_EX)
     ctx = multiprocessing.get_context("spawn")
     ready = ctx.Event()
     process = ctx.Process(
@@ -121,8 +121,8 @@ def test_writer_waits_for_cross_process_lock() -> None:
         assert process.is_alive()
         assert not path.exists()
     finally:
-        knob_store.fcntl.flock(lock_fd, knob_store.fcntl.LOCK_UN)
-        os.close(lock_fd)
+        portalocker.unlock(lock_handle)
+        lock_handle.close()
     process.join(timeout=5)
 
     assert process.exitcode == 0

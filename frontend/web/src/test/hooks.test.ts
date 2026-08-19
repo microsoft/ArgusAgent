@@ -70,6 +70,30 @@ describe('project-scoped event stream', () => {
     expect(replayedOldEvent.seen.size).toBe(2_000);
   });
 
+  it('preserves live events received before the REST seed resolves', () => {
+    const initial = {
+      sid: 's-current',
+      events: [] as EventMsg[],
+      seen: new Set<string>(),
+    };
+    const live = { type: 'round.review.completed', event_id: 'live' } as EventMsg;
+    const historical = { type: 'round.start', event_id: 'history' } as EventMsg;
+    const pushed = streamReducer(initial, {
+      kind: 'push',
+      sid: 's-current',
+      ev: live,
+    });
+
+    const seeded = streamReducer(pushed, {
+      kind: 'seed',
+      sid: 's-current',
+      events: [historical, live],
+    });
+
+    expect(seeded.events.map((event) => event.event_id)).toEqual(['history', 'live']);
+    expect(seeded.seen.size).toBe(2);
+  });
+
   it('requests an immediate artifact refresh for live-view and file events', () => {
     const unchanged = artifactRefreshEventKey([
       { type: 'engineer.progress', kind: 'assistant_message', ts: 1 } as EventMsg,

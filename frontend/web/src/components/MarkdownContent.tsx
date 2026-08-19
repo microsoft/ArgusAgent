@@ -1,6 +1,15 @@
-import { useState } from 'react';
+import { Children, isValidElement, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { CopyButton } from './CopyButton';
+import { useI18n } from '../i18n';
+
+function nodeText(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(nodeText).join('');
+  if (isValidElement<{ children?: ReactNode }>(node)) return nodeText(node.props.children);
+  return '';
+}
 
 function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
   const [failed, setFailed] = useState(false);
@@ -20,6 +29,7 @@ function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
 }
 
 export function MarkdownContent({ children }: { children: string }) {
+  const { t } = useI18n();
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -51,7 +61,17 @@ export function MarkdownContent({ children }: { children: string }) {
             </code>
           );
         },
-        pre: ({ children: value }) => <pre className="my-2 max-w-full overflow-x-hidden whitespace-pre-wrap break-words rounded-lg border border-line/50 bg-bg p-3">{value}</pre>,
+        pre: ({ children: value }) => (
+          <pre className="group/code relative my-2 max-w-full overflow-x-hidden whitespace-pre-wrap break-words rounded-lg border border-line/50 bg-bg px-3 pb-3 pt-10">
+            <CopyButton
+              text={Children.toArray(value).map(nodeText).join('')}
+              label={t('copy.code')}
+              copiedLabel={t('copy.copied')}
+              className="absolute right-2 top-2"
+            />
+            {value}
+          </pre>
+        ),
         table: ({ children: value }) => <table className="my-2 w-full table-fixed border-collapse text-left text-xs">{value}</table>,
         th: ({ children: value }) => <th className="break-words border border-line/60 bg-bg px-2 py-1.5 font-semibold text-ink">{value}</th>,
         td: ({ children: value }) => <td className="break-words border border-line/60 px-2 py-1.5 align-top">{value}</td>,

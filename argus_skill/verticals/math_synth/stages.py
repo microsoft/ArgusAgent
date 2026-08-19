@@ -21,10 +21,11 @@ import re
 import statistics
 from pathlib import Path
 
-from ..speedrun.stages import (  # noqa: F401  (re-exported as this vertical's contract)
-    CHECKLIST_ITEMS,
-    CHECKLIST_STAGE_ORDER,
-)
+from ..optimization_base import speedrun_base_contract
+
+_BASE = speedrun_base_contract()
+CHECKLIST_STAGE_ORDER = _BASE.stage_order
+CHECKLIST_ITEMS = _BASE.checklist_items
 
 #: Mechanical metric gate (not a paper): the supervisor stops when the score
 #: stops improving, not on paper-completeness.
@@ -32,7 +33,7 @@ completion_gate = "metric"
 
 STAGE_ORDER = ["setup", "optimize", "measure", "report"]
 
-_PIPELINE_CHECK = ("Pipeline state present", "test -f research/PIPELINE_STATE.json")
+_PIPELINE_CHECK = ("Pipeline state present", "test -f .argus/PIPELINE_STATE.json")
 
 
 #: The productive, mechanism-CHANGING axes for raising the pass-gap, biggest-

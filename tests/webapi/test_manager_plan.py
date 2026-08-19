@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from argus_skill.manager.plan_mode import Plan, PlanStep
-from argus_skill.webapi import manager_bridge
+from argus_skill.webapi import manager_bridge, manager_state
 
 
 def test_plan_preview_uses_lightweight_role_config_and_caches_exact_repeat(
@@ -11,7 +11,7 @@ def test_plan_preview_uses_lightweight_role_config_and_caches_exact_repeat(
 ) -> None:
     sid = "s-plan-fast"
     (tmp_path / "projects" / sid).mkdir(parents=True)
-    manager_bridge._STATES.clear()
+    manager_state._STATES.clear()
     monkeypatch.setenv("ARGUS_SKILL_HOME", str(tmp_path))
     monkeypatch.setenv("ARGUS_SKILL_PLAN_MODEL", "planner-deep-model")
     monkeypatch.delenv("ARGUS_SKILL_PLAN_PREVIEW_MODEL", raising=False)
@@ -56,7 +56,7 @@ def test_plan_preview_uses_lightweight_role_config_and_caches_exact_repeat(
 def test_plan_preview_effort_has_explicit_override(tmp_path, monkeypatch) -> None:
     sid = "s-plan-effort"
     (tmp_path / "projects" / sid).mkdir(parents=True)
-    manager_bridge._STATES.clear()
+    manager_state._STATES.clear()
     monkeypatch.setenv("ARGUS_SKILL_HOME", str(tmp_path))
     monkeypatch.setenv("ARGUS_SKILL_PLAN_PREVIEW_MODEL", "preview-model")
     monkeypatch.setenv("ARGUS_SKILL_PLAN_PREVIEW_REASONING_EFFORT", "medium")
@@ -83,7 +83,7 @@ def test_plan_preview_auto_inherits_planner_model_on_claude(
 ) -> None:
     sid = "s-plan-claude"
     (tmp_path / "projects" / sid).mkdir(parents=True)
-    manager_bridge._STATES.clear()
+    manager_state._STATES.clear()
     monkeypatch.setenv("ARGUS_SKILL_HOME", str(tmp_path))
     monkeypatch.setenv("ARGUS_SKILL_PLANNER_BACKEND", "claude")
     monkeypatch.setenv("ARGUS_SKILL_PLAN_MODEL", "claude-sonnet-test")

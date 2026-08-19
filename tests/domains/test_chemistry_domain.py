@@ -164,7 +164,7 @@ def test_research_owns_workflow_when_chemistry_is_active(tmp_path: Path) -> None
     persist_vertical(tmp_path, "research", domain="chemistry")
 
     payload = json.loads(
-        (tmp_path / "research" / "PIPELINE_STATE.json").read_text(encoding="utf-8")
+        (tmp_path / ".argus" / "PIPELINE_STATE.json").read_text(encoding="utf-8")
     )
     research = load_vertical("research", project_root=tmp_path)
 
@@ -183,7 +183,7 @@ def test_research_owns_workflow_when_chemistry_is_active(tmp_path: Path) -> None
         "review",
         "submission",
     )
-    assert vertical_completion_gate(research) == "full_paper"
+    assert vertical_completion_gate(research) == "certified"
 
 
 def test_non_research_vertical_rejects_domain(tmp_path: Path) -> None:
@@ -196,7 +196,7 @@ def test_switching_to_non_research_clears_domain(tmp_path: Path) -> None:
     persist_vertical(tmp_path, "software")
 
     payload = json.loads(
-        (tmp_path / "research" / "PIPELINE_STATE.json").read_text(encoding="utf-8")
+        (tmp_path / ".argus" / "PIPELINE_STATE.json").read_text(encoding="utf-8")
     )
     assert payload["vertical"] == "software"
     assert "domain" not in payload
@@ -210,7 +210,7 @@ def test_domain_role_context_composes_with_research_prompt(tmp_path: Path) -> No
     engineer_banner = domain_role_banner(chemistry, "engineer")
 
     assert context.vertical == "research"
-    assert context.completion_gate == "full_paper"
+    assert context.completion_gate == "certified"
     assert engineer_banner in context.role_banner
     assert "Load the narrowest matched domain Skill" in engineer_banner
     assert "domain:chemistry:banner:engineer" in context.fragment_ids

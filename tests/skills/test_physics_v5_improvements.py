@@ -19,8 +19,8 @@ from argus_skill.verticals.physics.gates import paper_type as pt
 
 
 def _seed_stage(root: Path, stage: str) -> None:
-    (root / "research").mkdir(parents=True, exist_ok=True)
-    (root / "research" / "PIPELINE_STATE.json").write_text(
+    (root / ".argus").mkdir(parents=True, exist_ok=True)
+    (root / ".argus" / "PIPELINE_STATE.json").write_text(
         json.dumps({"current_stage": stage, "vertical": "physics"}), encoding="utf-8")
 
 

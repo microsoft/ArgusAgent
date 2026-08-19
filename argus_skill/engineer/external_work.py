@@ -7,12 +7,13 @@ acceptance.
 from __future__ import annotations
 
 import json
-import os
 import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
+
+from ..core.daemon_lock import is_pid_running
 
 EXTERNAL_WORK_REGISTRY = ".argus_external_work"
 EXTERNAL_WORK_PROTOCOL_VERSION = 1
@@ -48,6 +49,8 @@ class ExternalWorkStatus:
     reason: str = ""
     evidence_paths: tuple[str, ...] = ()
     activity_paths: tuple[str, ...] = ()
+    run_id: str = ""
+    started_at: float = 0.0
 
     @property
     def waitable(self) -> bool:
@@ -77,21 +80,11 @@ def _safe_relative_paths(value: object) -> tuple[str, ...]:
 
 
 def _pid_alive(pid: object) -> bool:
-    if pid is None:
-        return True
     try:
         value = int(str(pid).strip())
     except (TypeError, ValueError):
-        return True
-    if value <= 0:
-        return True
-    try:
-        os.kill(value, 0)
-        return True
-    except ProcessLookupError:
         return False
-    except (PermissionError, OSError):
-        return True
+    return is_pid_running(value)
 
 
 def _registry_files(workdir: Path | str, directory: str) -> list[Path]:
@@ -185,17 +178,31 @@ def _subagent_status(
     concern = " ".join(str(
         record.get("last_supervisor_concern") or record.get("concern") or ""
     ).split())
+    worker_alive = _pid_alive(record.get("worker_pid", record.get("pid")))
+    child_alive = _pid_alive(record.get("pid"))
+    exit_status_path = str(record.get("exit_status_path") or "").strip()
+    exit_status_exists = bool(
+        exit_status_path and Path(exit_status_path).is_file()
+    )
     if state_value not in _SUBAGENT_INFLIGHT_STATES:
         state = ExternalWorkState.TERMINAL
         reason = f"subagent state={state_value or 'unknown'}"
-    elif not _pid_alive(record.get("worker_pid", record.get("pid"))):
+    elif mode == "direct" and exit_status_exists:
+        state = ExternalWorkState.TERMINAL
+        reason = "direct subagent exit receipt is present"
+    elif mode == "direct" and not (worker_alive or child_alive):
+        state = ExternalWorkState.STALLED
+        reason = "direct subagent owner and durable child are not alive"
+    elif mode != "direct" and not worker_alive:
         state = ExternalWorkState.STALLED
         reason = "subagent worker process is not alive"
-    elif heartbeat_at <= 0 or now - heartbeat_at > stale_after:
+    elif mode == "supervised" and (
+        heartbeat_at <= 0 or now - heartbeat_at > stale_after
+    ):
         state = ExternalWorkState.STALLED
         reason = "subagent supervisor heartbeat is stale"
     elif (
-        mode != "supervised"
+        mode not in {"direct", "supervised"}
         or state_value == "discussing"
         or health in _SUBAGENT_DEGRADED_HEALTH
         or concern.lower().strip(".") not in {
@@ -221,6 +228,8 @@ def _subagent_status(
         outcome=str(record.get("outcome") or decision).strip()[:200],
         reason=reason,
         evidence_paths=_safe_relative_paths(record.get("evidence_paths")),
+        run_id=str(record.get("run_id") or "").strip()[:240],
+        started_at=_coerce_float(record.get("started_at"), 0.0),
     )
 
 
@@ -363,6 +372,6 @@ def render_external_work_advisory(
             "If all remaining work depends on one RUNNING_HEALTHY item, end your response with one JSON line:",
             '    {"wait_for": "external_work", "wait_id": "<work_id>"}',
             'Use "subagent" instead of "external_work" for a listed subagent.',
-            "Argus will pause progress clocks for one declared cadence. File growth alone never counts as progress.",
+            "Argus will monitor it without spending another Engineer round. File growth alone never counts as progress.",
         ])
     return "\n".join(lines)

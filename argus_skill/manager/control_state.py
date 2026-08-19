@@ -19,10 +19,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - Windows fallback
-    fcntl = None  # type: ignore[assignment]
+import portalocker
 
 CONTROL_DIRNAME = "campaign-control"
 HEAD_FILENAME = "HEAD.json"
@@ -299,13 +296,13 @@ class CampaignControlStore:
     def locked(self):
         self.state_root.mkdir(parents=True, exist_ok=True)
         with self.lock_path.open("a+b") as handle:
-            if fcntl is not None:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            # Deliberately blocking: control-state mutations fail closed and
+            # historically waited for the current immutable revision commit.
+            portalocker.lock(handle, portalocker.LOCK_EX)
             try:
                 yield
             finally:
-                if fcntl is not None:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                portalocker.unlock(handle)
 
     def campaign_identity(
         self,

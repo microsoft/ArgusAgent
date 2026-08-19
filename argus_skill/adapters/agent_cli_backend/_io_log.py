@@ -10,7 +10,6 @@ external callback) that used to live directly on ``AgentCliBackend``.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -94,10 +93,6 @@ def _agent_io_mode(run_label: str) -> str:
     if mode in {"compact", "summary", "off"}:
         return "compact"
     return "full"
-
-
-def _text_sha256(text: str) -> str:
-    return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
 
 
 def _user_message_content(line: str) -> str | None:
@@ -275,7 +270,7 @@ class AgentIOLogger:
             ),
             "model": model,
             "mode": io_mode,
-            "prompt_sha256": _text_sha256(prompt),
+            "original_prompt": prompt,
             "buffer": [],
             "buffer_bytes": 0,
             "last_flush": time.monotonic(),
@@ -381,7 +376,7 @@ class AgentIOLogger:
         )
         duplicate_prompt = bool(
             prompt_echo is not None
-            and _text_sha256(prompt_echo) == str(ctx.get("prompt_sha256") or "")
+            and prompt_echo == str(ctx.get("original_prompt") or "")
         )
         # The complete prompt is already stored in agent.io.start. Most CLIs
         # echo that same prompt as user.message; keep exactly one copy while
@@ -400,7 +395,8 @@ class AgentIOLogger:
             known_values=known_secret_values,
         )
         if persist_raw:
-            assert context is not None
+            if context is None:
+                raise RuntimeError("raw stream persistence requires an I/O context")
             self.buffer_stream(
                 context,
                 Path(log_path),

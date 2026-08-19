@@ -1,8 +1,7 @@
 """A diagnostic that reports no failure must not become one in the agent's memory.
 
-Observed on every run tonight
-(/tmp/argus-night/home/projects/e8d2340c8962/events.jsonl event #10, and the
-same at #10 of f9a27b1c16a7): the first planning cycle emitted
+Observed repeatedly in captured project event logs: the first planning cycle
+emitted
 
     life.planner.error — discarded stale planner verdict outbox after
     semantic state change

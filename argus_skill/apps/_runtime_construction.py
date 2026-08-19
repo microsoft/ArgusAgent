@@ -28,6 +28,49 @@ from ._runtime_backends import _MemoryRunner, _ScriptedPlannerBackend
 log = logging.getLogger(__name__)
 
 
+def _manager_roots(args: argparse.Namespace) -> tuple[Path, Path, Path]:
+    workdir = (
+        Path(args.workdir).expanduser()
+        if getattr(args, "workdir", None)
+        else Path.cwd()
+    )
+    session_root = (
+        Path(args.manager_session_root).expanduser()
+        if getattr(args, "manager_session_root", None)
+        else workdir
+    )
+    raw_state_root = str(getattr(args, "project_state_dir", "") or "").strip()
+    state_root = Path(raw_state_root).expanduser() if raw_state_root else workdir
+    if raw_state_root:
+        from ..skills.vertical_select import migrate_legacy_manager_state
+
+        migrate_legacy_manager_state(state_root, workdir)
+    return workdir, state_root, session_root
+
+
+def _create_manager(
+    args: argparse.Namespace,
+    *,
+    backend: Any,
+    skill_store: Any = None,
+    usage_context: Any = None,
+    memory_maintenance_enabled: bool | None = None,
+) -> Any:
+    from ..manager import Manager
+
+    workdir, state_root, session_root = _manager_roots(args)
+    return Manager(
+        project_root=state_root,
+        execution_workdir=workdir,
+        runner=backend,
+        skill_store=skill_store,
+        manager_session_root=session_root,
+        learned_vertical_root=getattr(args, "global_root", None),
+        usage_context=usage_context,
+        memory_maintenance_enabled=memory_maintenance_enabled,
+    )
+
+
 class _RunnerConstructionMixin:
     """Backend/manager construction half of ``_SkillLoopRunner``.
 
@@ -55,6 +98,7 @@ class _RunnerConstructionMixin:
         # currently-installed sink so codex's stream-json events become
         # ``engineer.progress`` items in whichever sink owns this call.
         self._current_sink: EventSink | None = None
+        self._active_mission_id = ""
         # Per-mission ledger of failed tool/command beats. Reset on every
         # execute() so warnings don't bleed across missions.
         self._current_failure_ledger: object | None = None
@@ -139,7 +183,8 @@ class _RunnerConstructionMixin:
                 from ..life.memory import consume_running_item_abort
 
                 abort_reason = consume_running_item_abort(
-                    getattr(self, "_manager_session_root", None)
+                    getattr(self, "_manager_session_root", None),
+                    target_item_id=self._active_mission_id,
                 )
                 if abort_reason:
                     return f"operator abort requested: {abort_reason}"
@@ -171,7 +216,8 @@ class _RunnerConstructionMixin:
 
         # Per-role backends. Each agent role (engineer / reviewer / planner /
         # manager) can be pinned to its OWN backend via
-        # ``ARGUS_SKILL_{ROLE}_BACKEND`` (codex / claude / copilot / opencode / pi) plus an
+        # ``ARGUS_SKILL_{ROLE}_BACKEND`` (codex / claude / copilot / opencode /
+        # pi / grok) plus an
         # optional ``ARGUS_SKILL_{ROLE}_RUNNER_BIN``. When neither is set the
         # role SHARES the single default backend above — so the common case
         # still builds exactly one CLI process and behaviour is unchanged. Set
@@ -264,47 +310,18 @@ class _RunnerConstructionMixin:
         # instance on the manager backend — no more scattered ad-hoc
         # ``Manager(...)`` constructions, and skill approval now genuinely runs
         # on the Manager's backend rather than the reviewer's.
-        from ..manager import Manager
-
-        _manager_workdir = (
-            Path(args.workdir).expanduser() if getattr(args, "workdir", None) else Path.cwd()
+        _manager_workdir, _manager_state_root, _manager_session_root = (
+            _manager_roots(args)
         )
-        _manager_session_root = (
-            Path(getattr(args, "manager_session_root")).expanduser()
-            if getattr(args, "manager_session_root", None)
-            else _manager_workdir
-        )
-        # ``_artifact_root`` / Manager's ``project_root`` MUST be the real
-        # mission WORKDIR, never the daemon's internal life_dir: every OTHER
-        # reader/writer of ``research/PIPELINE_STATE.json`` (stage_machine.
-        # current_stage/advance_stage, the reviewer's stage-gated checklist,
-        # engineer/runner.py's stage-based branching, resolve_vertical, custom
-        # data-domain lookups) operates against the WORKDIR. Pointing the
-        # Manager's stage-authority writes at ``_manager_session_root`` (life_dir
-        # in daemon/continuous mode — see life_worker.py's
-        # ``ns.manager_session_root = str(cfg.life_dir)``) silently splits the
-        # pipeline state in two: the Manager advances/rolls-back a
-        # PIPELINE_STATE.json under life_dir that NOTHING else ever reads, while
-        # every stage-gated check in the real mission workdir keeps falling back
-        # to the vertical's first stage forever (observed in production: a
-        # kernelbench mission whose life_dir copy legitimately reached
-        # "measure", 8 kernels deep, while its workdir copy never existed —
-        # the mission's own tooling correctly observed "no
-        # research/PIPELINE_STATE.json here" and got stuck waiting on a
-        # transition that had already happened, just in the wrong place).
-        # ``manager_session_root`` is unaffected: it stays daemon/life_dir-scoped
-        # for the Manager's OWN persistent codex session/lock files only (see
-        # ``_ManagerSession``), which is an orthogonal concern.
-        self._artifact_root = _manager_workdir
-        os.environ["ARGUS_SKILL_ARTIFACT_ROOT"] = str(_manager_workdir)
+        self._artifact_root = _manager_state_root
+        os.environ["ARGUS_SKILL_ARTIFACT_ROOT"] = str(_manager_state_root)
         # Give Manager the same Skill-library roots as every other role. Manager
         # searches them with its own tools; no content is selected or injected.
         self._manager_skill_store = self._build_manager_skill_store(args)
-        self.manager = Manager(
-            project_root=_manager_workdir,
-            runner=self.manager_backend or self._backend,
+        self.manager = _create_manager(
+            args,
+            backend=self.manager_backend or self._backend,
             skill_store=self._manager_skill_store,
-            manager_session_root=_manager_session_root,
             usage_context=self.task_usage_context,
             memory_maintenance_enabled=self._role_memory_maintenance_enabled,
         )
@@ -368,9 +385,18 @@ class _RunnerConstructionMixin:
             return
         self._manager_skill_store = store
         self.manager.skill_store = store
-        from ..skills.missions import ManagerMission
+        from ..skills.missions import ManagerMission, SelfMission
 
         self.manager.mission = ManagerMission(store)
+        self.manager.self_mission = SelfMission(store)
+        if self.manager._session is not None:
+            paths = (
+                self.manager.mission.libraries().native_paths
+                + self.manager.self_mission.libraries().native_paths
+            )
+            self.manager._session.skill_paths = [
+                str(path) for path in dict.fromkeys(paths)
+            ]
 
     def stream_to(self, sink: EventSink):
         """Context manager: temporarily route stream lines to *sink*.
@@ -540,7 +566,7 @@ def _resolve_runner_backend_name(
     if explicit:
         return explicit
     resolved = getattr(args, "backend", None)
-    if resolved in ("codex", "claude", "copilot", "opencode", "pi"):
+    if resolved in ("codex", "claude", "copilot", "opencode", "pi", "grok", "qoder", "dsh"):
         return resolved
     return None
 
@@ -575,14 +601,16 @@ def build_life_runner(args: argparse.Namespace, *, seed_thread_id: str | None = 
     """Return a ``_MissionRunner``-shaped adapter for the requested backend."""
     if args.backend == "memory":
         runner = _MemoryRunner()
-        runner.workdir = (
-            Path(args.workdir).expanduser() if getattr(args, "workdir", None) else Path.cwd()
-        )
+        workdir, state_root, session_root = _manager_roots(args)
+        runner.workdir = workdir
+        runner._artifact_root = state_root
+        runner._manager_session_root = session_root
+        runner.manager = _create_manager(args, backend=None)
         scripted_backend = _ScriptedPlannerBackend.from_env()
         if scripted_backend is not None:
             runner.backend = scripted_backend
         return runner
-    if args.backend in ("codex", "claude", "copilot", "opencode", "pi"):
+    if args.backend in ("codex", "claude", "copilot", "opencode", "pi", "grok", "qoder", "dsh"):
         # These are agent-CLI backends: _SkillLoopRunner drives the selected
         # CLI via AgentCliBackend (per-role resolution), so the
         # SAME runner serves every backend. Gating this on "codex" alone used to

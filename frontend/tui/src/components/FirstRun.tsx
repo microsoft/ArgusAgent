@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import type { CreatedDaemon } from '../api.js';
 import {
@@ -27,14 +27,24 @@ export function FirstRun({ createDaemon, onCreated }: FirstRunProps) {
   const { exit } = useApp();
   const terminal = useTerminalSize();
   const [draft, setDraft] = useState<NewDaemonDraft>(() => newDaemonDraft('', 'objective'));
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const submit = async () => {
     if (draft.busy) return;
     const { objective, name } = daemonDraftValues(draft);
     setDraft((current) => ({ ...current, busy: true, error: '' }));
     try {
-      onCreated(await createDaemon(objective, name));
+      const created = await createDaemon(objective, name);
+      if (mountedRef.current) onCreated(created);
     } catch (cause) {
+      if (!mountedRef.current) return;
       setDraft((current) => ({
         ...current,
         busy: false,
@@ -45,6 +55,7 @@ export function FirstRun({ createDaemon, onCreated }: FirstRunProps) {
 
   useInput((input, key) => {
     if (key.ctrl && (input === 'c' || input === 'd')) {
+      mountedRef.current = false;
       exit();
       return;
     }
@@ -63,7 +74,7 @@ export function FirstRun({ createDaemon, onCreated }: FirstRunProps) {
       <NewDaemonForm
         draft={draft}
         title="No daemons yet — open your first one"
-        cancelHint="Esc clear · Ctrl-C quit"
+        cancelHint="Esc clear · Ctrl-C quit UI"
       />
     </Box>
   );

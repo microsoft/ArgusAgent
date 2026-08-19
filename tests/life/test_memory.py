@@ -88,6 +88,21 @@ def test_event_journal_reads_every_rollover_in_chronological_order(tmp_path: Pat
     ]
 
 
+def test_event_journal_total_cost_cache_is_bounded(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(EventJournal, "_TOTAL_COST_CACHE_MAX_ENTRIES", 2)
+    journal = EventJournal(path)
+
+    for timestamp in range(5):
+        assert journal.total_cost_since(float(timestamp)) == 0.0
+
+    assert list(journal._total_cost_cache) == [3.0, 4.0]
+
+
 def test_event_journal_projects_canonical_lifecycle_events(tmp_path: Path) -> None:
     path = tmp_path / "events.jsonl"
     path.write_text(
@@ -114,6 +129,26 @@ def test_event_journal_projects_canonical_lifecycle_events(tmp_path: Path) -> No
         "mission_started",
         "mission_complete",
     ]
+
+
+def test_event_journal_projects_legacy_team_waiting_as_planner_waiting(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        json.dumps({
+            "type": "life.team.waiting",
+            "ts": 1.0,
+            "reason": "await external worker",
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+
+    entries = EventJournal(path).all()
+
+    assert len(entries) == 1
+    assert entries[0].kind == "planner_waiting"
 
 
 def test_event_journal_tail_prefilters_non_journal_json_before_decoding(
@@ -177,6 +212,60 @@ def test_backlog_status_transitions(tmp_path: Path) -> None:
     assert final.status == "done"
     assert final.finished_ts is not None
     assert b.next_pending() is None
+
+
+def test_parallel_claims_require_disjoint_explicit_ownership(tmp_path: Path) -> None:
+    backlog = Backlog(tmp_path / "backlog.jsonl")
+    first = backlog.add(BacklogItem.new(
+        title="first",
+        objective="first",
+        parallel_safe=True,
+        owns_paths=["research/routes/a.md"],
+    ))
+    overlap = backlog.add(BacklogItem.new(
+        title="overlap",
+        objective="overlap",
+        parallel_safe=True,
+        owns_paths=["research/routes"],
+    ))
+    case_alias = backlog.add(BacklogItem.new(
+        title="case alias",
+        objective="case alias",
+        parallel_safe=True,
+        owns_paths=["RESEARCH/ROUTES/A.MD"],
+    ))
+    glob_alias = backlog.add(BacklogItem.new(
+        title="glob alias",
+        objective="glob alias",
+        parallel_safe=True,
+        owns_paths=["research/**"],
+    ))
+    disjoint = backlog.add(BacklogItem.new(
+        title="disjoint",
+        objective="disjoint",
+        parallel_safe=True,
+        owns_paths=["research/debates/b.md"],
+    ))
+    backlog.add(BacklogItem.new(title="serial", objective="serial"))
+
+    assert backlog.claim_next(expected_id=first.id) is not None
+    assert backlog.next_pending(parallel_only=True).id == disjoint.id
+    assert backlog.claim_next(
+        parallel_only=True,
+        expected_id=overlap.id,
+    ) is None
+    assert backlog.claim_next(
+        parallel_only=True,
+        expected_id=case_alias.id,
+    ) is None
+    assert backlog.claim_next(
+        parallel_only=True,
+        expected_id=glob_alias.id,
+    ) is None
+    assert backlog.claim_next(
+        parallel_only=True,
+        expected_id=disjoint.id,
+    ) is not None
 
 
 def test_backlog_failed_carries_error(tmp_path: Path) -> None:
@@ -310,14 +399,22 @@ def test_backlog_add_and_claim_are_process_safe(tmp_path: Path) -> None:
     add_ids = [item[3] for item in outcomes if item[0] == "ok" and item[1] == "add"]
     claim_ids = [item[3] for item in outcomes if item[0] == "ok" and item[1] == "claim" and item[3] is not None]
     assert len(add_ids) == 2
-    assert len(claim_ids) == 1
+    # Adds and claims start together; an added item is allowed to become
+    # claimable before the second claimant runs.  The concurrency invariant is
+    # that no item is handed out twice and no update is lost.
+    assert len(claim_ids) == len(set(claim_ids))
+    assert 1 <= len(claim_ids) <= 3
 
     rows = backlog.all()
     assert len(rows) == 3
-    statuses = {row.title: row.status for row in rows}
-    assert statuses["seed"] == "running"
-    assert statuses["add-a"] == "pending"
-    assert statuses["add-b"] == "pending"
+    claimed = set(claim_ids)
+    assert {
+        row.id for row in rows if row.status == "running"
+    } == claimed
+    assert all(
+        row.status == ("running" if row.id in claimed else "pending")
+        for row in rows
+    )
     assert seed.id in {row.id for row in rows}
 
 
@@ -340,6 +437,13 @@ def test_identity_user_edit_preserved(tmp_path: Path) -> None:
     card = IdentityCard(p)
     assert card.ensure_default() is False
     assert "my own card" in card.read()
+    assert "my own card" in card.prompt_text()
+
+
+def test_default_identity_is_not_model_context(tmp_path: Path) -> None:
+    card = IdentityCard(tmp_path / "identity.md")
+    card.ensure_default()
+    assert card.prompt_text() == ""
 
 
 # ---------- LifeMemory facade + retrieval ----------------------------------
@@ -423,12 +527,11 @@ def test_render_prelude_marks_non_authoritative(tmp_path: Path) -> None:
             tags=["database", "migration"],
         )
     )
-    block = mem.render_prelude()
+    block = mem.render_prelude(max_journal_entries=1)
     assert "non-authoritative" in block.lower()
-    assert "ignore them" in block.lower()
+    assert "ignore it" in block.lower()
     assert "Database migration helper" in block
-    # Identity card text appears too:
-    assert "argus-skill" in block.lower() or "voice" in block.lower()
+    assert "operator identity card" not in block.lower()
 
 
 def test_render_prelude_never_reinjects_planner_error_verdict_body(

@@ -1,8 +1,8 @@
 import React from 'react';
 import { Text } from 'ink';
 
-const HINTS = 'Enter send · / commands · Ctrl+O operations · Ctrl+T reasoning · scroll up · Ctrl-C quit';
-const COMPACT_HINTS = 'Enter send · / commands · Ctrl+O operations · Ctrl+T reasoning · Ctrl-C quit';
+const HINTS = 'Enter send · Ctrl-R rewrite · / commands · scroll up · Ctrl-C quit UI';
+const COMPACT_HINTS = 'Enter send · Ctrl-R rewrite · / commands · Ctrl-C quit UI';
 
 export function Footer({
   notice,

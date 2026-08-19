@@ -21,16 +21,18 @@ End-to-end shape:
 """
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
 from .core.event_catalog import EventType
 from .core.models import LoopOutcome, RoundRecord
 from .core.ports import RunnerBackend
+from .core.role_session import configured_role_session_policy
 from .engineer.runner import EngineerConfig, SupervisedConfig, SupervisedEngineer
 from .reviewer import Reviewer, ReviewerConfig
 from .skills.loop_prompt import PromptContextMixin
@@ -68,6 +70,7 @@ class SkillLoopConfig:
     engineer_initial_reasoning_effort: str | None = "high"
     engineer_reasoning_effort: str | None = "xhigh"
     reviewer_reasoning_effort: str = "high"
+    require_independent_review: bool = True
     # Completed tasks may retain durable learning when the Agent judges it useful.
     require_post_task_learning: bool = field(
         default_factory=lambda: _knob_bool_setting(
@@ -75,21 +78,21 @@ class SkillLoopConfig:
             True,
         )
     )
-    max_rounds: int = 500
+    max_rounds: int = 32
     no_progress_threshold: int = 2
-    # Anti-livelock escalation thresholds threaded into SupervisedConfig: at
+    # Anti-livelock thresholds threaded into SupervisedConfig: at
     # ``soft_round_limit`` the reviewer is told to escalate an unresolvable
-    # external blocker to ``blocked``; at ``hard_escalate_rounds`` the round loop
-    # force-ends as ``blocked`` so the planner re-plans. 0 disables either.
+    # external blocker; at ``hard_escalate_rounds`` continuation requires the
+    # Reviewer's explicit semantic-progress judgment. 0 disables either.
     soft_round_limit: int = 12
     hard_escalate_rounds: int = 24
     backend_failure_threshold: int = 2
     backend_failure_backoff_seconds: float = 15.0
     # Shared declarative knowledge wiki. Roles edit pages directly.
-    wiki_enabled: bool = False
+    wiki_enabled: bool = True
     # Bootstrap one project wiki before the first mission.
     # Library callers remain opt-in; the daemon runtime enables this by default.
-    auto_init_wiki: bool = False
+    auto_init_wiki: bool = True
     round_checkpoint_enabled: bool = field(
         default_factory=lambda: _knob_bool_setting(
             "ARGUS_SKILL_ROUND_CHECKPOINT",
@@ -103,18 +106,25 @@ class SkillLoopConfig:
     isolate_workdir: bool = False
     extra_args: list[str] | None = None
     session_id: str | None = None
-    engineer_file_read_budget: int = field(
+    role_session_policy: str = field(default_factory=configured_role_session_policy)
+    role_session_max_turns: int = field(
         default_factory=lambda: _env_int_setting(
-            "ARGUS_SKILL_ENGINEER_FILE_READ_BUDGET", 12
+            "ARGUS_SKILL_ROLE_SESSION_MAX_TURNS", 6
         )
     )
-    engineer_test_run_budget: int = field(
+    role_session_max_input_tokens: int = field(
         default_factory=lambda: _env_int_setting(
-            "ARGUS_SKILL_ENGINEER_TEST_RUN_BUDGET", 3
+            "ARGUS_SKILL_ROLE_SESSION_MAX_INPUT_TOKENS", 120_000
         )
     )
     # Manager-selected execution topology. Every mode still uses skill/wiki.
     workflow_mode: str = "staged"
+    # Explicit Manager-routed vertical for isolated worktrees that intentionally
+    # carry no project pipeline state (for example framework self-maintenance).
+    active_vertical: str = ""
+    # Session-state root that owns project-local vertical contracts. Execution
+    # may happen in a separate operator workspace.
+    vertical_state_root: Path | None = None
     # Explicit signal that this mission is a long-horizon academic-paper /
     # submission task. When True the engineer prompt carries the
     # long-horizon paper execution contract. Replaces the old keyword-based
@@ -218,6 +228,10 @@ class SkillLoop(
                     self.config.resolved_initial_engineer_effort()
                 ),
                 extra_args=self.config.extra_args,
+                skill_paths=[
+                    str(path)
+                    for path in self.engineer_mission.libraries().native_paths
+                ],
                 full_auto=self.config.full_auto,
                 skip_git_repo_check=self.config.skip_git_repo_check,
                 dangerous_yolo=self.config.dangerous_yolo,
@@ -226,6 +240,12 @@ class SkillLoop(
             ),
             reviewer_config=ReviewerConfig(
                 model=self.config.resolved_reviewer_model(),
+                active_vertical=self.config.active_vertical,
+                vertical_state_root=(
+                    str(self.config.vertical_state_root)
+                    if self.config.vertical_state_root is not None
+                    else None
+                ),
                 reasoning_effort=self.config.reviewer_reasoning_effort,
                 extra_args=self.config.extra_args or [],
                 full_auto=self.config.full_auto,
@@ -242,6 +262,7 @@ class SkillLoop(
 
     def run(self, task: str, *, workdir: Path | None = None, seed_thread_id: str | None = None,
             objective_for_skill: str | None = None,
+            review_objective: str | None = None,
             original_objective: str | None = None,
             scope: str = "") -> LoopOutcome:
         """Run one mission end-to-end.
@@ -256,12 +277,26 @@ class SkillLoop(
         Agents directly from the library paths.
         """
         workdir = Path(workdir) if workdir else Path.cwd()
+        vertical_state_root = Path(self.config.vertical_state_root or workdir)
         run_id = self.config.session_id or f"run-{uuid.uuid4().hex}"
         from .roles.prompts import resolve_role_prompt
         from .roles.prompts.engineer import mission_request
-        engineer_prompt_context = resolve_role_prompt(mission_request(workdir))
+        engineer_prompt_context = resolve_role_prompt(
+            mission_request(
+                vertical_state_root,
+                vertical=self.config.active_vertical or None,
+            )
+        )
         active_vertical = engineer_prompt_context.vertical
         engineer_role_banner = engineer_prompt_context.role_banner
+        # The vertical is only authoritative here (``active_vertical`` may be
+        # unset at construction time and resolved from session state), so the
+        # Engineer's live-search stages are resolved per mission — into a
+        # mission-local object, never back onto the shared supervisor.
+        supervised = self._supervised_for_mission(
+            vertical=active_vertical,
+            project_root=vertical_state_root,
+        )
         if self.config.wiki_enabled:
             from .wiki.lifecycle import ensure_project_wiki
 
@@ -271,10 +306,11 @@ class SkillLoop(
                 on_event=self.on_event,
             )
         skill_task = (objective_for_skill or task).strip() or task
+        reviewer_task = (review_objective or skill_task).strip() or skill_task
         request_anchor = (original_objective or objective_for_skill or task).strip() or task
         self._emit({
             "type": EventType.LOOP_START,
-            "text": f"task: {skill_task[:120]}",
+            "text": f"task: {skill_task}",
         })
 
         mission = MissionContext(
@@ -308,18 +344,30 @@ class SkillLoop(
         def adapt_after_rejections(rounds: list[RoundRecord]) -> str:
             return self._adapt_after_rejections(mission, state, rounds)
 
-        status, rounds, final_message, reason, last_thread_id = self.supervised.run(
-            objective=task,
+        status, rounds, final_message, reason, last_thread_id = supervised.run(
+            objective=reviewer_task,
             original_objective=request_anchor,
             engineer_prompt_builder=build_prompt,
             supervised_config=SupervisedConfig(
                 max_rounds=self.config.max_rounds,
+                require_independent_review=self.config.require_independent_review,
                 no_progress_threshold=self.config.no_progress_threshold,
                 soft_round_limit=self.config.soft_round_limit,
                 hard_escalate_rounds=self.config.hard_escalate_rounds,
                 backend_failure_threshold=self.config.backend_failure_threshold,
                 backend_failure_backoff_seconds=self.config.backend_failure_backoff_seconds,
                 session_id=self.config.session_id,
+                role_session_policy=self.config.role_session_policy,
+                role_session_max_turns=self.config.role_session_max_turns,
+                role_session_max_input_tokens=(
+                    self.config.role_session_max_input_tokens
+                ),
+                role_session_dir=(
+                    Path(self.config.context_packet_path).expanduser().resolve().parent
+                    / "role-sessions"
+                    if self.config.context_packet_path
+                    else None
+                ),
                 checkpoint_path=self.config.checkpoint_path,
                 context_packet_path=self.config.context_packet_path,
                 engineer_log_path=self.config.engineer_log_path,
@@ -351,6 +399,71 @@ class SkillLoop(
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _resolve_live_search_stages(
+        self,
+        vertical: str,
+        project_root: Path,
+        configured: frozenset[str],
+    ) -> frozenset[str]:
+        """Let the active vertical declare its own Engineer live-search stages.
+
+        ``configured`` is the baseline actually in effect on ``EngineerConfig``
+        — NOT the framework constant. A vertical that declares nothing must keep
+        whatever the caller configured through the public knob; resolving
+        against the constant instead would silently downgrade an explicit
+        caller choice back to the research stage.
+
+        Errors deliberately propagate. ``resolve_role_prompt`` above has already
+        loaded this exact ``(vertical, project_root)`` contract for the same
+        mission (``roles/prompts/registry.py``), and the runtime loads it again
+        earlier still when the vertical is explicit
+        (``apps/_runtime_execute.py``). A failure here therefore is not an
+        absent optional declaration — it is a disagreement with a contract that
+        already loaded, or a vertical whose declared stages do not typecheck.
+        Swallowing it would run the mission with silently wrong Engineer
+        permissions, which is exactly what the contract validation exists to
+        prevent.
+        """
+        if not str(vertical or "").strip():
+            # No vertical resolved: resolve_role_prompt returns early without
+            # loading a contract, so there is nothing to ask.
+            return configured
+        from .verticals._base import load_vertical_contract
+
+        contract = load_vertical_contract(vertical, project_root=project_root)
+        return contract.live_search_stages(configured)
+
+    def _supervised_for_mission(
+        self,
+        *,
+        vertical: str,
+        project_root: Path,
+    ) -> SupervisedEngineer:
+        """Return the SupervisedEngineer THIS mission should run on.
+
+        The resolved live-search stages are mission-scoped: a single SkillLoop
+        may run missions in different verticals, and ``SupervisedEngineer``
+        documents itself as stateless across calls. Writing the value back onto
+        ``self.supervised`` would leak one mission's vertical into the next and
+        would survive an exception raised mid-mission, so the override lives on
+        a mission-local object instead. A vertical that changes nothing gets
+        the shared object back untouched.
+        """
+        configured = self.supervised.engineer_config.live_search_stages
+        stages = self._resolve_live_search_stages(vertical, project_root, configured)
+        if stages == configured:
+            return self.supervised
+        # SupervisedEngineer is not a dataclass, so this is the
+        # ``dataclasses.replace`` equivalent: keep every collaborator (and any
+        # attribute a caller set after construction) by reference, override the
+        # single mission-scoped field.
+        mission_supervised = copy.copy(self.supervised)
+        mission_supervised.engineer_config = replace(
+            self.supervised.engineer_config,
+            live_search_stages=stages,
+        )
+        return mission_supervised
 
     def _emit(self, event: dict) -> None:
         if self.on_event is None:

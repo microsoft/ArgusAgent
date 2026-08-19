@@ -20,8 +20,10 @@ def render_knowledge_wiki_block(project_root: Path | str, *, role: str) -> str:
         "`pages/` and contain only `title`, `description`, and Markdown content. "
         "Use `INDEX.md` for progressive disclosure. When durable declarative "
         "knowledge changes, edit the relevant semantic page and INDEX directly. "
-        "Do not copy procedures, task history, handoffs, evaluator results, or "
-        "runtime metadata into the Wiki."
+        "Project architecture and contracts, support/limitation matrices, stable "
+        "environment constraints, and scope-qualified measurements belong here. "
+        "Procedures and checklists belong in Skills instead. Do not copy task "
+        "history, handoffs, evaluator results, or runtime metadata into the Wiki."
     )
 
 

@@ -8,5 +8,13 @@ from __future__ import annotations
 
 from ._core import Division, Manager, StageTransition
 from ._session_ops import reset_manager_session
+from .plan_challenge import PlanChallengeDecision, adjudicate_plan_challenge
 
-__all__ = ["Manager", "Division", "StageTransition", "reset_manager_session"]
+__all__ = [
+    "Manager",
+    "Division",
+    "StageTransition",
+    "PlanChallengeDecision",
+    "adjudicate_plan_challenge",
+    "reset_manager_session",
+]

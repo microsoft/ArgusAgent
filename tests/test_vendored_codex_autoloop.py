@@ -1,6 +1,6 @@
 """Sanity tests for the vendored ``agent_cli`` module.
 
-argus-skill drives the codex/claude/copilot/opencode/pi CLI using nothing more
+argus-skill drives the codex/claude/copilot/opencode/pi/grok CLI using nothing more
 than its own wheel — the bundled ``argus_skill.agent_cli`` package is the
 only supported runtime. These tests fail loudly if the vendored copy ever
 gets dropped or its public surface diverges from what
@@ -23,6 +23,7 @@ def test_vendored_runner_backend_constants() -> None:
         BACKEND_CLAUDE,
         BACKEND_CODEX,
         BACKEND_COPILOT,
+        BACKEND_GROK,
         BACKEND_OPENCODE,
         BACKEND_PI,
         DEFAULT_RUNNER_BACKEND,
@@ -33,17 +34,20 @@ def test_vendored_runner_backend_constants() -> None:
     assert BACKEND_COPILOT == "copilot"
     assert BACKEND_OPENCODE == "opencode"
     assert BACKEND_PI == "pi"
+    assert BACKEND_GROK == "grok"
     assert DEFAULT_RUNNER_BACKEND in {
         BACKEND_CODEX,
         BACKEND_CLAUDE,
         BACKEND_COPILOT,
         BACKEND_OPENCODE,
         BACKEND_PI,
+        BACKEND_GROK,
     }
     assert normalize_runner_backend("CODEX") == BACKEND_CODEX
     assert normalize_runner_backend("copilot") == BACKEND_COPILOT
     assert normalize_runner_backend("opencod") == BACKEND_OPENCODE
     assert normalize_runner_backend("PI") == BACKEND_PI
+    assert normalize_runner_backend("GROK") == BACKEND_GROK
 
 
 def test_agent_cli_backend_resolver_uses_vendored_module() -> None:

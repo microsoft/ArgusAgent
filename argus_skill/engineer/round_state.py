@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..core.models import LoopStatus, RoundRecord
+from ..core.role_session import RoleSessionCapsule
 
 
 @dataclass
@@ -42,6 +43,8 @@ class RoundLoopState:
     backend_failure_streak: int = 0
     reviewer_backend_failure_streak: int = 0
     pending_secret_guard_notes: list[str] = field(default_factory=list)
+    engineer_session: RoleSessionCapsule | None = None
+    reviewer_session: RoleSessionCapsule | None = None
 
 
 @dataclass

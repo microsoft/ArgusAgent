@@ -147,6 +147,7 @@ def test_status_subprocess_includes_lifecycle_block(tmp_path: Path, monkeypatch)
         cwd=repo,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env={**__import__("os").environ, "ARGUS_SKILL_HOME": str(home)},
     )
 

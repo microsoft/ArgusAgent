@@ -45,7 +45,6 @@ export function LiveActivity({
       <Text>{activity.label}</Text>
       <Text dimColor>{` · ${elapsed(age)}`}</Text>
       {width >= 110 && meta ? <Text dimColor>{` · ${meta}`}</Text> : null}
-      <Text dimColor>{' · Ctrl+O details'}</Text>
     </Box>
   );
 }

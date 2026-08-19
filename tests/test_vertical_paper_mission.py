@@ -1,30 +1,46 @@
 """paper_mission must follow the VERTICAL, not a True default.
 
-Regression: a kernel-grind objective ("research SOL-ExecBench, grind 2 kernels")
-correctly routed to the kernelbench vertical, but paper_mission stayed True
-(coarse default), so the supervisor picked the research run-stage pilot gate and
-dumped a PILOT_OPERATOR_DECISION_TEMPLATE.json — a $0.55 blocked no-op. The fix
-(apps/_runtime.py + loop.py) derives paper_mission from the vertical's completion
-gate: only ``full_paper`` verticals are paper missions. This pins that invariant.
+Regression: paper behavior must be an explicit vertical capability, not inferred
+from ``completion_gate="certified"``. Quant and medical also use certified
+completion, but must not inherit the research paper pipeline.
 """
 from __future__ import annotations
 
 import pytest
 
-from argus_skill.apps._runtime import _paper_mission_for_project_root
+from argus_skill.apps._runtime import (
+    _final_certification_for_project_root,
+    _paper_mission_for_project_root,
+)
 from argus_skill.skills.vertical_select import persist_vertical
-from argus_skill.verticals._base import load_vertical, vertical_completion_gate
+from argus_skill.verticals._base import (
+    load_vertical,
+    vertical_is_paper_mission,
+)
 
-OPTIMIZE = ["kernelbench", "speedrun", "nanochat", "nanogpt_speedrun"]
+OPTIMIZE = ["kernelbench", "speedrun", "nanochat", "nanogpt_speedrun", "math_synth"]
 
 
 @pytest.mark.parametrize("vertical", OPTIMIZE)
 def test_optimize_verticals_are_not_paper(vertical: str) -> None:
-    assert vertical_completion_gate(load_vertical(vertical)) != "full_paper"
+    assert vertical_is_paper_mission(load_vertical(vertical)) is False
 
 
 def test_research_is_paper() -> None:
-    assert vertical_completion_gate(load_vertical("research")) == "full_paper"
+    assert vertical_is_paper_mission(load_vertical("research")) is True
+
+
+@pytest.mark.parametrize("vertical", ["medical", "quant"])
+def test_certified_nonpaper_verticals_are_not_paper(vertical: str) -> None:
+    assert vertical_is_paper_mission(load_vertical(vertical)) is False
+
+
+@pytest.mark.parametrize("vertical", ["research", "medical", "quant"])
+def test_certified_verticals_keep_final_certification(
+    tmp_path, vertical: str
+) -> None:
+    persist_vertical(tmp_path, vertical)
+    assert _final_certification_for_project_root(tmp_path) is True
 
 
 def test_undecided_project_is_not_implicitly_paper(tmp_path) -> None:

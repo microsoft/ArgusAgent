@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+import json
+
+from argus_skill.adapters.agent_cli_backend import AgentCliBackend
+from argus_skill.agent_cli.models import AgentRunResult
+from argus_skill.core.role_decision import (
+    encode_role_decision,
+    extract_role_decisions,
+)
+from argus_skill.engineer.round_execution import _engineer_decision_message
+
+
+def test_extracts_decision_from_nested_backend_event() -> None:
+    marker = encode_role_decision(
+        "planner",
+        {"project_done": True, "reason": "complete", "tasks": []},
+    )
+    raw_event = json.dumps({"type": "tool.result", "content": marker})
+
+    decisions = extract_role_decisions([raw_event])
+
+    assert decisions == [{
+        "role": "planner",
+        "payload": {
+            "project_done": True,
+            "reason": "complete",
+            "tasks": [],
+        },
+    }]
+
+
+def test_adapter_preserves_process_decision_without_final_message() -> None:
+    marker = encode_role_decision(
+        "reviewer",
+        {"status": "done", "reason": "verified", "next_action": ""},
+    )
+
+    result = AgentCliBackend()._translate_result(
+        AgentRunResult(
+            command=["agent"],
+            exit_code=0,
+            agent_messages=[],
+            stdout_lines=[json.dumps({"content": marker})],
+        )
+    )
+
+    assert result.agent_messages == []
+    assert result.role_decisions[0]["payload"]["status"] == "done"
+
+
+def test_engineer_process_decision_drives_existing_handoff() -> None:
+    message = _engineer_decision_message({
+        "status": "done",
+        "result": "Implemented the fix and the focused test passed.",
+        "next_owner": "reviewer",
+    })
+
+    assert "Implemented the fix" in message
+    assert "MILESTONE_STATUS=done" in message
+    assert "NEXT_OWNER=reviewer" in message

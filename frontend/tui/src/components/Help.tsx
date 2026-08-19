@@ -9,8 +9,6 @@ const KEYS: Array<[string, string]> = [
   ['Ctrl-W / Ctrl-U / Ctrl-K', 'delete word · to start · to end'],
   ['↑ ↓', 'input history'],
   ['Ctrl-R', 'let the Manager rewrite your prompt before sending'],
-  ['Ctrl-T', 'show / hide reasoning'],
-  ['Ctrl-O', 'operations panel'],
   ['/', 'slash commands (autocompletes)'],
   ['? · /help', 'this help'],
   ['Esc · /cancel', 'stop waiting for Manager reply'],

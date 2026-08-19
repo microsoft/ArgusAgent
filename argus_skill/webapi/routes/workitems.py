@@ -114,7 +114,6 @@ def register_workitem_routes(app, ctx: ServerContext, server_mod) -> None:
             decision_id,
             body.option_id,
             body.note,
-            expected_revision=body.expected_revision,
             global_root=project_root,
         )
         if result is None:

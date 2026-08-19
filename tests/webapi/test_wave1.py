@@ -15,8 +15,14 @@ import pytest
 
 from argus_skill.core.session import SessionMeta, read_session_meta, write_session_meta
 from argus_skill.life.memory import LifeMemory
-from argus_skill.manager import front_door
-from argus_skill.webapi import artifacts, manager_bridge, server
+from argus_skill.manager import config_intent, front_door
+from argus_skill.webapi import (
+    artifacts,
+    manager_bridge,
+    manager_pending_question,
+    manager_state,
+    server,
+)
 
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
@@ -107,6 +113,21 @@ def test_create_daemon_honours_explicit_execution_workdir(tmp_path: Path) -> Non
     assert meta.workdir == str(workdir.resolve())
 
 
+def test_create_daemon_rejects_an_unavailable_workdir_before_command_submission(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(server.create_app(global_root=tmp_path))
+
+    response = client.post(
+        "/api/daemons",
+        json={"workdir": str(tmp_path / "missing")},
+    )
+
+    assert response.status_code == 400
+    assert "workdir is unavailable" in response.json()["detail"]
+    assert not (tmp_path / "daemon.commands.jsonl").exists()
+
+
 def test_launch_cwd_update_preserves_existing_session_name(tmp_path: Path) -> None:
     created = server.create_daemon(name="Existing name", global_root=tmp_path)
     original = read_session_meta(tmp_path, created["sid"])
@@ -188,7 +209,7 @@ def test_set_project_workdir_uses_pipeline_then_session_lock_order(
     assert order == ["pipeline", "session"]
 
 
-def test_web_context_defaults_launch_cwd_and_reports_it(
+def test_web_session_defaults_are_independent_of_server_cwd(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -206,7 +227,7 @@ def test_web_context_defaults_launch_cwd_and_reports_it(
     assert meta.launch_cwd == str(expected.resolve())
     assert meta.workdir == str(expected.resolve())
     assert created["workdir"] == str(expected.resolve())
-    assert index["local_cwd"] == str(launch.resolve())
+    assert index["local_cwd"] != str(launch.resolve())
     assert created["sid"] in {row["id"] for row in index["projects"]}
 
 
@@ -401,20 +422,23 @@ def test_project_picker_uses_campaign_objective_before_greeting(
     monkeypatch,
 ) -> None:
     root, sid, _, client = ctx
-    manager_bridge._STATES.clear()
+    manager_state._STATES.clear()
 
     class _Manager:
+        def classify_front_door(self, _text, *, lifetime_sink=None, **_kwargs):
+            if lifetime_sink is not None:
+                lifetime_sink("standing")
+            return None, None, "complex"
+
         def decide_vertical(self, text, **kwargs):
             return SimpleNamespace(execution_task=text)
 
         def commit_vertical_decision(self, text, decision, **kwargs):
             return SimpleNamespace(execution_task=decision.execution_task)
 
-    monkeypatch.setattr(
-        front_door,
-        "_ensure_manager_runner",
-        lambda chat_state, mem: SimpleNamespace(manager=_Manager()),
-    )
+    ensure = lambda chat_state, mem: SimpleNamespace(manager=_Manager())
+    monkeypatch.setattr(front_door, "_ensure_manager_runner", ensure)
+    monkeypatch.setattr(config_intent, "_ensure_manager_runner", ensure)
     assert (
         server.set_continuous(
             sid,
@@ -438,7 +462,6 @@ def _seed_result_artifacts(root: Path, sid: str, life: Path) -> Path:
     (workspace / "secret.txt").write_text("not allowlisted", encoding="utf-8")
     outside = root / "outside.txt"
     outside.write_text("outside", encoding="utf-8")
-    (workspace / "paper" / "escaped-link.txt").symlink_to(outside)
     write_session_meta(
         root,
         SessionMeta(id=sid, cwd=str(life), workdir=str(workspace)),
@@ -451,7 +474,6 @@ def _seed_result_artifacts(root: Path, sid: str, life: Path) -> Path:
             "paper/missing.json",
             "./.review-note",
             "../outside.txt",
-            "paper/escaped-link.txt",
         ],
         title="Reviewed outputs",
         reason="The Manager selected the operator-facing result files.",
@@ -530,7 +552,6 @@ def test_artifacts_are_manager_allowlisted_and_workspace_confined(ctx) -> None:
         "secret.txt",
         "../outside.txt",
         str(root / "outside.txt"),
-        "paper/escaped-link.txt",
     ):
         assert (
             client.get(
@@ -553,13 +574,34 @@ def test_artifacts_are_manager_allowlisted_and_workspace_confined(ctx) -> None:
     assert hidden.status_code == 404
 
 
+def test_artifact_symlink_escape_is_rejected(
+    ctx,
+    require_symlink_support,
+) -> None:
+    root, sid, life, client = ctx
+    workspace = _seed_result_artifacts(root, sid, life)
+    escaped = workspace / "paper" / "escaped-link.txt"
+    escaped.symlink_to(root / "outside.txt")
+    _write_live_view(life, ["paper/result.md", "paper/escaped-link.txt"])
+
+    rows = client.get(f"/api/projects/{sid}/artifacts").json()["artifacts"]
+    assert [row["path"] for row in rows] == ["paper/result.md"]
+    assert (
+        client.get(
+            f"/api/projects/{sid}/artifact",
+            params={"path": "paper/escaped-link.txt"},
+        ).status_code
+        == 404
+    )
+
+
 def test_artifacts_use_session_workspace_instead_of_launch_directory(ctx) -> None:
     root, sid, life, client = ctx
     launch = root / "launch"
     (launch / "paper").mkdir(parents=True)
     (launch / "paper" / "result.md").write_text("wrong project\n", encoding="utf-8")
     (life / "paper").mkdir()
-    (life / "paper" / "result.md").write_text("current session\n", encoding="utf-8")
+    (life / "paper" / "result.md").write_bytes(b"current session\n")
     write_session_meta(
         root,
         SessionMeta(id=sid, cwd=str(life), launch_cwd=str(launch)),
@@ -579,7 +621,7 @@ def test_artifacts_use_explicit_persisted_workdir(ctx) -> None:
     root, sid, life, client = ctx
     workspace = root / "operator-workspace"
     (workspace / "paper").mkdir(parents=True)
-    (workspace / "paper" / "result.md").write_text("operator workspace\n", encoding="utf-8")
+    (workspace / "paper" / "result.md").write_bytes(b"operator workspace\n")
     write_session_meta(
         root,
         SessionMeta(
@@ -869,7 +911,10 @@ def test_artifacts_prefer_executor_cwd_over_launch_metadata(ctx) -> None:
     assert rows[0]["group_title"] == "Current output"
 
 
-def test_manager_live_symlink_cannot_expose_sensitive_workspace_file(ctx) -> None:
+def test_manager_live_symlink_cannot_expose_sensitive_workspace_file(
+    ctx,
+    require_symlink_support,
+) -> None:
     root, sid, life, client = ctx
     (life / ".env").write_text("SECRET=do-not-serve\n", encoding="utf-8")
     live = life / ".argus" / "live"
@@ -893,7 +938,10 @@ def test_manager_live_symlink_cannot_expose_sensitive_workspace_file(ctx) -> Non
     assert rows == []
 
 
-def test_sensitive_symlink_alias_is_rejected_even_with_safe_target(ctx) -> None:
+def test_sensitive_symlink_alias_is_rejected_even_with_safe_target(
+    ctx,
+    require_symlink_support,
+) -> None:
     root, sid, life, client = ctx
     (life / "public.md").write_text("not secret\n", encoding="utf-8")
     (life / "credentials.json").symlink_to(life / "public.md")
@@ -1157,13 +1205,13 @@ class TestManagerMessageLifecycleErrors:
         monkeypatch.setattr(fd, "mission_is_running", lambda mem: False)
 
         # Clear per-session state cache so this test starts clean.
-        manager_bridge._STATES.pop(sid, None)
+        manager_state._STATES.pop(sid, None)
 
         result = manager_bridge.manager_message(sid, "add a new feature", global_root=tmp_path)
 
         assert result["kind"] == "error", f"expected error response, got {result!r}"
-        assert "could not enqueue" in result["reply"]
-        assert state in result["reply"]
+        assert "nothing was queued or executed" in result["reply"]
+        assert state not in result["reply"]
 
     """resume_done_lifecycle_for_team_dispatch resumes a done project on TEAM."""
 
@@ -1285,7 +1333,7 @@ def test_dispatch_ack_stream_persists_truthful_text(
 ) -> None:
     """Streaming endpoint: returned reply, transcript turn, and SSE delta agree."""
     from argus_skill.core.transcript import read_turns
-    from argus_skill.webapi.manager_bridge import record_task_dispatch_ack
+    from argus_skill.webapi.manager_pending_question import record_task_dispatch_ack
 
     life_dir = tmp_path / "projects" / "s-ack"
     life_dir.mkdir(parents=True)
@@ -1328,7 +1376,7 @@ def test_dispatch_ack_blocking_persists_truthful_text(
 ) -> None:
     """Blocking endpoint: returned reply and transcript turn agree (no SSE)."""
     from argus_skill.core.transcript import read_turns
-    from argus_skill.webapi.manager_bridge import record_task_dispatch_ack
+    from argus_skill.webapi.manager_pending_question import record_task_dispatch_ack
 
     life_dir = tmp_path / "projects" / "s-ack"
     life_dir.mkdir(parents=True)
@@ -1353,33 +1401,95 @@ def test_dispatch_ack_blocking_persists_truthful_text(
     assert any(t["role"] == "argus" and expected_substr in t["text"] for t in turns)
 
 
+def test_dispatch_ack_distinguishes_durable_campaign_update(tmp_path: Path) -> None:
+    from argus_skill.webapi.manager_pending_question import record_task_dispatch_ack
+
+    life_dir = tmp_path / "projects" / "s-ack"
+    life_dir.mkdir(parents=True)
+    result = {
+        "kind": "task",
+        "daemon_alive": True,
+        "daemon": None,
+        "dispatch_state": "planner_pending",
+        "reply": None,
+    }
+
+    text = record_task_dispatch_ack(
+        "s-ack",
+        result,
+        global_root=tmp_path,
+    )
+
+    assert "campaign updated" in text
+    assert "after current work" in text
+    assert "executor already running" not in text
+
+
+@pytest.mark.parametrize(
+    ("dispatch_state", "expected"),
+    [
+        ("queued_after_current", "queued after current work"),
+        ("queued", "active executor will pick up"),
+        ("running", "task is running on the active executor"),
+        ("already_queued", "no duplicate task was created"),
+    ],
+)
+def test_dispatch_ack_describes_queue_state(
+    tmp_path: Path,
+    dispatch_state: str,
+    expected: str,
+) -> None:
+    from argus_skill.webapi.manager_pending_question import record_task_dispatch_ack
+
+    life_dir = tmp_path / "projects" / "s-queue-ack"
+    life_dir.mkdir(parents=True)
+    result = {
+        "kind": "task",
+        "daemon_alive": True,
+        "daemon": None,
+        "dispatch_state": dispatch_state,
+        "item": {"status": "running"},
+        "reply": None,
+    }
+
+    text = record_task_dispatch_ack(
+        "s-queue-ack",
+        result,
+        global_root=tmp_path,
+    )
+
+    assert expected in text
+    assert "executor already running" not in text
+
+
 def test_dispatch_ack_raises_on_transcript_write_failure(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     """Transcript persistence failure must NOT be swallowed."""
-    from argus_skill.webapi import manager_bridge
-
     life_dir = tmp_path / "projects" / "s-ack-fail"
     life_dir.mkdir(parents=True)
-    # Make transcript file unwritable
     transcript = life_dir / "transcript.jsonl"
     transcript.write_text("")
-    transcript.chmod(0o000)
+    real_open = Path.open
 
+    def deny_transcript_append(path: Path, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if path == transcript and "a" in mode:
+            raise PermissionError("simulated transcript write failure")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny_transcript_append)
     result: dict = {
         "kind": "task",
         "daemon_alive": False,
         "daemon": {"rc": 0, "pid": 99},
         "reply": None,
     }
-    try:
-        with pytest.raises(PermissionError):
-            manager_bridge.record_task_dispatch_ack(
-                "s-ack-fail",
-                result,
-                global_root=tmp_path,
-                on_fragment=None,
-            )
-    finally:
-        transcript.chmod(0o644)
+    with pytest.raises(PermissionError):
+        manager_pending_question.record_task_dispatch_ack(
+            "s-ack-fail",
+            result,
+            global_root=tmp_path,
+            on_fragment=None,
+        )

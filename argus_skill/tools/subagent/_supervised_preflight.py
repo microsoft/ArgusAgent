@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 
 from ._direct_run import _parse_launch_flags, _rl_collapse_guidance
-from ._llm import _run_codex_with_usage
+from ._llm import _run_supervisor_with_usage
 from ._normalize import _clean_concern
 from ._registry import _ZERO_USAGE_TUPLE, SUPERVISOR_INTERVAL_CAP, _read_task
 from ._text import _strip_code_fence
@@ -94,7 +94,7 @@ def _supervisor_preflight_with_usage(
         "flag and a concrete new value; if you cannot, set reject=false."
     )
     try:
-        messages, _thread_id, usage = _run_codex_with_usage(
+        messages, _thread_id, usage = _run_supervisor_with_usage(
             prompt,
             model,
             cwd,

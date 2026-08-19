@@ -91,7 +91,7 @@ def test_authorization_is_manager_owned_campaign_bound_and_one_shot(tmp_path: Pa
     identity = store.campaign_identity()
     evidence = store.project_root / "research" / "RESULT.json"
     evidence.parent.mkdir()
-    evidence.write_text('{"decision":"NO_GO"}', encoding="utf-8")
+    evidence.write_text('{"decision":"rejected"}', encoding="utf-8")
     validator = store.project_root / "tests" / "test_terminal_contract.py"
     validator.parent.mkdir()
     validator.write_text("def test_contract(): pass\n", encoding="utf-8")
@@ -202,6 +202,7 @@ def test_authorization_fails_closed_on_campaign_or_evidence_drift(tmp_path: Path
 
 def test_authorization_rejects_project_root_and_symlink_write_scopes(
     tmp_path: Path,
+    require_symlink_support,
 ) -> None:
     store = _store(tmp_path)
     identity = store.campaign_identity()
@@ -231,6 +232,7 @@ def test_authorization_rejects_project_root_and_symlink_write_scopes(
 
 def test_validator_repair_rejects_symlink_created_after_authorization(
     tmp_path: Path,
+    require_symlink_support,
 ) -> None:
     store = _store(tmp_path)
     identity = store.campaign_identity()
@@ -352,7 +354,7 @@ def _prepare_validator_repair(
     identity = store.campaign_identity()
     evidence = store.project_root / "research" / "RESULT.json"
     evidence.parent.mkdir(exist_ok=True)
-    evidence.write_text('{"decision":"NO_GO"}', encoding="utf-8")
+    evidence.write_text('{"decision":"rejected"}', encoding="utf-8")
     validator = store.project_root / "tests" / "test_terminal_contract.py"
     validator.parent.mkdir(exist_ok=True)
     validator.write_text("def test_contract(): assert False\n", encoding="utf-8")
@@ -419,7 +421,7 @@ def test_validator_repair_capability_is_one_shot_and_freezes_science(
 
     assert closed["status"] == "accepted"
     assert closed["guard_errors"] == []
-    assert evidence.read_text(encoding="utf-8") == '{"decision":"NO_GO"}'
+    assert evidence.read_text(encoding="utf-8") == '{"decision":"rejected"}'
     assert store.read_snapshot()["active_capability"] is None
     with pytest.raises(ValueError, match="not current"):
         store.begin_acceptance_retry(

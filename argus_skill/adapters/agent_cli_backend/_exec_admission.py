@@ -175,7 +175,7 @@ def admit(ctx: "_ExecContext") -> tuple[Any, RunnerResult | None]:
             error=reason,
         )
     if backend._is_copilot and not interrupted:
-        from ...core.copilot_guard import (
+        from ...provider_integrations.copilot_guard import (
             acquire_copilot_permit,
             release_denied_permit,
         )

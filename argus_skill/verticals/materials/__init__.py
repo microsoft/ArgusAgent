@@ -11,6 +11,7 @@ from .stages import (
     WORKFLOW_MODE,
     completion_gate,
     role_banner,
+    stage_completion_issues,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "WORKFLOW_MODE",
     "completion_gate",
     "role_banner",
+    "stage_completion_issues",
 ]

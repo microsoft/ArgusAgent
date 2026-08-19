@@ -41,6 +41,7 @@ export function useProjectFeed(api: ApiClient, project: string): ProjectFeedStat
     aliveRef.current = true;
     let active = true;
     let retry: ReturnType<typeof setTimeout> | undefined;
+    let retryDelayMs = 1_000;
     let renderTimer: ReturnType<typeof setTimeout> | undefined;
     let pendingEvents: EventMsg[] = [];
     const flushEvents = () => {
@@ -66,15 +67,23 @@ export function useProjectFeed(api: ApiClient, project: string): ProjectFeedStat
         replay: 60,
         onOpen: () => {
           if (!active) return;
+          retryDelayMs = 1_000;
           setConnected(true);
           setStreamError('');
         },
         onEvent: queueEvent,
-        onClose: () => {
+        onClose: (info) => {
           if (!active) return;
           flushEvents();
           setConnected(false);
-          if (aliveRef.current) retry = setTimeout(connect, 1000);
+          if (!info.retryable) {
+            setStreamError(`event stream closed (${info.code}): ${info.reason}`);
+            return;
+          }
+          if (aliveRef.current) {
+            retry = setTimeout(connect, retryDelayMs);
+            retryDelayMs = Math.min(retryDelayMs * 2, 10_000);
+          }
         },
         onError: (error) => {
           if (active) setStreamError(error.message || 'event stream unavailable');
@@ -110,11 +119,16 @@ export function useProjectFeed(api: ApiClient, project: string): ProjectFeedStat
   useEffect(() => {
     let alive = true;
     let snapshotInFlight = false;
+    let prewarm = true;
+    let snapshotController: AbortController | undefined;
     const tick = async () => {
       if (snapshotInFlight) return;
       snapshotInFlight = true;
+      const controller = new AbortController();
+      snapshotController = controller;
       try {
-        const s = await api.snapshot();
+        const s = await api.snapshot(1, controller.signal, prewarm);
+        prewarm = false;
         if (alive) {
           setSnap((current) => (
             current && JSON.stringify(current) === JSON.stringify(s)
@@ -127,12 +141,14 @@ export function useProjectFeed(api: ApiClient, project: string): ProjectFeedStat
         if (alive) setSnapshotError((error as Error).message || 'snapshot refresh failed');
       } finally {
         snapshotInFlight = false;
+        if (snapshotController === controller) snapshotController = undefined;
       }
     };
     tick();
     const id = setInterval(tick, 5_000);
     return () => {
       alive = false;
+      snapshotController?.abort();
       clearInterval(id);
     };
   }, [api]);

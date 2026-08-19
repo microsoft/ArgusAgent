@@ -16,6 +16,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from ._env import (
     _CAPTURE_JSON_EVENTS_ENV,
@@ -27,6 +28,7 @@ from ._env import (
     _DEFAULT_STREAM_QUEUE_LINES,
     _STREAM_QUEUE_LINES_ENV,
     _incomplete_turn_error,
+    _is_manager_turn_label,
     _positive_env_int,
     _turn_wall_clock_seconds,
 )
@@ -37,7 +39,7 @@ from ._idle_watchdog import (
     IdleEscalation,
 )
 from .models import AgentRunResult, InactivitySnapshot
-from .runner_backend import BACKEND_OPENCODE
+from .runner_backend import BACKEND_DSH, BACKEND_OPENCODE
 
 _POST_EXIT_PIPE_DRAIN_QUIET_SECONDS = 0.1
 _POST_EXIT_PIPE_DRAIN_MAX_SECONDS = 5.0
@@ -85,6 +87,7 @@ class RunExecMixin:
         options,
         run_label: str | None = None,
     ) -> AgentRunResult:
+        options = self._apply_sandbox_policy(options)
         if self.before_exec is not None:
             self.before_exec()
         gated = self._run_exec_start_gate(resume_thread_id=resume_thread_id, options=options)
@@ -102,22 +105,25 @@ class RunExecMixin:
             )
             if acp_result is not None:
                 return acp_result
-        options = self._apply_sandbox_policy(options)
-        command, process, spawn_failure = self._spawn_turn_process(
+        command, process, spawn_failure, prompt_path = self._spawn_turn_process(
             prompt=prompt, resume_thread_id=resume_thread_id, options=options
         )
         if spawn_failure is not None:
             return spawn_failure
-        state = self._stream_turn_output(
-            process=process,
-            command=command,
-            options=options,
-            run_label=run_label,
-            thread_id=resume_thread_id,
-        )
-        return self._finalize_turn_result(
-            process=process, command=command, options=options, state=state
-        )
+        try:
+            state = self._stream_turn_output(
+                process=process,
+                command=command,
+                options=options,
+                run_label=run_label,
+                thread_id=resume_thread_id,
+            )
+            return self._finalize_turn_result(
+                process=process, command=command, options=options, state=state
+            )
+        finally:
+            if prompt_path is not None:
+                prompt_path.unlink(missing_ok=True)
 
     @classmethod
     def _cleanup_orphan_process_group(
@@ -184,11 +190,18 @@ class RunExecMixin:
 
     def _spawn_turn_process(
         self, *, prompt: str, resume_thread_id: str | None, options
-    ) -> tuple[list[str], subprocess.Popen[str] | None, AgentRunResult | None]:
+    ) -> tuple[
+        list[str],
+        subprocess.Popen[str] | None,
+        AgentRunResult | None,
+        Path | None,
+    ]:
         command = self._build_command(
             resume_thread_id=resume_thread_id, options=options
         )
-        command, stdin_prompt = self._prepare_prompt_delivery(command, prompt)
+        command, stdin_prompt, prompt_path = self._prepare_prompt_delivery(
+            command, prompt, working_dir=options.working_dir
+        )
         command[0] = self._resolve_executable(command[0])
         if options.isolate_workdir:
             try:
@@ -210,25 +223,31 @@ class RunExecMixin:
                         turn_failed=True,
                         fatal_error=f"maintenance isolation unavailable: {exc}",
                     ),
+                    prompt_path,
                 )
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            # Pin UTF-8 explicitly: without this, text mode uses the OS locale
-            # encoding, which is cp1252 on Windows and raises UnicodeEncodeError
-            # when the prompt or streamed model output contains non-Latin-1
-            # characters (e.g. "\u2192", CJK, emoji). errors="replace" keeps the
-            # reader from crashing on malformed bytes mid-stream.
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-            cwd=options.working_dir or None,
-            env=self._child_env(options),
-            start_new_session=os.name != "nt",
-        )
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                # Pin UTF-8 explicitly: without this, text mode uses the OS locale
+                # encoding, which is cp1252 on Windows and raises UnicodeEncodeError
+                # when the prompt or streamed model output contains non-Latin-1
+                # characters (e.g. "\u2192", CJK, emoji). errors="replace" keeps the
+                # reader from crashing on malformed bytes mid-stream.
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                cwd=options.working_dir or None,
+                env=self._child_env(options),
+                start_new_session=os.name != "nt",
+            )
+        except BaseException:
+            if prompt_path is not None:
+                prompt_path.unlink(missing_ok=True)
+            raise
         if stdin_prompt is not None:
             self._write_prompt(
                 process=process,
@@ -236,7 +255,7 @@ class RunExecMixin:
             )
         else:
             self._close_stdin(process)
-        return command, process, None
+        return command, process, None, prompt_path
 
     def _stream_turn_output(
         self,
@@ -294,7 +313,8 @@ class RunExecMixin:
         stderr_closed = False
 
         def consume_pipe(stream_name: str, pipe) -> None:
-            assert pipe is not None
+            if pipe is None:
+                raise RuntimeError(f"{stream_name} pipe was not created")
             for line in pipe:
                 if stop_queueing.is_set():
                     # Keep draining the OS pipe so an independently owned
@@ -319,14 +339,17 @@ class RunExecMixin:
                 except queue.Full:
                     continue
 
+        process_id = int(getattr(process, "pid", 0) or 0)
         stdout_thread = threading.Thread(
             target=consume_pipe,
             args=("stdout", process.stdout),
+            name=f"argus-provider-pipe-{process_id}-stdout",
             daemon=True,
         )
         stderr_thread = threading.Thread(
             target=consume_pipe,
             args=("stderr", process.stderr),
+            name=f"argus-provider-pipe-{process_id}-stderr",
             daemon=True,
         )
         stdout_thread.start()
@@ -357,13 +380,15 @@ class RunExecMixin:
                 or time.monotonic() - turn_started_at < turn_wall_clock_seconds
             ):
                 return False
-            subject = (
-                "scientist skill distill"
-                if str(run_label or "").strip().lower() == "scientist.skill_distill"
-                else "engineer turn"
-            )
+            normalized_label = str(run_label or "").strip().lower()
+            if _is_manager_turn_label(normalized_label):
+                subject = "Manager turn"
+            elif normalized_label == "scientist.skill_distill":
+                subject = "scientist skill distill"
+            else:
+                subject = "engineer turn"
             state.watchdog_reason = (
-                f"External interrupt: {subject} time budget reached after "
+                f"External interrupt: {subject} wall-clock limit reached after "
                 f"{turn_wall_clock_seconds}s; yield for review/steering"
             )
             self._emit(
@@ -552,8 +577,27 @@ class RunExecMixin:
         if process.poll() is None:
             process.wait(timeout=10.0)
 
-        stdout_thread.join(timeout=2.0 if stdout_closed else 0.05)
-        stderr_thread.join(timeout=2.0 if stderr_closed else 0.05)
+        pipe_readers = (
+            (process.stdout, stdout_thread),
+            (process.stderr, stderr_thread),
+        )
+        for pipe, reader in pipe_readers:
+            if os.name != "posix" and reader.is_alive() and pipe is not None:
+                try:
+                    os.close(pipe.fileno())
+                except (AttributeError, OSError, ValueError):
+                    pass
+        for pipe, reader in pipe_readers:
+            if os.name == "posix" and reader.is_alive():
+                continue
+            reader.join(timeout=2.0)
+            if not reader.is_alive() and pipe is not None:
+                close = getattr(pipe, "close", None)
+                try:
+                    if callable(close):
+                        close()
+                except OSError:
+                    pass
         return state
 
     def _finalize_turn_result(
@@ -612,6 +656,38 @@ class RunExecMixin:
                                 callback(message)
                             except Exception:  # noqa: BLE001 — UI callback must not break the turn
                                 pass
+
+        if (
+            self.backend == BACKEND_DSH
+            and not state.watchdog_terminated
+            and not state.turn_completed
+            and not state.turn_failed
+            and state.fatal_error is None
+        ):
+            # dsh's headless runner emits no JSON events at all: it prints the
+            # final assistant text once and exits 0 on a completed turn. Treat
+            # a clean exit as the authoritative completion receipt and a
+            # nonzero exit as the failure receipt, mirroring the fail-closed
+            # discipline of the generic branch below.
+            if process.returncode == 0:
+                final_text = "\n".join(
+                    line for line in state.stdout_lines if line.strip()
+                ).strip()
+                if final_text:
+                    state.agent_messages.append(final_text)
+                    state.turn_completed = True
+                else:
+                    state.turn_failed = True
+                    state.fatal_error = (
+                        "dsh completed with no assistant output: "
+                        + _incomplete_turn_error(state.stderr_lines)
+                    )
+            else:
+                state.turn_failed = True
+                state.fatal_error = (
+                    f"dsh exited with code {process.returncode}: "
+                    + _incomplete_turn_error(state.stderr_lines)
+                )
 
         if state.watchdog_terminated:
             state.turn_failed = True

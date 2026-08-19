@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import {
   mkdir,
   readFile,
@@ -12,7 +13,10 @@ import { dirname, join, resolve } from 'node:path';
 
 export interface ApiOwnershipRecord {
   schema: 1;
+  /** PID reported by /api/meta (the process actually listening on the port). */
   pid: number;
+  /** Launcher/process-tree root; differs from pid for Windows console scripts. */
+  rootPid?: number;
   host: string;
   port: number;
   backendBin: string;
@@ -22,6 +26,8 @@ export interface ApiOwnershipRecord {
 export interface ProcessInspection {
   alive: boolean;
   argv: string[];
+  /** Flat command line used on platforms that do not expose NUL-delimited argv. */
+  commandLine?: string;
 }
 
 export interface ReadOwnedApiOptions {
@@ -29,17 +35,25 @@ export interface ReadOwnedApiOptions {
   host: string;
   port: number;
   backendBin: string;
-  /** Override the OS inspector for testing. Defaults to Linux /proc reader. */
+  /** Override the OS inspector for testing. */
   inspect?: (pid: number) => Promise<ProcessInspection>;
+  /** Override platform dispatch for cross-platform ownership tests. */
+  platform?: NodeJS.Platform;
 }
 
 export interface ClaimApiOwnershipOptions extends ReadOwnedApiOptions {
   pid: number;
+  rootPid?: number;
   startedAt: string;
 }
 
 export function isLocalApiHost(host: string): boolean {
-  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  const normalized = host.trim().toLowerCase();
+  if (normalized === 'localhost' || normalized === '::1') return true;
+  const octets = normalized.split('.').map(Number);
+  return octets.length === 4
+    && octets[0] === 127
+    && octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255);
 }
 
 /**
@@ -59,7 +73,7 @@ export function defaultApiOwnershipPath(
   return join(stateRoot, 'runtime', `webapi-${endpoint}-${port}.owner.json`);
 }
 
-// ── Default Linux inspector ─────────────────────────────────────────────────
+// ── Default platform inspectors ─────────────────────────────────────────────
 
 async function linuxInspect(pid: number): Promise<ProcessInspection> {
   // Liveness check: signal 0 throws when process does not exist.
@@ -80,6 +94,108 @@ async function linuxInspect(pid: number): Promise<ProcessInspection> {
     // Process may have exited between the kill(0) and the read.
     return { alive: false, argv: [] };
   }
+}
+
+async function darwinInspect(pid: number): Promise<ProcessInspection> {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return { alive: false, argv: [] };
+  }
+
+  return new Promise((resolveInspection) => {
+    execFile(
+      '/bin/ps',
+      ['-ww', '-p', String(pid), '-o', 'command='],
+      { encoding: 'utf-8' },
+      (error, stdout) => {
+        const commandLine = error ? '' : stdout.trim();
+        resolveInspection({
+          alive: Boolean(commandLine),
+          argv: [],
+          commandLine: commandLine || undefined,
+        });
+      },
+    );
+  });
+}
+
+async function windowsInspect(pid: number): Promise<ProcessInspection> {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return { alive: false, argv: [] };
+  }
+
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    `$process = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"`,
+    'if ($null -eq $process) { exit 3 }',
+    '[PSCustomObject]@{ commandLine = [string]$process.CommandLine } | ConvertTo-Json -Compress',
+  ].join('; ');
+  return new Promise((resolveInspection) => {
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', script],
+      { encoding: 'utf-8', windowsHide: true },
+      (error, stdout) => {
+        if (error) {
+          resolveInspection({ alive: false, argv: [] });
+          return;
+        }
+        try {
+          const body = JSON.parse(stdout.trim()) as { commandLine?: unknown };
+          const commandLine = typeof body.commandLine === 'string'
+            ? body.commandLine.trim()
+            : '';
+          resolveInspection({
+            alive: Boolean(commandLine),
+            argv: [],
+            commandLine: commandLine || undefined,
+          });
+        } catch {
+          resolveInspection({ alive: false, argv: [] });
+        }
+      },
+    );
+  });
+}
+
+export function inspectProcess(
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+): Promise<ProcessInspection> {
+  if (platform === 'win32') return windowsInspect(pid);
+  if (platform === 'darwin') return darwinInspect(pid);
+  return linuxInspect(pid);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function commandHasArgument(
+  commandLine: string,
+  argument: string,
+  caseInsensitive: boolean,
+): boolean {
+  return new RegExp(
+    `(?:^|\\s)["']?${escapeRegExp(argument)}["']?(?=\\s|$)`,
+    caseInsensitive ? 'i' : '',
+  ).test(commandLine);
+}
+
+function commandHasOptionValue(
+  commandLine: string,
+  option: string,
+  value: string,
+  caseInsensitive: boolean,
+): boolean {
+  return new RegExp(
+    `(?:^|\\s)${escapeRegExp(option)}\\s+["']?${escapeRegExp(value)}["']?(?=\\s|$)`,
+    caseInsensitive ? 'i' : '',
+  ).test(commandLine);
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -103,15 +219,37 @@ export async function verifyApiProcess(
   opts: Omit<ReadOwnedApiOptions, 'path'> & { pid: number },
 ): Promise<boolean> {
   const { pid, host, port, backendBin } = opts;
-  const inspect = opts.inspect ?? linuxInspect;
+  const platform = opts.platform ?? process.platform;
+  const inspect = opts.inspect ?? ((candidate: number) => inspectProcess(candidate, platform));
+  const caseInsensitive = platform === 'win32';
+  const equals = (left: string, right: string) => (
+    caseInsensitive ? left.toLowerCase() === right.toLowerCase() : left === right
+  );
   if (!Number.isInteger(pid) || pid <= 0) return false;
 
-  const { alive, argv } = await inspect(pid);
-  if (!alive || !argv.includes(backendBin) || !argv.includes('--web')) return false;
-  const webPortIdx = argv.indexOf('--web-port');
-  if (webPortIdx === -1 || argv[webPortIdx + 1] !== String(port)) return false;
-  const webHostIdx = argv.indexOf('--web-host');
-  if (webHostIdx !== -1 && argv[webHostIdx + 1] !== host) return false;
+  const { alive, argv, commandLine } = await inspect(pid);
+  if (!alive) return false;
+  if (argv.length > 0) {
+    const indexOf = (argument: string) => argv.findIndex((value) => equals(value, argument));
+    if (indexOf(backendBin) === -1 || indexOf('--web') === -1) return false;
+    const webPortIdx = indexOf('--web-port');
+    if (webPortIdx === -1 || !equals(argv[webPortIdx + 1] ?? '', String(port))) return false;
+    const webHostIdx = indexOf('--web-host');
+    if (webHostIdx !== -1 && !equals(argv[webHostIdx + 1] ?? '', host)) return false;
+    return true;
+  }
+  if (!commandLine) return false;
+  if (
+    !commandHasArgument(commandLine, backendBin, caseInsensitive)
+    || !commandHasArgument(commandLine, '--web', caseInsensitive)
+  ) {
+    return false;
+  }
+  if (!commandHasOptionValue(commandLine, '--web-port', String(port), caseInsensitive)) return false;
+  if (
+    commandHasArgument(commandLine, '--web-host', caseInsensitive)
+    && !commandHasOptionValue(commandLine, '--web-host', host, caseInsensitive)
+  ) return false;
   return true;
 }
 
@@ -126,11 +264,13 @@ export async function claimApiOwnership(opts: ClaimApiOwnershipOptions): Promise
     port: opts.port,
     backendBin: opts.backendBin,
     inspect: opts.inspect,
+    platform: opts.platform,
   });
   if (!verified) return false;
   await writeOwnershipRecord(opts.path, {
     schema: 1,
     pid: opts.pid,
+    ...(opts.rootPid === undefined ? {} : { rootPid: opts.rootPid }),
     host: opts.host,
     port: opts.port,
     backendBin: opts.backendBin,
@@ -166,7 +306,8 @@ export async function readOwnedApi(
   opts: ReadOwnedApiOptions,
 ): Promise<ApiOwnershipRecord | null> {
   const { path, host, port, backendBin } = opts;
-  const inspect = opts.inspect ?? linuxInspect;
+  const platform = opts.platform ?? process.platform;
+  const inspect = opts.inspect ?? ((candidate: number) => inspectProcess(candidate, platform));
 
   try {
     const raw = await readFile(path, 'utf-8');
@@ -178,6 +319,14 @@ export async function readOwnedApi(
     // PID
     const pid = record.pid;
     if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return null;
+    if (
+      record.rootPid !== undefined
+      && (
+        typeof record.rootPid !== 'number'
+        || !Number.isInteger(record.rootPid)
+        || record.rootPid <= 0
+      )
+    ) return null;
 
     // Endpoint
     if (record.host !== host) return null;
@@ -186,7 +335,27 @@ export async function readOwnedApi(
     // Backend binary
     if (record.backendBin !== backendBin) return null;
 
-    if (!await verifyApiProcess({ pid, host, port, backendBin, inspect })) return null;
+    if (!await verifyApiProcess({ pid, host, port, backendBin, inspect, platform })) return null;
+
+    // A corrupted or obsolete optional launcher PID must never authorize a
+    // signal to an unrelated process. Keep ownership of the verified listener,
+    // but discard the launcher unless its command line independently matches
+    // this exact WebAPI endpoint.
+    if (
+      record.rootPid !== undefined
+      && record.rootPid !== pid
+      && !await verifyApiProcess({
+        pid: record.rootPid,
+        host,
+        port,
+        backendBin,
+        inspect,
+        platform,
+      })
+    ) {
+      const { rootPid: _unsafeRootPid, ...listenerRecord } = record;
+      return listenerRecord as ApiOwnershipRecord;
+    }
 
     return record as ApiOwnershipRecord;
   } catch {

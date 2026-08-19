@@ -13,7 +13,13 @@ def _contract() -> str:
 def test_effective_task_contract_is_compact() -> None:
     contract = _contract()
 
-    assert len(contract) <= 480
+    # 480 -> 600. Not this branch's growth: main's fb4ab8de added "Never stop at
+    # a bare launch verdict; say what failed, why, and what should happen next
+    # in plain language" (106 chars) to the constant and left the ceiling at
+    # 480, so the guard has been failing on main independently of this merge.
+    # The sentence earns its place — a bare verdict is the failure mode it names
+    # — so the ceiling moves to match rather than the sentence coming out.
+    assert len(contract) <= 600
     assert "Current operator" in contract
     assert "preregistration" in contract
     assert "ambiguous_objective" in contract

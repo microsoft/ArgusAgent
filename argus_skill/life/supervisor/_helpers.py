@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from ..memory import JournalEntry
 from ._constants import PLANNER_RECENT_FAILURE_STATUS
@@ -108,39 +108,56 @@ def _normalize_planner_text(text: str) -> str:
 
 
 def _sanitize_planner_task_text(text: str) -> str:
-    """Remove stale host-specific entry paths from planner-generated missions."""
+    """Replace legacy deployment paths in planner-generated missions."""
     value = str(text)
-    command_replacements = {
+    legacy_sources: set[str] = set()
+
+    def _replace_path_token(source_text: str, path: str, replacement: str) -> str:
+        source_text = source_text.replace(f"`{path}`", replacement)
+        return re.sub(
+            rf"(?<![\w./-]){re.escape(path)}(?![\w./-])",
+            replacement,
+            source_text,
+        )
+
+    def _replace_entry_command(match: re.Match[str]) -> str:
+        source = str(match.group("source") or "").rstrip("/")
+        if source:
+            legacy_sources.add(source)
+        return '"${ARGUS_SKILL_PYTHON:-python}" -m argus_skill'
+
+    value = re.sub(
         (
-            "PYTHONPATH=/home/argustest/argus-skill "
-            "/home/argustest/miniconda3/bin/python -m argus_skill"
-        ): '"${ARGUS_SKILL_PYTHON:-python}" -m argus_skill',
+            r"(?:PYTHONPATH=(?P<source>/[^\s`]+)\s+)?"
+            r"(?:/[^\s`]+/)?python(?:\d+(?:\.\d+)*)?"
+            r"\s+-m\s+argus_skill"
+        ),
+        _replace_entry_command,
+        value,
+    )
+    value = re.sub(
         (
-            "PYTHONPATH=/home/argustest/argus-skill "
-            "python -m argus_skill"
-        ): '"${ARGUS_SKILL_PYTHON:-python}" -m argus_skill',
-        (
-            "/home/argustest/miniconda3/bin/python -m argus_skill"
-        ): '"${ARGUS_SKILL_PYTHON:-python}" -m argus_skill',
-    }
-    for old, new in command_replacements.items():
-        value = value.replace(old, new)
-    path_replacements = {
-        "`/home/argustest/research.md`": "the operator-provided research playbook if present",
-        "/home/argustest/research.md": "the operator-provided research playbook if present",
-        "`/home/argustest/argus-skill`": "the active Argus source/package",
-        "/home/argustest/argus-skill": "the active Argus source/package",
-        (
-            "`/root/Auto-claude-code-research-in-sleep/skills/"
-            "paper-illustration-image2/SKILL.md`"
-        ): "`argus_builtin_skills/engineer/paper-illustration-image2.md`",
-        (
-            "/root/Auto-claude-code-research-in-sleep/skills/"
-            "paper-illustration-image2/SKILL.md"
-        ): "argus_builtin_skills/engineer/paper-illustration-image2.md",
-    }
-    for old, new in path_replacements.items():
-        value = value.replace(old, new)
+            r"`?/(?:home|root)/[^`\s]+/skills/"
+            r"paper-illustration-image2/SKILL\.md`?"
+        ),
+        "`argus_builtin_skills/engineer/paper-illustration-image2.md`",
+        value,
+    )
+    for source in sorted(legacy_sources, key=len, reverse=True):
+        source_path = PurePosixPath(source)
+        if source_path.name not in {"Argus", "argus-skill"}:
+            continue
+        research_playbook = str(source_path.parent / "research.md")
+        value = _replace_path_token(
+            value,
+            research_playbook,
+            "the operator-provided research playbook if present",
+        )
+        value = _replace_path_token(
+            value,
+            source,
+            "the active Argus source/package",
+        )
     return value
 
 
@@ -154,8 +171,14 @@ def _planner_task_signature(
     stage_closing: bool = False,
     require_independent_review: bool = False,
     skip_stage_transition: bool = False,
+    execution_workdir: str = "",
 ) -> tuple[str, ...]:
     """Identity for deduping work, including the evidence revision it reads.
+
+    Mission-quality prose is deliberately not identity: old persisted rows do not
+    have it, and wording a new hypothesis differently must not duplicate the same
+    executable task. Dynamic plan revision already excludes the superseded active
+    plan, so a genuine replacement remains enqueueable.
 
     Title/objective-only dedup incorrectly suppresses a legitimate rerun after
     an upstream artifact changes. Stable context refs keep true duplicates
@@ -183,6 +206,7 @@ def _planner_task_signature(
             else "independent_review_optional"
         ),
         "stage_transition_skipped" if skip_stage_transition else "stage_transition_allowed",
+        str(execution_workdir or "").strip(),
     )
 
 
@@ -222,4 +246,16 @@ def _is_recent_no_progress_failure(entry: JournalEntry) -> bool:
         or extra.get("failure_status")
         or ""
     ).strip().casefold()
-    return terminal_status == PLANNER_RECENT_FAILURE_STATUS
+    if terminal_status != PLANNER_RECENT_FAILURE_STATUS:
+        return False
+    # Quarantine is for a task signature that has proved unrecoverable. A
+    # mission recorded as resumable — a Reviewer answered the stall with
+    # ``continue``, or the stop kind was recoverable — has not: skipping it
+    # leaves the Planner with nothing to enqueue and the project idle against
+    # an unfinished goal. Both fields are read because the settlement event
+    # carries the flag at top level and inside the outcome dimensions.
+    outcome = extra.get("outcome")
+    outcome_resumable = (
+        outcome.get("resumable") if isinstance(outcome, dict) else False
+    )
+    return not bool(extra.get("resumable") or outcome_resumable)

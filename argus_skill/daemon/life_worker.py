@@ -55,6 +55,7 @@ from ._life_worker_admission import (  # noqa: F401 — re-exported, see __all__
     _active_daemon_count,
     _active_workspace_owner,
     _daemon_global_root,
+    _launcher_failure_message,
     _max_active_daemons,
     _release_daemon_spawn_lock,
     _release_daemon_workspace_lease,
@@ -126,6 +127,7 @@ from .state import (
     disable_continuous_config,
     read_continuous_config,
     read_continuous_state,
+    read_daemon_control_stop,
     read_daemon_status,
     resolve_effective_budget,
     stop_daemon,
@@ -223,19 +225,20 @@ class LifeWorker(LifeWorkerBootMixin, LifeWorkerRunMixin):
         self._started_at: float | None = None
         self._missions_completed = 0
         self._curator: Any = None  # resident teammate-pool Curator (built in run_forever)
+        self._control_thread: threading.Thread | None = None
+        self._control_started_at_iso = ""
 
     # -- signal handling ------------------------------------------------
 
     def _install_signal_handlers(self) -> None:
         def _handler(signum: int, _frame: Any) -> None:  # noqa: ANN401
             log.info("daemon: received signal %s, requesting stop", signum)
-            self._operator_stop_requested = True
-            self._stop.set()
-            if not daemon_drain_requested(
-                self.config.life_dir,
-                pid=os.getpid(),
-            ):
-                self._mission_stop.set()
+            self.request_process_stop(
+                drain=daemon_drain_requested(
+                    self.config.life_dir,
+                    pid=os.getpid(),
+                )
+            )
 
         signal.signal(signal.SIGTERM, _handler)
         signal.signal(signal.SIGINT, _handler)
@@ -251,6 +254,64 @@ class LifeWorker(LifeWorkerBootMixin, LifeWorkerRunMixin):
             # SIGHUP is POSIX-only; on Windows ``signal.SIGHUP`` is
             # missing. Ignoring is a no-op on Windows anyway.
             pass
+        self._start_control_watcher()
+
+    def request_process_stop(self, *, drain: bool = False) -> None:
+        """Set the worker's cooperative stop events.
+
+        This is shared by POSIX signals and the PID-bound file control channel
+        used on Windows, where ``os.kill(pid, SIGTERM)`` is a hard process
+        termination and cannot invoke Python's signal handler.
+        """
+        self._operator_stop_requested = True
+        self._stop.set()
+        if not drain:
+            self._mission_stop.set()
+
+    def _start_control_watcher(self) -> None:
+        """Watch this exact daemon boot's out-of-band stop request."""
+        if self._control_thread is not None:
+            return
+        status = read_daemon_status(self.config.life_dir)
+        if (
+            not status.alive
+            or status.pid != os.getpid()
+            or not status.started_at_iso
+        ):
+            # Unit-created workers and pre-publication failures have no process
+            # identity to bind safely, so they must not consume control files.
+            return
+        started_at_iso = status.started_at_iso
+        self._control_started_at_iso = started_at_iso
+
+        def _watch() -> None:
+            last_request_at = -1.0
+            # A drain request sets ``_stop`` but deliberately leaves the current
+            # mission running. Keep watching so a later operator click can
+            # escalate that graceful drain to an immediate, PID-bound interrupt.
+            while not self._mission_stop.is_set():
+                request = read_daemon_control_stop(
+                    self.config.life_dir,
+                    pid=os.getpid(),
+                    started_at_iso=started_at_iso,
+                )
+                if request is not None and request.requested_at != last_request_at:
+                    last_request_at = request.requested_at
+                    log.info(
+                        "daemon: received PID-bound %s request",
+                        "drain" if request.drain else "stop",
+                    )
+                    self.request_process_stop(drain=request.drain)
+                    if not request.drain:
+                        return
+                time.sleep(0.1)
+
+        self._control_thread = threading.Thread(
+            target=_watch,
+            name="argus-daemon-control",
+            daemon=True,
+        )
+        self._control_thread.start()
 
     # -- main loop ------------------------------------------------------
 
@@ -287,7 +348,9 @@ class LifeWorker(LifeWorkerBootMixin, LifeWorkerRunMixin):
         from ..core.knobs import resolve_role_model
 
         model = resolve_role_model(
-            "curator", role_env="ARGUS_SKILL_CURATOR_MODEL"
+            "curator",
+            role_env="ARGUS_SKILL_CURATOR_MODEL",
+            backend=getattr(backend, "backend", self.config.backend),
         )
         effort = os.environ.get(
             "ARGUS_SKILL_CURATOR_REASONING_EFFORT", "high"
@@ -322,7 +385,11 @@ class LifeWorker(LifeWorkerBootMixin, LifeWorkerRunMixin):
             return None
         from ..core.knobs import resolve_role_model
 
-        model = resolve_role_model("manager", role_env="ARGUS_SKILL_MODEL")
+        model = resolve_role_model(
+            "manager",
+            role_env="ARGUS_SKILL_MODEL",
+            backend=getattr(backend, "backend", self.config.backend),
+        )
         workdir = str(self.config.project_workdir) if self.config.project_workdir else None
 
         def _summarize(prompt: str) -> str:

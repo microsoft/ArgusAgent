@@ -1,7 +1,7 @@
 import WebSocket from 'ws';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
-import { parse, resolve } from 'node:path';
+import { posix, win32 } from 'node:path';
 import type {
   ArtifactInfo,
   BacklogItem,
@@ -20,6 +20,11 @@ import {
   requireSnapshotContract,
   type ApiMeta,
 } from '../../core/src/protocol.js';
+import {
+  DEFAULT_META_TIMEOUT_MS,
+  DEFAULT_READ_TIMEOUT_MS,
+  requestWithTimeout,
+} from './network.js';
 
 export type {
   ArtifactInfo,
@@ -56,8 +61,17 @@ export function defaultExecutionWorkdir(
   launchCwd: string,
   home = homedir(),
 ): string | undefined {
-  const resolvedLaunch = resolve(launchCwd);
-  if (resolvedLaunch === resolve(home) || resolvedLaunch === parse(resolvedLaunch).root) {
+  const windowsStyle = (value: string) => value.includes('\\') || /^[A-Za-z]:[\\/]/.test(value);
+  const pathApi = windowsStyle(launchCwd) ? win32 : posix;
+  const resolvedLaunch = pathApi.resolve(launchCwd);
+  const comparable = (value: string) => pathApi === win32 ? value.toLowerCase() : value;
+  const sameFlavorHome = windowsStyle(home) === (pathApi === win32)
+    ? comparable(pathApi.resolve(home))
+    : '';
+  if (
+    comparable(resolvedLaunch) === sameFlavorHome
+    || comparable(resolvedLaunch) === comparable(pathApi.parse(resolvedLaunch).root)
+  ) {
     return undefined;
   }
   return resolvedLaunch;
@@ -105,6 +119,7 @@ export interface Turn {
   role: string;
   text: string;
   ts?: number;
+  message_id?: string;
 }
 
 export interface ApiOptions {
@@ -113,6 +128,35 @@ export interface ApiOptions {
   project: string;
   token?: string;
   onCompatibilityWarning?: (warning: string) => void;
+  /** Short handshake bound so startup cannot stay on "connecting" forever. */
+  metaTimeoutMs?: number;
+  /** Bound for polling and inspect reads; Manager mutations retain their own lifecycle. */
+  readTimeoutMs?: number;
+}
+
+export interface StreamCloseInfo {
+  code: number;
+  reason: string;
+  retryable: boolean;
+}
+
+export function streamCloseInfo(code: number, reason = ''): StreamCloseInfo {
+  const normalizedReason = reason.trim();
+  if (code === 4401) {
+    return {
+      code,
+      reason: normalizedReason || 'event stream authentication was rejected',
+      retryable: false,
+    };
+  }
+  if (code === 4404) {
+    return {
+      code,
+      reason: normalizedReason || 'the selected project no longer exists',
+      retryable: false,
+    };
+  }
+  return { code, reason: normalizedReason, retryable: true };
 }
 
 export interface CreatedDaemon {
@@ -225,6 +269,8 @@ export class ApiClient {
   readonly project: string;
   private readonly token?: string;
   private readonly onCompatibilityWarning?: (warning: string) => void;
+  private readonly metaTimeoutMs: number;
+  private readonly readTimeoutMs: number;
   private metaPromise?: Promise<ApiMeta>;
 
   constructor(opts: ApiOptions) {
@@ -233,6 +279,8 @@ export class ApiClient {
     this.project = opts.project;
     this.token = opts.token;
     this.onCompatibilityWarning = opts.onCompatibilityWarning;
+    this.metaTimeoutMs = opts.metaTimeoutMs ?? DEFAULT_META_TIMEOUT_MS;
+    this.readTimeoutMs = opts.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
   }
 
   private authHeaders(): Record<string, string> {
@@ -245,18 +293,22 @@ export class ApiClient {
 
   meta(): Promise<ApiMeta> {
     if (!this.metaPromise) {
-      const request = (async () => {
-        const path = '/api/meta';
-        const r = await fetch(`${this.httpBase}${path}`, { headers: this.authHeaders() });
-        if (r.status === 404) {
-          throw new Error('incompatible Argus API: service does not expose /api/meta');
-        }
-        await ensureResponseOk(r, 'GET', path);
-        return requireCompatibleApiMeta(
-          await r.json(),
-          this.onCompatibilityWarning,
-        );
-      })();
+      const path = '/api/meta';
+      const request = requestWithTimeout(
+        `${this.httpBase}${path}`,
+        { headers: this.authHeaders() },
+        this.metaTimeoutMs,
+        async (r) => {
+          if (r.status === 404) {
+            throw new Error('incompatible Argus API: service does not expose /api/meta');
+          }
+          await ensureResponseOk(r, 'GET', path);
+          return requireCompatibleApiMeta(
+            await r.json(),
+            this.onCompatibilityWarning,
+          );
+        },
+      );
       this.metaPromise = request;
       void request.catch(() => {
         if (this.metaPromise === request) this.metaPromise = undefined;
@@ -267,9 +319,15 @@ export class ApiClient {
 
   async listProjects(): Promise<ProjectRow[]> {
     await this.meta();
-    const r = await fetch(`${this.httpBase}/api/projects`, { headers: this.authHeaders() });
-    await ensureResponseOk(r, 'GET', '/api/projects');
-    return ((await r.json()) as { projects: ProjectRow[] }).projects;
+    return requestWithTimeout(
+      `${this.httpBase}/api/projects`,
+      { headers: this.authHeaders() },
+      this.readTimeoutMs,
+      async (r) => {
+        await ensureResponseOk(r, 'GET', '/api/projects');
+        return ((await r.json()) as { projects: ProjectRow[] }).projects;
+      },
+    );
   }
 
   async createDaemon(
@@ -343,6 +401,34 @@ export class ApiClient {
     return (await r.json()) as Record<string, unknown>;
   }
 
+  /** Gracefully stop this session's background executor (never force-kill). */
+  stopDaemon(commandId = randomUUID()): Promise<Record<string, unknown>> {
+    const path = '/daemon/stop';
+    return requestWithTimeout(
+      this.p(path),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+        body: JSON.stringify({
+          force: false,
+          drain: false,
+          command_id: commandId,
+        }),
+      },
+      this.readTimeoutMs,
+      async (r) => {
+        await ensureResponseOk(r, 'POST', path);
+        const result = (await r.json()) as Record<string, unknown>;
+        const rc = Number(result.rc ?? 0);
+        if (!Number.isFinite(rc) || ![0, 1].includes(rc)) {
+          const detail = String(result.error ?? result.message ?? `rc=${String(result.rc ?? 'unknown')}`);
+          throw new Error(`executor did not stop cleanly: ${detail}`);
+        }
+        return result;
+      },
+    );
+  }
+
   async setProjectLaunchCwd(project: string, launchCwd: string): Promise<void> {
     const path = `/api/projects/${encodeURIComponent(project)}/launch-cwd`;
     const r = await fetch(`${this.httpBase}${path}`, {
@@ -374,11 +460,24 @@ export class ApiClient {
     return (await r.json()) as { ok: boolean; sid: string; name: string };
   }
 
-  async snapshot(eventsLimit = 1): Promise<Snapshot> {
+  async snapshot(
+    eventsLimit = 1,
+    signal?: AbortSignal,
+    prewarm = false,
+  ): Promise<Snapshot> {
     await this.meta();
-    const r = await fetch(this.p(`/snapshot?compact=true&events_limit=${eventsLimit}`));
-    await ensureResponseOk(r, 'GET', '/snapshot');
-    return requireSnapshotContract(await r.json());
+    return requestWithTimeout(
+      this.p(
+        `/snapshot?compact=true&events_limit=${eventsLimit}`
+        + (prewarm ? '&prewarm=true' : ''),
+      ),
+      { headers: this.authHeaders(), signal },
+      this.readTimeoutMs,
+      async (r) => {
+        await ensureResponseOk(r, 'GET', '/snapshot');
+        return requireSnapshotContract(await r.json());
+      },
+    );
   }
 
   async postTask(text: string): Promise<BacklogItem> {
@@ -484,9 +583,15 @@ export class ApiClient {
 
   // ── Wave-1 read/inspect ──
   private async getJson<T>(path: string): Promise<T> {
-    const r = await fetch(this.p(path), { headers: this.authHeaders() });
-    await ensureResponseOk(r, 'GET', path);
-    return (await r.json()) as T;
+    return requestWithTimeout(
+      this.p(path),
+      { headers: this.authHeaders() },
+      this.readTimeoutMs,
+      async (r) => {
+        await ensureResponseOk(r, 'GET', path);
+        return (await r.json()) as T;
+      },
+    );
   }
 
   private async post(path: string, body?: unknown): Promise<Record<string, unknown>> {
@@ -529,6 +634,21 @@ export class ApiClient {
 
   async getBacklogItem(id: string): Promise<BacklogItem> {
     return (await this.getJson<{ item: BacklogItem }>(`/backlog/${encodeURIComponent(id)}`)).item;
+  }
+
+  answerPending(itemId: string, text: string): Promise<Record<string, unknown>> {
+    return this.post(`/backlog/${encodeURIComponent(itemId)}/answer`, { text });
+  }
+
+  resolveDecision(
+    decisionId: string,
+    optionId: string,
+    note: string,
+  ): Promise<Record<string, unknown>> {
+    return this.post(`/decisions/${encodeURIComponent(decisionId)}/resolve`, {
+      option_id: optionId,
+      note,
+    });
   }
 
   getArtifact(path: string): Promise<ArtifactInfo> {
@@ -595,7 +715,7 @@ export class ApiClient {
   connectStream(handlers: {
     onEvent: (ev: EventMsg) => void;
     onOpen?: () => void;
-    onClose?: (code: number) => void;
+    onClose?: (info: StreamCloseInfo) => void;
     onError?: (err: Error) => void;
     replay?: number;
   }): WebSocket {
@@ -613,7 +733,9 @@ export class ApiClient {
         /* ignore malformed frame */
       }
     });
-    ws.on('close', (code) => handlers.onClose?.(code));
+    ws.on('close', (code, reason) => handlers.onClose?.(
+      streamCloseInfo(code, reason.toString('utf8')),
+    ));
     ws.on('error', (err) => handlers.onError?.(err as Error));
     return ws;
   }

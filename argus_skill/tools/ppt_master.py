@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import uuid
@@ -70,11 +71,16 @@ def _run(
             capture_output=True,
             text=True,
         )
-    except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or exc.stdout or "").strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = (
+            (exc.stderr or exc.stdout or "").strip()
+            if isinstance(exc, subprocess.CalledProcessError)
+            else str(exc)
+        )
         command = " ".join(argv)
+        failure = detail or f"exit {getattr(exc, 'returncode', 1)}"
         raise RuntimeError(
-            f"PPT Master command failed ({command}): {detail or f'exit {exc.returncode}'}"
+            f"PPT Master command failed ({command}): {failure}"
         ) from exc
 
 
@@ -174,6 +180,14 @@ def _prepare_checkout(
     return temporary
 
 
+def _remove_tree(path: Path) -> None:
+    def remove_readonly(func, value, _exc_info) -> None:
+        os.chmod(value, stat.S_IWRITE)
+        func(value)
+
+    shutil.rmtree(path, onerror=remove_readonly)
+
+
 def _copy_private_config(source: Path, destination: Path) -> None:
     for relative in (Path(".env"), Path("skills/ppt-master/.env")):
         source_path = source / relative
@@ -195,7 +209,7 @@ def _replace_checkout(target: Path, prepared: Path) -> None:
     except BaseException:
         os.replace(backup, target)
         raise
-    shutil.rmtree(backup)
+    _remove_tree(backup)
 
 
 def _python_executable(explicit: str | None = None) -> str:
@@ -284,7 +298,7 @@ def install_ppt_master(
             _replace_checkout(target, prepared)
         finally:
             if prepared.exists() and prepared != target:
-                shutil.rmtree(prepared)
+                _remove_tree(prepared)
 
     _validate_checkout(target, revision, git)
     if install_dependencies and current_revision == revision:

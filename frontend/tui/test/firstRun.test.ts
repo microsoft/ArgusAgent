@@ -5,7 +5,12 @@ import React from 'react';
 import { render, type Instance } from 'ink';
 import type { CreatedDaemon } from '../src/api.js';
 import { FirstRun } from '../src/components/FirstRun.js';
-import { initialProjectId, initialProjectSelection, interactiveStartup } from '../src/initialProject.js';
+import {
+  initialProjectId,
+  initialProjectSelection,
+  interactiveStartup,
+  liveProjectsForLaunchCwd,
+} from '../src/initialProject.js';
 import { projectsForLaunchCwd } from '../../core/src/projects.js';
 
 const ANSI = /\u001B\[[0-?]*[ -/]*[@-~]/g;
@@ -75,6 +80,12 @@ function mount(
 
 const settle = (ms = 25) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 test('fresh Ink install selects the deliberate first-run state', () => {
   assert.equal(initialProjectId([]), null);
   assert.deepEqual(initialProjectSelection([], '  requested-session  '), {
@@ -110,6 +121,35 @@ test('resume scope excludes unassigned legacy Web sessions unless --all is used'
   ];
   assert.deepEqual(projectsForLaunchCwd(rows, '/work', false).map((row) => row.id), ['local']);
   assert.equal(projectsForLaunchCwd(rows, '/work', true).length, 3);
+});
+
+test('resume scope normalizes Windows separators, drive case, and filesystem root', () => {
+  const windowsRows = [
+    { id: 'local', label: 'local', objective: '', launch_cwd: 'C:\\Work\\Repo', last_active: 2, daemon_alive: false, daemon_pid: null, uptime_seconds: null },
+    { id: 'other', label: 'other', objective: '', launch_cwd: 'D:\\Work', last_active: 1, daemon_alive: false, daemon_pid: null, uptime_seconds: null },
+  ];
+  assert.deepEqual(
+    projectsForLaunchCwd(windowsRows, 'c:/work', false).map((row) => row.id),
+    ['local'],
+  );
+
+  const posixRows = [
+    { id: 'root-child', label: 'root-child', objective: '', launch_cwd: '/work/repo', last_active: 1, daemon_alive: false, daemon_pid: null, uptime_seconds: null },
+  ];
+  assert.deepEqual(projectsForLaunchCwd(posixRows, '/', false).map((row) => row.id), ['root-child']);
+});
+
+test('plain startup reuses the highest-ranked live Windows session for its launch directory', () => {
+  const rows = [
+    { id: 'stopped', label: 'stopped', objective: '', launch_cwd: 'C:\\Work\\Repo', last_active: 99, daemon_alive: false, daemon_pid: null, uptime_seconds: null },
+    { id: 'older-live', label: 'older', objective: '', launch_cwd: 'c:/work/repo/sub', last_active: 2, daemon_alive: true, daemon_pid: 41, uptime_seconds: 10 },
+    { id: 'newer-live', label: 'newer', objective: '', launch_cwd: 'C:\\WORK\\REPO', last_active: 8, daemon_alive: true, daemon_pid: 42, uptime_seconds: 20 },
+    { id: 'other-live', label: 'other', objective: '', launch_cwd: 'D:\\Work\\Repo', last_active: 10, daemon_alive: true, daemon_pid: 43, uptime_seconds: 30 },
+  ];
+  assert.deepEqual(
+    liveProjectsForLaunchCwd(rows, 'c:/work/repo').map((row) => row.id),
+    ['newer-live', 'older-live'],
+  );
 });
 
 test('first-run screen remains usable from 40 to 120 columns', async () => {
@@ -184,4 +224,25 @@ test('first-run creation failure stays actionable and can be retried', async () 
   assert.equal(attempts, 2);
   assert.equal(entered, true);
   harness.instance.unmount();
+});
+
+test('first-run exit during creation ignores the late UI result', async () => {
+  const creation = deferred<CreatedDaemon>();
+  let entered = false;
+  const harness = mount(
+    async () => creation.promise,
+    () => { entered = true; },
+  );
+  await settle();
+  harness.stdin.write('\r');
+  await settle();
+  harness.stdin.write('\u0003');
+  await Promise.race([
+    harness.instance.waitUntilExit(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('FirstRun did not exit')), 500)),
+  ]);
+
+  creation.resolve(daemon('s-late', true));
+  await settle();
+  assert.equal(entered, false);
 });

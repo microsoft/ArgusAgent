@@ -4,9 +4,8 @@ Lock in two invariants:
 
 1. Every matchable built-in skill markdown (excluding packaged ``references/``
    corpora) has YAML frontmatter with at minimum ``name`` and ``description``.
-2. The three skills copied from ARIS (``citation-audit``,
-   ``paper-claim-audit``, ``figure-spec``) are present and well-formed,
-   and the figure-spec renderer script is importable + runs.
+2. The retained ARIS-derived skills are present and well-formed, claim checking
+   has one canonical implementation, and the figure renderer is importable.
 
 This prevents accidental drift of the skill bundle and catches the
 "someone added a skill without frontmatter so the matcher silently
@@ -23,6 +22,13 @@ import pytest
 import yaml
 
 BUILTIN_ROOT = Path(__file__).resolve().parents[1] / "argus_skill" / "builtin_skills"
+RESEARCH_ROOT = (
+    Path(__file__).resolve().parents[1]
+    / "argus_skill"
+    / "verticals"
+    / "research"
+    / "skills"
+)
 
 
 def _iter_skill_md_files() -> list[Path]:
@@ -61,26 +67,37 @@ def test_every_builtin_skill_has_frontmatter() -> None:
     "skill_path,expected_name",
     [
         ("engineer/citation-audit.md", "Citation Audit"),
-        ("engineer/paper-claim-audit.md", "Paper Claim Audit"),
+        ("engineer/claims-evidence-audit.md", "Claim Check"),
         ("engineer/figure-spec.md", "Figure Spec (deterministic SVG)"),
     ],
 )
 def test_aris_adapted_skills_are_present(skill_path: str, expected_name: str) -> None:
-    md = BUILTIN_ROOT / skill_path
+    md = RESEARCH_ROOT / skill_path
     assert md.exists(), f"missing adapted skill: {skill_path}"
     fm = _parse_frontmatter(md.read_text(encoding="utf-8"))
     assert fm is not None
     assert fm["name"] == expected_name
 
 
+def test_claim_check_requires_fresh_source_level_verification() -> None:
+    text = (
+        RESEARCH_ROOT / "engineer" / "claims-evidence-audit.md"
+    ).read_text(encoding="utf-8")
+
+    assert "fresh-context" in text
+    assert "MATCH / MISMATCH / MISSING" in text
+    assert "one reviewer thread per claim" in text
+    assert "PAPER_CLAIM_AUDIT" not in text
+
+
 def test_figure_renderer_script_is_present_and_importable() -> None:
-    renderer = BUILTIN_ROOT / "engineer" / "figure_spec_scripts" / "figure_renderer.py"
+    renderer = RESEARCH_ROOT / "engineer" / "figure_spec_scripts" / "figure_renderer.py"
     assert renderer.exists(), "figure_renderer.py missing — figure-spec skill is broken"
     # Subprocess-import so we don't pollute the parent process's modules.
     proc = subprocess.run(
         [sys.executable, "-c",
          f"import importlib.util, sys; "
-         f"spec = importlib.util.spec_from_file_location('fr', '{renderer}'); "
+         f"spec = importlib.util.spec_from_file_location('fr', {str(renderer)!r}); "
          f"mod = importlib.util.module_from_spec(spec); "
          f"spec.loader.exec_module(mod); "
          f"print('OK')"],
@@ -93,7 +110,7 @@ def test_figure_renderer_script_is_present_and_importable() -> None:
 
 
 def test_figure_renderer_round_trip_render(tmp_path: Path) -> None:
-    renderer = BUILTIN_ROOT / "engineer" / "figure_spec_scripts" / "figure_renderer.py"
+    renderer = RESEARCH_ROOT / "engineer" / "figure_spec_scripts" / "figure_renderer.py"
     spec = tmp_path / "spec.json"
     spec.write_text(
         json.dumps(
@@ -128,7 +145,7 @@ def test_figure_renderer_round_trip_render(tmp_path: Path) -> None:
 def test_figure_renderer_is_deterministic(tmp_path: Path) -> None:
     """Same spec → byte-identical SVG. This is the core promise of the
     figure-spec skill vs AI image generation."""
-    renderer = BUILTIN_ROOT / "engineer" / "figure_spec_scripts" / "figure_renderer.py"
+    renderer = RESEARCH_ROOT / "engineer" / "figure_spec_scripts" / "figure_renderer.py"
     spec = tmp_path / "spec.json"
     spec.write_text(
         json.dumps({"title": "Det", "width": 300, "height": 200,
@@ -155,17 +172,18 @@ def test_seed_builtin_skills_copies_bundled_scripts(tmp_path: Path) -> None:
     figure_renderer.py) alongside the skill markdown. Without this the
     skill prompt would reference a script that's missing in the seeded
     project workspace."""
-    from argus_skill.skills.builtins import seed_builtin_skills
+    from argus_skill.skills.builtins import seed_vertical_skills
 
-    seed_builtin_skills(tmp_path)
+    seed_vertical_skills(tmp_path, "research")
     renderer = tmp_path / "engineer" / "figure_spec_scripts" / "figure_renderer.py"
     assert renderer.exists(), (
         "figure_renderer.py was NOT seeded into the workspace — the "
         "bundled-script copy path is broken"
     )
-    # Sanity: the seeded copy is byte-identical to the in-tree source
-    in_tree = BUILTIN_ROOT / "engineer" / "figure_spec_scripts" / "figure_renderer.py"
-    assert renderer.read_bytes() == in_tree.read_bytes()
+    # Sanity: the seeded copy has identical source content. Git may check out
+    # the source with CRLF on Windows while importlib.resources yields LF.
+    in_tree = RESEARCH_ROOT / "engineer" / "figure_spec_scripts" / "figure_renderer.py"
+    assert renderer.read_text(encoding="utf-8") == in_tree.read_text(encoding="utf-8")
 
 
 def test_plan_review_skill_has_rl_config_sanity_section() -> None:
@@ -173,7 +191,7 @@ def test_plan_review_skill_has_rl_config_sanity_section() -> None:
     structurally-unlearnable RL configs at the plan stage (before GPU spend).
     """
 
-    md = BUILTIN_ROOT / "reviewer" / "experiment-plan-review.md"
+    md = RESEARCH_ROOT / "reviewer" / "experiment-plan-review.md"
     text = md.read_text(encoding="utf-8")
     # The scored 6th dimension + its output key.
     assert "RL training-configuration sanity" in text

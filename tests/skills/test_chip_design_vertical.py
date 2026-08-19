@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from argus_skill.manager._core import Manager
-from argus_skill.manager._helpers import _OPTIMIZE_VERTICALS
 from argus_skill.skills.builtins import iter_vertical_skill_texts
 from argus_skill.skills.stage_machine import (
     ChecklistLoadState,
@@ -98,7 +97,7 @@ def _digest(path: Path) -> str:
 
 def _complete_project(root: Path, *, delivery_level: str = "rtl_ip") -> Path:
     _write_json(
-        root / "research/PIPELINE_STATE.json",
+        root / ".argus/PIPELINE_STATE.json",
         {"vertical": "chip_design", "current_stage": "signoff"},
     )
     _write_json(
@@ -473,7 +472,6 @@ def test_chip_design_is_registered_and_staged() -> None:
     assert vertical_workflow_mode(module) == "proportional"
     assert vertical_requires_independent_review(module) is True
     assert Manager._kind_for("chip_design") == "custom"
-    assert "chip_design" not in _OPTIMIZE_VERTICALS
 
 
 def test_chip_design_checklists_load_without_paper_contract(tmp_path: Path) -> None:
@@ -707,6 +705,13 @@ def test_environment_audit_report_is_sanitized(tmp_path: Path) -> None:
     assert "/pdks/" not in serialized
 
 
+def test_environment_audit_sanitizes_posix_and_windows_absolute_markers() -> None:
+    assert environment_audit._safe_project_marker("rtl/top.sv") == "rtl/top.sv"
+    assert environment_audit._safe_project_marker("/pdks/sky130") is None
+    assert environment_audit._safe_project_marker(r"C:\pdks\sky130") is None
+    assert environment_audit._safe_project_marker(r"\\server\pdks\sky130") is None
+
+
 def test_environment_audit_never_executes_recorded_target_python(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -824,7 +829,10 @@ def test_environment_audit_rejects_report_that_omits_scope_requirements(
     assert any("required_capabilities" in error for error in errors)
 
 
-def test_environment_audit_rejects_symlink_output(tmp_path: Path) -> None:
+def test_environment_audit_rejects_symlink_output(
+    tmp_path: Path,
+    require_symlink_support,
+) -> None:
     outside = tmp_path.parent / f"{tmp_path.name}-outside.json"
     outside.write_text("unchanged\n", encoding="utf-8")
     output = tmp_path / "research/ENVIRONMENT_AUDIT.json"

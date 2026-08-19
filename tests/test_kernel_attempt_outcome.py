@@ -68,6 +68,24 @@ def test_performance_claim_requires_changed_path_and_diff_identity() -> None:
     assert any("path_coverage" in error for error in errors)
 
 
+def test_outcome_rejects_mislabeled_benchmark_shape() -> None:
+    record = _outcome(
+        benchmark_shapes={
+            "L32_B1_T8K_D2K": {
+                "L": 64,
+                "B": 1,
+                "T": 8192,
+                "D": 8192,
+            }
+        },
+        benchmark_dtype="bf16",
+    )
+
+    errors = validate_outcome(record)
+    assert any("label=32, actual=64" in error for error in errors)
+    assert any("label=2048, actual=8192" in error for error in errors)
+
+
 def test_project_check_validates_outcome_files(tmp_path: Path) -> None:
     path = tmp_path / "attempts" / "a001" / "OUTCOME.json"
     path.parent.mkdir(parents=True)

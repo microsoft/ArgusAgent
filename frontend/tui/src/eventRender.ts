@@ -4,7 +4,9 @@ import {
   isReasoning,
   isStructuredAgentPayload,
   mergeFragment,
+  visibleAgentText,
 } from '../../core/src/events.js';
+import { formatMissionRouting } from '../../core/src/missionView.js';
 import { missionOutcomePresentation } from '../../core/src/missionOutcome.js';
 
 export { isReasoning, mergeFragment };
@@ -90,17 +92,36 @@ export function renderEvent(ev: EventMsg): Rendered | null {
     }
     if (kind === 'assistant_message' || kind === 'agent_message' || kind === 'message') {
       if (isStructuredAgentPayload(ev)) return null;
-      const raw = S(ev, 'text');
-      const finalDelivery = (ev as Record<string, unknown>).final_delivery === true
-        || raw.split(/\r?\n/).some((line) => line.trim().startsWith('PROJECT_DONE='));
-      const body = trunc(raw, finalDelivery ? 16_000 : 280);
+      const body = visibleAgentText(S(ev, 'text'));
       return body ? {
         role: layer,
         label,
         glyph: '▌',
         text: body,
         tone: 'bright',
-        expand: finalDelivery,
+        expand: true,
+      } : null;
+    }
+    if (kind === 'command_execution') {
+      const body = S(ev, 'text') || S(ev, 'command') || S(ev, 'action_summary');
+      return body ? {
+        role: layer,
+        label,
+        glyph: '▸ $',
+        text: body,
+        tone: S(ev, 'status') === 'failed' ? 'err' : 'dim',
+        expand: true,
+      } : null;
+    }
+    if (kind === 'tool_use' || kind === 'file_change') {
+      const body = S(ev, 'text') || S(ev, 'action_summary');
+      return body ? {
+        role: layer,
+        label,
+        glyph: kind === 'file_change' ? '✎' : '⚙',
+        text: body,
+        tone: S(ev, 'status') === 'failed' ? 'err' : 'dim',
+        expand: true,
       } : null;
     }
     return null;
@@ -122,7 +143,17 @@ export function renderEvent(ev: EventMsg): Rendered | null {
   }
 
   if (t === 'life.manager.intent.started') return { role: 'manager', label: 'Manager', glyph: '🧭', text: '判断任务归属…', tone: 'info' };
-  if (t === 'life.manager.intent.completed') return { role: 'manager', label: 'Manager', glyph: '🧭', text: `→ ${S(ev, 'vertical') || S(ev, 'kind') || 'resolved'}`, tone: 'info' };
+  if (t === 'life.manager.intent.completed') {
+    const routing = formatMissionRouting({
+      route: S(ev, 'route') || 'team',
+      vertical: S(ev, 'vertical'),
+      workflow_mode: S(ev, 'workflow_mode'),
+      lifetime: S(ev, 'lifetime'),
+      continuous: (ev as Record<string, unknown>).continuous === true,
+      open_ended: (ev as Record<string, unknown>).open_ended === true,
+    });
+    return { role: 'manager', label: 'Manager', glyph: '🧭', text: `→ ${routing || S(ev, 'kind') || 'resolved'}`, tone: 'info' };
+  }
   if (t === 'life.manager.intent.failed') return { role: 'manager', label: 'Manager', glyph: '⚠', text: `分流失败 ${trunc(S(ev, 'error'), 160)}`, tone: 'err' };
   if (t === 'life.manager.stage_decision') {
     const target = S(ev, 'target_stage') || S(ev, 'stage') || S(ev, 'current_stage');
@@ -163,18 +194,19 @@ export function renderEvent(ev: EventMsg): Rendered | null {
   if (t === 'life.iteration.continued') return { role: 'critic', label: 'Critic', glyph: '🔁', text: 'queued next iteration', tone: 'dim' };
   if (t === 'life.mission.completed' || t === 'mission.completed' || t === 'loop.completed') {
     const presentation = missionOutcomePresentation(ev);
+    const summary = trunc(S(ev, 'summary'), 240);
     return {
       role: 'engineer',
       label: 'Engineer',
       glyph: presentation.glyph,
-      text: presentation.label,
+      text: summary ? `${presentation.label} · ${summary}` : presentation.label,
       tone: presentation.tone,
       rule: true,
     };
   }
   if (t === 'life.mission.failed' || t === 'mission.error')
     return { role: 'engineer', label: 'Engineer', glyph: '❌', text: `mission failed ${trunc(S(ev, 'reason') || S(ev, 'error'), 160)}`, tone: 'err', rule: true };
-  if (t === 'loop.start') return { role: 'engineer', label: 'Engineer', glyph: '▶', text: trunc(S(ev, 'text') || S(ev, 'objective'), 180), tone: 'info' };
+  if (t === 'loop.start') return { role: 'engineer', label: 'Engineer', glyph: '▶', text: trunc(S(ev, 'text') || S(ev, 'objective'), 16_000), tone: 'info', expand: true };
   if (t === 'loop.done') return { role: 'engineer', label: 'Engineer', glyph: '🏁', text: `loop done ${trunc(S(ev, 'text'), 140)}`, tone: 'dim' };
 
   if (t === 'life.inbox.queued') return { role: 'system', label: 'You', glyph: '📥', text: `nudge · ${trunc(S(ev, 'text'), 180)}`, tone: 'accent' };

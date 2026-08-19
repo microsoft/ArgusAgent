@@ -1,14 +1,24 @@
 from __future__ import annotations
 
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from argus_skill.verticals.research.figure_provenance import (
     FIGURE_PROVENANCE_PATH,
+    _normalized_resolved_path,
     register_figure,
     validate_figure_provenance,
 )
+
+
+def test_windows_extended_path_prefix_is_normalized() -> None:
+    if os.name != "nt":
+        return
+    assert _normalized_resolved_path(Path(r"\\?\C:\work\figure.svg")) == Path(
+        r"C:\work\figure.svg"
+    )
 
 
 def _supporting_records(root: Path) -> dict[str, object]:
@@ -108,7 +118,10 @@ def test_register_rejects_path_outside_project(tmp_path: Path) -> None:
         raise AssertionError("outside source path was accepted")
 
 
-def test_validate_reports_manifest_symlink_escape(tmp_path: Path) -> None:
+def test_validate_reports_manifest_symlink_escape(
+    tmp_path: Path,
+    require_symlink_support,
+) -> None:
     outside = tmp_path.parent / "outside-figure-manifest.json"
     outside.write_text('{"schema_version": 1, "figures": []}\n', encoding="utf-8")
     manifest = tmp_path / FIGURE_PROVENANCE_PATH

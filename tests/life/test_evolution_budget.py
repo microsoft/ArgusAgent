@@ -88,3 +88,48 @@ def test_supervisor_passes_runner_shared_skill_root(tmp_path, monkeypatch) -> No
     assert supervisor.tick() is not None
     assert captured["project_state_dir"] == memory.root
     assert captured["shared_root"] == tmp_path / "custom-shared"
+    assert captured["mission_objective"] == "share skill"
+    assert captured["mission_success"] is True
+
+
+def test_failed_mission_still_reaches_team_learning_review(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    memory = LifeMemory.open(tmp_path / "life")
+    runner = _Runner()
+    supervisor = LifeSupervisor(
+        memory=memory,
+        runner=runner,
+        sink=_Sink(),
+        config=LifeSupervisorConfig(
+            budget=LifeBudget(global_daily_cap_usd=0.0, max_missions=1),
+            project_worktree=tmp_path,
+        ),
+    )
+    captured = {}
+
+    def _propagate(*args, **kwargs):
+        captured.update(kwargs)
+        return {"to_shared": 0, "errors": 0}
+
+    monkeypatch.setattr(
+        "argus_skill.manager.skill_tidy.propagate_after_mission",
+        _propagate,
+    )
+    monkeypatch.setattr(
+        "argus_skill.manager.domain_tidy.tidy_domains_after_mission",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("failed missions must not promote data domains")
+        ),
+    )
+
+    supervisor._evolve_runtime_skills_after_mission(
+        success=False,
+        usage_mission_id="failed-attempt",
+        mission_objective="Retry the fixed swap threshold",
+        mission_result="status=error; reason=the same fixed threshold blocked again",
+    )
+
+    assert captured["mission_success"] is False
+    assert "same fixed threshold" in captured["mission_result"]

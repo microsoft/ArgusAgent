@@ -7,6 +7,7 @@ import {
   deriveMissionView,
   eventKey,
   filterProjects,
+  isPromptRewriteShortcut,
   resolveProjectSelection,
 } from '../../core/src/index.js';
 
@@ -26,6 +27,13 @@ test('shared project lookup matches name, id, objective, and daemon state', () =
   assert.deepEqual(resolveProjectSelection(rows, 'missing'), {
     id: 's-kernel-42', requested: 'missing', recovered: true,
   });
+});
+
+test('prompt rewrite shortcut accepts Ctrl-R and Cmd-R only', () => {
+  assert.equal(isPromptRewriteShortcut('r', true, false), true);
+  assert.equal(isPromptRewriteShortcut('R', false, true), true);
+  assert.equal(isPromptRewriteShortcut('r', false, false), false);
+  assert.equal(isPromptRewriteShortcut('x', true, false), false);
 });
 
 test('shared event keys are independent of replay position', () => {

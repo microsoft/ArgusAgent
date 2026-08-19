@@ -4,7 +4,10 @@ import json
 import time
 from types import SimpleNamespace
 
+from fastapi.testclient import TestClient
+
 from argus_skill.core.session import SessionMeta, write_session_meta
+from argus_skill.webapi import server
 from argus_skill.webapi.daemon_liveness import web_daemon_liveness
 from argus_skill.webapi.project_state import list_projects
 
@@ -88,3 +91,23 @@ def test_project_index_surfaces_namespace_daemon_without_host_control(tmp_path) 
     assert project["daemon_control_available"] is False
     assert project["daemon_liveness_source"] == "namespace_heartbeat"
     assert project["daemon_pid"] == 2
+
+
+def test_status_surfaces_namespace_daemon_without_host_control(tmp_path) -> None:
+    sid = "s-namespace2"
+    life_dir = tmp_path / "projects" / sid
+    life_dir.mkdir(parents=True)
+    write_session_meta(
+        tmp_path,
+        SessionMeta(id=sid, created=1.0, last_active=2.0, cwd=str(life_dir)),
+    )
+    _namespace_sidecars(life_dir, last_event_at=time.time())
+
+    body = TestClient(server.create_app(global_root=tmp_path)).get(
+        f"/api/projects/{sid}/status"
+    ).json()
+
+    assert body["daemon"]["alive"] is True
+    assert body["daemon"]["control_available"] is False
+    assert body["daemon"]["liveness_source"] == "namespace_heartbeat"
+    assert body["daemon"]["pid"] == 2

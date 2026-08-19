@@ -76,7 +76,16 @@ export function filterProjects(projects: ProjectRow[], query: string): ProjectRo
 }
 
 function normalizedPath(value: string): string {
-  return value.replace(/\/+$/, '') || '/';
+  const raw = value.trim();
+  const windowsStyle = raw.includes('\\') || /^[A-Za-z]:[\\/]/.test(raw);
+  const slashed = raw.replace(/\\/g, '/').replace(/\/{2,}/g, '/');
+  const trimmed = slashed.replace(/\/+$/, '') || '/';
+  return windowsStyle ? trimmed.toLowerCase() : trimmed;
+}
+
+function pathContains(candidate: string, root: string): boolean {
+  if (candidate === root) return true;
+  return root === '/' ? candidate.startsWith('/') : candidate.startsWith(`${root}/`);
 }
 
 /** Scope resume results strictly to the directory where the session was launched. */
@@ -91,11 +100,12 @@ export function projectsForLaunchCwd(
     const launch = (project.launch_cwd || '').trim();
     if (launch) {
       const candidate = normalizedPath(launch);
-      return candidate === root || candidate.startsWith(`${root}/`);
+      return pathContains(candidate, root);
     }
     const legacyCwd = (project.cwd || '').trim();
-    if (!legacyCwd || legacyCwd.includes('/.argus-skill/projects/')) return false;
+    if (!legacyCwd) return false;
     const candidate = normalizedPath(legacyCwd);
-    return candidate === root || candidate.startsWith(`${root}/`);
+    if (candidate.includes('/.argus-skill/projects/')) return false;
+    return pathContains(candidate, root);
   });
 }

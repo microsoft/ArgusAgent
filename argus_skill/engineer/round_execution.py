@@ -1,8 +1,9 @@
 """Round-loop phase: engineer turn execution + non-review stop shortcircuits.
 
-Owns running one fresh Engineer provider-session turn (prompt in, parsed
-``RunnerResult`` out, plus the secret-guard scrub, long-job-ownership check,
-and ``round.main.completed`` accounting that always happen regardless of
+Owns running one Engineer provider-session turn (fresh or safely resumed;
+prompt in, parsed ``RunnerResult`` out), plus the secret-guard scrub,
+long-job-ownership check, and ``round.main.completed`` accounting that always
+happen regardless of
 outcome), and then the non-review-worthy stop-kind shortcircuits that must
 end or retry the round WITHOUT invoking the Reviewer: daemon shutdown,
 operator abort, model misconfiguration, an external pause (budget/provider
@@ -21,6 +22,7 @@ from typing import TYPE_CHECKING, Callable
 
 from ..core.event_catalog import EventType
 from ..core.models import RoundRecord
+from ..core.role_decision import latest_role_decision
 from ..core.secret_guard import known_secret_values, redact_secrets_text
 from ..core.stop_kinds import (
     NON_FAILURE_STOP_KINDS,
@@ -38,9 +40,11 @@ from .round_state import (
     control_return,
 )
 from .round_stop_signals import (
+    authentication_review_decision,
     backend_failure_review_decision,
     daemon_stop_review_decision,
     external_pause_review_decision,
+    fatal_error_looks_like_auth_failure,
     fatal_error_looks_like_daemon_stop_request,
     fatal_error_looks_like_model_configuration,
     fatal_error_looks_like_operator_abort_request,
@@ -55,6 +59,41 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def _engineer_decision_message(payload: dict) -> str:
+    """Render a process decision for existing round-control consumers."""
+    status = str(payload.get("status", "") or "").strip().lower()
+    result = str(
+        payload.get("result", payload.get("summary", "")) or ""
+    ).strip()
+    default_owner = "reviewer" if status == "done" else "engineer"
+    lines = [
+        result,
+        f"MILESTONE_STATUS={'done' if status == 'done' else 'continue'}",
+        f"NEXT_OWNER={str(payload.get('next_owner', default_owner) or default_owner)}",
+    ]
+    question = str(payload.get("operator_question", "") or "").strip()
+    if question:
+        lines.append(f"OPERATOR_QUESTION={question}")
+    options = payload.get("operator_options")
+    if isinstance(options, list) and options:
+        rendered_options = []
+        for option in options:
+            if isinstance(option, dict):
+                rendered_options.append(
+                    " :: ".join(
+                        str(option.get(field, "") or "").strip()
+                        for field in ("id", "label", "description")
+                    )
+                )
+            else:
+                rendered_options.append(str(option))
+        lines.append(
+            "OPERATOR_OPTIONS="
+            + " || ".join(rendered_options)
+        )
+    return "\n".join(line for line in lines if line)
+
+
 class RoundExecutionMixin:
     """Mixin providing ``SupervisedEngineer``'s engineer-turn-execution phase."""
 
@@ -66,6 +105,7 @@ class RoundExecutionMixin:
         workdir: Path,
         supervised_config: "SupervisedConfig",
         checkpoint_path: Path | None,
+        resume_thread_id: str | None,
         on_event: Callable[[dict], None] | None,
         state: RoundLoopState,
     ) -> EngineerTurnOutcome:
@@ -74,7 +114,7 @@ class RoundExecutionMixin:
             prompt=engineer_prompt,
             workdir=workdir,
             run_label=f"engineer-r{round_index}",
-            resume_thread_id=None,
+            resume_thread_id=resume_thread_id,
             reasoning_effort=(
                 self.engineer_config.initial_reasoning_effort
                 if round_index == 1
@@ -93,11 +133,46 @@ class RoundExecutionMixin:
             getattr(engineer_result, "stop_kind", None)
         ) or stop_kind_from_external_interrupt(fatal_error)
         round_thread_id = new_tid
-        raw_engineer_message = engineer_result.last_agent_message or ""
+        process_decision = latest_role_decision(engineer_result, "engineer")
+        raw_engineer_message = (
+            _engineer_decision_message(process_decision)
+            if process_decision is not None
+            else (engineer_result.last_agent_message or "")
+        )
         engineer_message = redact_secrets_text(
             raw_engineer_message,
             known_values=known_secret_values(),
         )
+        engineer_session = state.engineer_session
+        if engineer_session is None:
+            raise RuntimeError("engineer role session was not initialized")
+        session_metadata_persisted = engineer_session.complete(
+            engineer_result,
+            decisive_output=engineer_message,
+        )
+        if on_event:
+            on_event({
+                "type": EventType.ROLE_SESSION_TURN,
+                "role": "engineer",
+                "policy": engineer_session.policy,
+                "action": engineer_session.action,
+                "rotation_reason": engineer_session.rotation_reason,
+                "round_index": round_index,
+                "session_id": str(new_tid or ""),
+                "turns_on_session": engineer_session.turns,
+                "input_tokens": int(
+                    getattr(engineer_result, "input_tokens", 0) or 0
+                ),
+                "cached_input_tokens": int(
+                    getattr(engineer_result, "cached_input_tokens", 0) or 0
+                ),
+                "duration_ms": int((time.time() - round_started_at) * 1000),
+                "prompt_chars": len(engineer_prompt),
+                "prompt_estimated_tokens": (len(engineer_prompt) + 3) // 4,
+                "capsule_path": str(engineer_session.path or ""),
+                "metadata_persisted": session_metadata_persisted,
+                "persistence_warning": engineer_session.persistence_error,
+            })
         if supervised_config.context_packet_path:
             try:
                 from ..life.context_packet import record_engineer_handoff
@@ -211,6 +286,9 @@ class RoundExecutionMixin:
         stop_kind = outcome.stop_kind
         engineer_message = outcome.engineer_message
         round_thread_id = outcome.round_thread_id
+        engineer_session = state.engineer_session
+        if engineer_session is None:
+            raise RuntimeError("engineer role session was not initialized")
         if (
             stop_kind == "daemon_shutdown"
             or fatal_error_looks_like_daemon_stop_request(fatal_error)
@@ -276,6 +354,7 @@ class RoundExecutionMixin:
             ))
 
         if fatal_error_looks_like_model_configuration(fatal_error):
+            engineer_session.rotate("model_configuration")
             review = model_configuration_review_decision(
                 fatal_error=fatal_error,
                 exit_code=getattr(engineer_result, "exit_code", 0),
@@ -345,11 +424,20 @@ class RoundExecutionMixin:
             ))
 
         if stop_kind == "permanent_error":
-            review = backend_failure_review_decision(
-                fatal_error=fatal_error,
-                exit_code=getattr(engineer_result, "exit_code", 0),
-                streak=1,
-                threshold=1,
+            engineer_session.rotate("permanent_error")
+            auth_failure = fatal_error_looks_like_auth_failure(fatal_error)
+            review = (
+                authentication_review_decision(
+                    fatal_error=fatal_error,
+                    exit_code=getattr(engineer_result, "exit_code", 0),
+                )
+                if auth_failure
+                else backend_failure_review_decision(
+                    fatal_error=fatal_error,
+                    exit_code=getattr(engineer_result, "exit_code", 0),
+                    streak=1,
+                    threshold=1,
+                )
             )
             state.rounds.append(RoundRecord(
                 round_index=round_index,
@@ -360,7 +448,7 @@ class RoundExecutionMixin:
                 stop_kind=stop_kind,
             ))
             return control_return((
-                "error",
+                "blocked" if auth_failure else "error",
                 state.rounds,
                 state.last_engineer_message,
                 review.reason,
@@ -368,6 +456,7 @@ class RoundExecutionMixin:
             ))
 
         if runner_result_is_backend_failure(engineer_result):
+            engineer_session.rotate("backend_failure")
             state.backend_failure_streak += 1
             state.no_progress_streak = 0
             configured_threshold = max(

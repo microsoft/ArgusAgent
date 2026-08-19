@@ -14,6 +14,8 @@ HEALTH_FILENAME = "daemon.health.json"
 HEALTH_SCHEMA_VERSION = 1
 DEFAULT_STALL_SECONDS = 30 * 60.0
 _ACTIVITY_WRITE_INTERVAL_SECONDS = 5.0
+_WINDOWS_REPLACE_ATTEMPTS = 6
+_WINDOWS_REPLACE_INITIAL_DELAY_SECONDS = 0.01
 
 _ACTIVE_EVENTS = frozenset({
     "life.manager.intent.started",
@@ -60,6 +62,30 @@ _PROGRESS_EVENTS = frozenset({
 })
 
 
+def _running_on_windows() -> bool:
+    return os.name == "nt"
+
+
+def _replace_atomic_file(temporary: str, path: Path) -> None:
+    """Replace a health sidecar despite short-lived Windows read sharing.
+
+    Status consumers open this file frequently. On Windows a reader or security
+    scanner can briefly deny replacement with ``WinError 5/32`` even though the
+    writer owns a unique temporary file. Retry only ``PermissionError`` on
+    Windows, with a small bounded backoff; every other failure remains visible.
+    """
+    delay = _WINDOWS_REPLACE_INITIAL_DELAY_SECONDS
+    for attempt in range(_WINDOWS_REPLACE_ATTEMPTS):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            if not _running_on_windows() or attempt + 1 >= _WINDOWS_REPLACE_ATTEMPTS:
+                raise
+            time.sleep(delay)
+            delay *= 2
+
+
 def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -69,7 +95,7 @@ def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        _replace_atomic_file(temporary, path)
     finally:
         try:
             os.unlink(temporary)

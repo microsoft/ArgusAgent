@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
   claimApiOwnership,
   defaultApiOwnershipPath,
+  inspectProcess,
   readOwnedApi,
   writeOwnershipRecord,
   removeOwnershipRecord,
@@ -48,6 +49,10 @@ test('default ownership path is stable per local host and port', () => {
   assert.equal(
     defaultApiOwnershipPath('localhost', 8799, { HOME: '/home/alex' }),
     join('/home/alex', '.argus-skill', 'runtime', 'webapi-localhost-8799.owner.json'),
+  );
+  assert.equal(
+    defaultApiOwnershipPath('127.0.0.2', 8799, { HOME: '/home/alex' }),
+    join('/home/alex', '.argus-skill', 'runtime', 'webapi-127.0.0.2-8799.owner.json'),
   );
   assert.equal(defaultApiOwnershipPath('10.0.0.5', 8799, { HOME: '/home/alex' }), undefined);
 });
@@ -98,6 +103,86 @@ test('rejects an unknown or mismatched process', async () => {
     inspect: async () => ({
       alive: true,
       argv: ['/usr/bin/python', '-m', 'http.server', '8899'],
+    }),
+  }), null);
+});
+
+test('accepts a matching macOS ps command line', async () => {
+  const ownerFile = await tmpOwner(BASE_RECORD);
+  const owned = await readOwnedApi({
+    path: ownerFile,
+    host: BASE_RECORD.host,
+    port: BASE_RECORD.port,
+    backendBin: BASE_RECORD.backendBin,
+    inspect: async () => ({
+      alive: true,
+      argv: [],
+      commandLine: `/usr/bin/python3 ${BASE_RECORD.backendBin} --web --web-host ${BASE_RECORD.host} --web-port ${BASE_RECORD.port}`,
+    }),
+  });
+  assert.equal(owned?.pid, BASE_RECORD.pid);
+});
+
+test('accepts a matching macOS command line when the backend path contains spaces', async () => {
+  const record = { ...BASE_RECORD, backendBin: '/Users/Alex Smith/Argus/.venv/bin/argus-skill' };
+  const ownerFile = await tmpOwner(record);
+  const owned = await readOwnedApi({
+    path: ownerFile,
+    host: record.host,
+    port: record.port,
+    backendBin: record.backendBin,
+    inspect: async () => ({
+      alive: true,
+      argv: [],
+      commandLine: `/usr/bin/python3 ${record.backendBin} --web --web-port ${record.port}`,
+    }),
+  });
+  assert.equal(owned?.pid, record.pid);
+});
+
+test('accepts a quoted case-insensitive Windows console-script command line', async () => {
+  const record = {
+    ...BASE_RECORD,
+    backendBin: 'G:\\Code Space\\Argus\\.venv\\Scripts\\argus-skill.exe',
+  };
+  const ownerFile = await tmpOwner(record);
+  const owned = await readOwnedApi({
+    path: ownerFile,
+    host: record.host,
+    port: record.port,
+    backendBin: record.backendBin,
+    platform: 'win32',
+    inspect: async () => ({
+      alive: true,
+      argv: [],
+      commandLine:
+        '"G:\\CODE SPACE\\ARGUS\\.venv\\Scripts\\python.exe" '
+        + '"g:\\code space\\argus\\.venv\\scripts\\ARGUS-SKILL.EXE" '
+        + `--web --web-host ${record.host} --web-port ${record.port}`,
+    }),
+  });
+  assert.equal(owned?.pid, record.pid);
+});
+
+test('Windows process inspector reads the current process command line', {
+  skip: process.platform !== 'win32',
+}, async () => {
+  const inspected = await inspectProcess(process.pid, 'win32');
+  assert.equal(inspected.alive, true);
+  assert.match(inspected.commandLine ?? '', /node(?:\.exe)?/i);
+});
+
+test('rejects a macOS ps command line with the wrong port', async () => {
+  const ownerFile = await tmpOwner(BASE_RECORD);
+  assert.equal(await readOwnedApi({
+    path: ownerFile,
+    host: BASE_RECORD.host,
+    port: BASE_RECORD.port,
+    backendBin: BASE_RECORD.backendBin,
+    inspect: async () => ({
+      alive: true,
+      argv: [],
+      commandLine: `/usr/bin/python3 ${BASE_RECORD.backendBin} --web --web-port 7777`,
     }),
   }), null);
 });
@@ -211,6 +296,32 @@ test('rejects when pid is not a positive integer', async () => {
   }), null);
 });
 
+test('rejects an invalid launcher root PID', async () => {
+  const ownerFile = await tmpOwner({ ...BASE_RECORD, rootPid: -9 });
+  assert.equal(await readOwnedApi({
+    path: ownerFile,
+    host: BASE_RECORD.host,
+    port: BASE_RECORD.port,
+    backendBin: BASE_RECORD.backendBin,
+    inspect: aliveInspect,
+  }), null);
+});
+
+test('discards an unrelated launcher PID without losing verified listener ownership', async () => {
+  const ownerFile = await tmpOwner({ ...BASE_RECORD, rootPid: 8765 });
+  const owned = await readOwnedApi({
+    path: ownerFile,
+    host: BASE_RECORD.host,
+    port: BASE_RECORD.port,
+    backendBin: BASE_RECORD.backendBin,
+    inspect: async (pid) => pid === BASE_RECORD.pid
+      ? aliveInspect()
+      : { alive: true, argv: ['/usr/bin/python', '-m', 'http.server', '8899'] },
+  });
+  assert.equal(owned?.pid, BASE_RECORD.pid);
+  assert.equal(owned?.rootPid, undefined);
+});
+
 test('rejects a missing ownership file (no throw)', async () => {
   assert.equal(await readOwnedApi({
     path: '/nonexistent/path/owner.json',
@@ -235,6 +346,13 @@ test('writeOwnershipRecord writes readable file and readOwnedApi accepts it', as
     inspect: aliveInspect,
   });
   assert.equal(owned?.pid, BASE_RECORD.pid);
+});
+
+test('writeOwnershipRecord preserves a distinct launcher root PID', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'argus-owner-'));
+  const ownerFile = join(root, 'owner.json');
+  await writeOwnershipRecord(ownerFile, { ...BASE_RECORD, rootPid: 8765 });
+  assert.equal(JSON.parse(await readFile(ownerFile, 'utf-8')).rootPid, 8765);
 });
 
 test('writeOwnershipRecord creates a private POSIX file or regular Windows file', async () => {

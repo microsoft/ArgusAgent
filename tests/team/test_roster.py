@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from argus_skill.team import roster as rs
 
 
@@ -46,3 +48,10 @@ def test_next_member_id_monotonic_unique(tmp_path: Path) -> None:
     assert ids == ["w1", "w2", "w3"]                 # monotonic, unique
     # works even without create() (fresh roster)
     assert rs.next_member_id(tmp_path / "fresh", prefix="k") == "k1"
+
+
+def test_create_rejects_changed_mission_for_existing_roster(tmp_path: Path) -> None:
+    rs.create(tmp_path, team_id="t1", mission="first mission", lead="lead", now=1.0)
+
+    with pytest.raises(ValueError, match="mission objective does not match"):
+        rs.create(tmp_path, team_id="t1", mission="second mission", lead="lead", now=2.0)

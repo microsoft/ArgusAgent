@@ -11,6 +11,8 @@ import signal
 import subprocess
 import time
 
+from ..core.daemon_lock import is_process_group_running
+
 
 class ProcessControlMixin:
     """Output emission + executable resolution + process-group termination."""
@@ -37,13 +39,7 @@ class ProcessControlMixin:
 
     @staticmethod
     def _process_group_alive(process_group_id: int) -> bool:
-        try:
-            os.killpg(process_group_id, 0)
-            return True
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
+        return is_process_group_running(process_group_id)
 
     @classmethod
     def _wait_process_group_exit(cls, process_group_id: int, timeout: float) -> bool:

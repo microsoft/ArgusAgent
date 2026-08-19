@@ -5,6 +5,7 @@ Daemon start/stop are monkeypatched so no real subprocess is spawned.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from contextlib import contextmanager
@@ -17,13 +18,19 @@ import pytest
 from argus_skill.core.session import SessionMeta, touch_session, write_session_meta
 from argus_skill.daemon.state import write_continuous_config
 from argus_skill.life.memory import LifeMemory
-from argus_skill.manager import front_door
+from argus_skill.manager import config_intent, front_door
 from argus_skill.manager.front_door import (
     ManagerHandoffError,
     ManagerHandoffSupersededError,
 )
 from argus_skill.skills.vertical_select import persist_vertical
-from argus_skill.webapi import manager_bridge, project_state, server
+from argus_skill.webapi import (
+    daemon_lifecycle,
+    manager_dispatch,
+    manager_state,
+    project_state,
+    server,
+)
 
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
@@ -58,20 +65,23 @@ def _identity_manager_handoff(monkeypatch) -> None:
 
 
 def _install_manager(monkeypatch, execution_for) -> None:
-    manager_bridge._STATES.clear()
+    manager_state._STATES.clear()
 
     class _Manager:
+        def classify_front_door(self, _text, *, lifetime_sink=None, **_kwargs):
+            if lifetime_sink is not None:
+                lifetime_sink("standing")
+            return None, None, "complex"
+
         def decide_vertical(self, text, **kwargs):
             return SimpleNamespace(execution_task=execution_for(text))
 
         def commit_vertical_decision(self, text, decision, **kwargs):
             return SimpleNamespace(execution_task=decision.execution_task)
 
-    monkeypatch.setattr(
-        front_door,
-        "_ensure_manager_runner",
-        lambda chat_state, mem: SimpleNamespace(manager=_Manager()),
-    )
+    ensure = lambda chat_state, mem: SimpleNamespace(manager=_Manager())
+    monkeypatch.setattr(front_door, "_ensure_manager_runner", ensure)
+    monkeypatch.setattr(config_intent, "_ensure_manager_runner", ensure)
 
 
 # ── tasks ─────────────────────────────────────────────────────────────────
@@ -152,7 +162,7 @@ def test_post_task_preserves_active_continuous_campaign_governance(
             assert vertical == "math"
             return "research"
 
-    manager_bridge._STATES.clear()
+    manager_state._STATES.clear()
     monkeypatch.setattr(
         front_door,
         "_ensure_manager_runner",
@@ -168,7 +178,7 @@ def test_post_task_preserves_active_continuous_campaign_governance(
     assert response is not None
     assert response["objective"] == "verify the migrated scope artifact"
     assert commits == []
-    pipeline = json.loads((workspace / "research" / "PIPELINE_STATE.json").read_text())
+    pipeline = json.loads((workspace / ".argus" / "PIPELINE_STATE.json").read_text())
     assert pipeline["vertical"] == "math"
     assert pipeline["workflow_mode"] == "staged"
     assert pipeline["research_target_level"] == "doctoral"
@@ -193,7 +203,7 @@ def test_post_task_enqueues_only_manager_execution_handoff(ctx, monkeypatch) -> 
         captured.update(sid=call_sid, text=text, **kwargs)
         return persist("write the MRAM paper", None)
 
-    monkeypatch.setattr(manager_bridge, "manager_bounded_handoff", fake_handoff)
+    monkeypatch.setattr(manager_dispatch, "manager_bounded_handoff", fake_handoff)
     client = TestClient(server.create_app(global_root=root))
     raw = "write the MRAM paper; Manager owns the right sidebar"
     response = client.post(
@@ -219,7 +229,7 @@ def test_post_task_returns_503_instead_of_enqueuing_raw_on_handoff_failure(
     def fail_handoff(*args, **kwargs):
         raise ManagerHandoffError("safe handoff unavailable")
 
-    monkeypatch.setattr(manager_bridge, "manager_bounded_handoff", fail_handoff)
+    monkeypatch.setattr(manager_dispatch, "manager_bounded_handoff", fail_handoff)
     client = TestClient(server.create_app(global_root=root))
     response = client.post(
         f"/api/projects/{sid}/tasks",
@@ -524,7 +534,7 @@ def test_disable_continuous_is_immediate_and_ignores_submitted_objective(
         enabled=True,
         objective="clean current objective",
     )
-    bridge_state = manager_bridge._chat_state_for(sid)
+    bridge_state = manager_state._chat_state_for(sid)
     bridge_state["config"]["continuous"] = True
     bridge_state["continuous_objective"] = "clean current objective"
 
@@ -532,7 +542,7 @@ def test_disable_continuous_is_immediate_and_ignores_submitted_objective(
         raise AssertionError("disable must not wait for Manager")
 
     monkeypatch.setattr(
-        manager_bridge,
+        manager_dispatch,
         "manager_continuous_handoff",
         unexpected_handoff,
     )
@@ -558,7 +568,7 @@ def test_disable_continuous_surfaces_persistence_failure(
     monkeypatch,
 ) -> None:
     root, sid, _life = ctx
-    bridge_state = manager_bridge._chat_state_for(sid)
+    bridge_state = manager_state._chat_state_for(sid)
     bridge_state["config"]["continuous"] = True
     bridge_state["continuous_objective"] = "still active"
     monkeypatch.setattr(
@@ -583,7 +593,12 @@ def test_enable_continuous_reprocesses_stored_objective(
 ) -> None:
     root, sid, life = ctx
     raw = "legacy objective; Manager owns the sidebar"
-    server.write_continuous_config(life, enabled=False, objective=raw)
+    server.write_continuous_config(
+        life,
+        enabled=False,
+        objective=raw,
+        open_ended=True,
+    )
     seen = {}
 
     def clean_handoff(text):
@@ -605,6 +620,7 @@ def test_enable_continuous_reprocesses_stored_objective(
     assert seen["text"] == raw
     assert state.enabled is True
     assert state.objective == "clean legacy objective"
+    assert state.open_ended is True
 
 
 def test_post_continuous_rejects_enable_without_any_objective(ctx) -> None:
@@ -630,7 +646,7 @@ def test_enable_continuous_does_not_overwrite_newer_same_value_stop(
         objective="paused objective",
     )
     commits = []
-    manager_bridge._STATES.clear()
+    manager_state._STATES.clear()
 
     class _Manager:
         def decide_vertical(self, text, **kwargs):
@@ -685,6 +701,131 @@ def test_daemon_start_delegates(ctx, monkeypatch) -> None:
     assert calls["life_dir"] == life.resolve() and calls["quiet"] is True
 
 
+def test_daemon_start_surfaces_clean_launcher_failure(ctx, monkeypatch) -> None:
+    root, sid, _life = ctx
+
+    def fail_spawn(_config, *, quiet=False):
+        assert quiet is True
+        raise RuntimeError("ModuleNotFoundError: No module named 'uvicorn'")
+
+    monkeypatch.setattr(server, "spawn_detached_daemon", fail_spawn)
+    client = TestClient(server.create_app(global_root=root))
+    response = client.post(f"/api/projects/{sid}/daemon/start")
+
+    assert response.status_code == 200
+    assert response.json()["rc"] == 2
+    assert "ModuleNotFoundError: No module named 'uvicorn'" in response.json()["error"]
+
+
+def test_daemon_start_surfaces_captured_helper_stderr(ctx, monkeypatch, caplog) -> None:
+    root, sid, _life = ctx
+    diagnostic = "Traceback: UnicodeEncodeError during Windows daemon bootstrap"
+
+    def fake_spawn(config, *, quiet=False):
+        assert quiet is True
+        config.last_spawn_error = diagnostic
+        return 1
+
+    monkeypatch.setattr(server, "spawn_detached_daemon", fake_spawn)
+    client = TestClient(server.create_app(global_root=root))
+
+    response = client.post(f"/api/projects/{sid}/daemon/start")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["rc"] == 1
+    assert body["startup_diagnostic"] == diagnostic
+    assert body["error"] == f"background executor failed to start (rc=1): {diagnostic}"
+    assert diagnostic in caplog.text
+
+
+def test_daemon_start_retries_one_transient_windows_sharing_failure(
+    ctx,
+    monkeypatch,
+) -> None:
+    root, sid, _life = ctx
+    attempts = 0
+
+    def fake_spawn(config, *, quiet=False):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            config.last_spawn_error = (
+                "PermissionError: [WinError 32] The process cannot access the file"
+            )
+            return 1
+        config.last_spawn_error = ""
+        return 0
+
+    monkeypatch.setattr(server, "spawn_detached_daemon", fake_spawn)
+    monkeypatch.setattr(daemon_lifecycle, "_running_on_windows", lambda: True)
+
+    result = server.start_project_daemon(sid, global_root=root)
+
+    assert result is not None and result["rc"] == 0
+    assert result["startup_retried"] is True
+    assert "startup_diagnostic" not in result
+    assert attempts == 2
+
+
+def test_daemon_start_does_not_retry_deterministic_rc1(
+    ctx,
+    monkeypatch,
+) -> None:
+    root, sid, _life = ctx
+    attempts = 0
+
+    def fake_spawn(config, *, quiet=False):
+        nonlocal attempts
+        attempts += 1
+        config.last_spawn_error = "ModuleNotFoundError: No module named argus_skill"
+        return 1
+
+    monkeypatch.setattr(server, "spawn_detached_daemon", fake_spawn)
+    monkeypatch.setattr(daemon_lifecycle, "_running_on_windows", lambda: True)
+
+    result = server.start_project_daemon(sid, global_root=root)
+
+    assert result is not None and result["rc"] == 1
+    assert attempts == 1
+
+
+def test_daemon_start_accepts_runtime_published_after_transient_launcher_failure(
+    ctx,
+    monkeypatch,
+) -> None:
+    root, sid, _life = ctx
+    attempts = 0
+    original_status = server.read_daemon_status
+
+    def fake_spawn(config, *, quiet=False):
+        nonlocal attempts
+        attempts += 1
+        config.last_spawn_error = "OSError: [WinError 33] lock violation"
+        return 1
+
+    status_reads = 0
+
+    def fake_status(path):
+        nonlocal status_reads
+        status_reads += 1
+        status = original_status(path)
+        if status_reads < 2:
+            return status
+        return dataclasses.replace(status, alive=True, pid=4242)
+
+    monkeypatch.setattr(server, "spawn_detached_daemon", fake_spawn)
+    monkeypatch.setattr(server, "read_daemon_status", fake_status)
+    monkeypatch.setattr(daemon_lifecycle, "_running_on_windows", lambda: True)
+
+    result = server.start_project_daemon(sid, global_root=root)
+
+    assert result is not None and result["rc"] == 0
+    assert result["startup_retried"] is True
+    assert "startup_diagnostic" not in result
+    assert attempts == 1
+
+
 def test_daemon_start_resume_reenables_preserved_continuous_objective(
     ctx,
     monkeypatch,
@@ -694,6 +835,7 @@ def test_daemon_start_resume_reenables_preserved_continuous_objective(
         life,
         enabled=False,
         objective="continue the proof campaign",
+        open_ended=False,
         done_reason="operator drain-stop",
     )
     spawned = {}
@@ -701,6 +843,7 @@ def test_daemon_start_resume_reenables_preserved_continuous_objective(
     def fake_spawn(config, *, quiet=False):
         spawned["objective"] = config.continuous_objective
         spawned["resume_continuous"] = config.resume_continuous
+        spawned["open_ended"] = config.continuous_open_ended
         return 0
 
     monkeypatch.setattr(server, "spawn_detached_daemon", fake_spawn)
@@ -719,6 +862,7 @@ def test_daemon_start_resume_reenables_preserved_continuous_objective(
     assert spawned == {
         "objective": "continue the proof campaign",
         "resume_continuous": True,
+        "open_ended": False,
     }
 
 
@@ -1258,6 +1402,15 @@ def test_daemon_command_idempotency_and_revision_fencing(ctx, monkeypatch) -> No
     assert first["command_status"] == duplicate["command_status"] == "applied"
     assert first["command_revision"] == duplicate["command_revision"] == 3
 
+    conflict = client.post(
+        f"/api/projects/{sid}/daemon/stop",
+        json={"command_id": "cmd-start", "expected_revision": 0},
+    ).json()
+    assert conflict["command_status"] == "rejected"
+    assert conflict["rc"] == 3
+    assert "command_id conflict" in conflict["error"]
+    assert stops == []
+
     stale = client.post(
         f"/api/projects/{sid}/daemon/stop",
         json={"command_id": "cmd-stop", "expected_revision": 0},
@@ -1304,6 +1457,12 @@ def test_project_update_preserves_legacy_continuous_objective(ctx) -> None:
 
 def test_project_delete_moves_stopped_session_to_trash(ctx, monkeypatch) -> None:
     root, sid, life = ctx
+    workdir = root / "workspaces" / sid
+    workdir.mkdir(parents=True)
+    (workdir / "result.txt").write_text("operator result", encoding="utf-8")
+    meta = json.loads((life / "session.json").read_text(encoding="utf-8"))
+    meta["workdir"] = str(workdir)
+    (life / "session.json").write_text(json.dumps(meta), encoding="utf-8")
     monkeypatch.setattr(
         server,
         "read_daemon_status",
@@ -1323,6 +1482,9 @@ def test_project_delete_moves_stopped_session_to_trash(ctx, monkeypatch) -> None
     assert r.status_code == 200
     assert not life.exists()
     assert (root / r.json()["trash_path"]).is_dir()
+    assert r.json()["workdir"] == str(workdir)
+    assert r.json()["workdir_preserved"] is True
+    assert (workdir / "result.txt").read_text(encoding="utf-8") == "operator result"
     touch_session(root, sid, display_name="must not resurrect")
     assert not life.exists()
 
@@ -1330,7 +1492,7 @@ def test_project_delete_moves_stopped_session_to_trash(ctx, monkeypatch) -> None
 def test_project_delete_releases_warm_manager_runner(ctx, monkeypatch) -> None:
     root, sid, _life = ctx
     closed: list[str] = []
-    state = manager_bridge._chat_state_for(sid)
+    state = manager_state._chat_state_for(sid)
     state["manager_runner"] = SimpleNamespace(
         _backend=SimpleNamespace(
             close_acp_clients=lambda: closed.append("acp"),
@@ -1354,7 +1516,7 @@ def test_project_delete_releases_warm_manager_runner(ctx, monkeypatch) -> None:
 
     assert response.status_code == 200
     assert closed == ["acp", "session"]
-    assert sid not in manager_bridge._STATES
+    assert sid not in manager_state._STATES
 
 
 def test_project_trash_can_be_listed_and_restored(ctx, monkeypatch) -> None:
@@ -1612,7 +1774,7 @@ def test_identity_set_and_skills_and_reset(ctx, monkeypatch) -> None:
     root, sid, life = ctx
     monkeypatch.setattr(server, "run_skill_command", lambda tokens: "skills:" + " ".join(tokens))
     monkeypatch.setattr(
-        "argus_skill.webapi.manager_bridge.reset_manager_context",
+        "argus_skill.webapi.manager_state.reset_manager_context",
         lambda sid, *, global_root=None: True,
     )
     client = TestClient(server.create_app(global_root=root))

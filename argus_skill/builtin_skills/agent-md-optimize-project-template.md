@@ -63,22 +63,14 @@ score.
 - Read the active vertical's `role_banner` (the optimize vertical your objective
   routes to: `kernel_engineering` / `kernelbench` / `speedrun` / `nanochat` /
   `nanogpt_speedrun`) — it
-  states the exact metric, hardware budget, correctness rule, and stop condition
-  for this task. Treat it as the authoritative mission contract.
-- Read the optimize skills under `./argus_builtin_skills/engineer/` before
-  touching the scorer:
-  - the active vertical's `engineer/kernel-environment-first-engineering.md`
-    for production/repository kernel work, plus
-    `./argus_builtin_skills/engineer/sol-kernel-sota-optimization.md` and
-    `./argus_builtin_skills/engineer/b200-kernelbench-runtime.md` for GPU-kernel
-    speed-of-light optimization,
-  - `./argus_builtin_skills/engineer/nanogpt-speedrun-h100-sota.md` for the
-    nanoGPT speedrun (time-to-target-loss),
-  - `./argus_builtin_skills/engineer/nanochat-autoresearch-sota-optimization.md`
-    for nanochat val_bpb,
-  - `./argus_builtin_skills/engineer/speedrun-sota-optimization.md` for the
-    generic speedrun shape,
-  - and the matching `*-hands-on-trace.md` for a concrete worked run.
+  states the metric, benchmark constraints, correctness rule, and stop condition
+  for this task. Benchmark constraints never prove that matching hardware is
+  currently accessible; verify the configured runner before making that claim.
+- Before touching the scorer, inspect only the active vertical's Skill paths
+  supplied by Argus and open a Skill whose description clearly matches this
+  repository and objective. Read the current project's frozen harness directly;
+  never import hardware assumptions, score anchors, commands, or worked traces
+  from another vertical or historical run.
 - At project setup, export the built-in skill markdown so you can read it
   directly:
   `"${ARGUS_SKILL_PYTHON:-python}" -m argus_skill --export-builtin-skills ./argus_builtin_skills`

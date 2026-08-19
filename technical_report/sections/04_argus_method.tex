@@ -1,0 +1,227 @@
+\section{\systemname Runtime}
+\label{sec:method}
+
+\subsection{System Overview}
+
+\systemname is a general-purpose agentic runtime built around four model-driven roles
+and three system planes. The \emph{control plane} anchors the campaign and schedules
+work; the \emph{execution plane} performs one bounded mission against real tools
+and artifacts; and the \emph{record plane} stores what happened without deciding
+whether the work is scientifically complete. The distinction is operational:
+control owns scheduling, execution owns work and mission review, and the record plane owns
+the immutable record but no completion decision.
+
+The four roles divide research authority as summarized in
+Table~\ref{tab:roles}. The Manager spans the campaign rather than one execution
+round. The Planner authors future work and the Engineer performs it. Mission-level
+completion has an explicit source: allowed low-risk bounded work may use Engineer
+self-review, while vertical policy, stage-closing tasks, or the Engineer's own
+request require an independent Reviewer. The interfaces are structured objects
+rather than untyped prose, which makes ownership and recovery behavior explicit.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabularx}{\linewidth}{@{}p{1.6cm} p{4.0cm} X@{}}
+\toprule
+\rowcolor{papersand}
+\textbf{Role} & \textbf{Primary responsibility} & \textbf{Authoritative output} \\
+\midrule
+Manager & Commit the objective, lifetime, route, and campaign stage & Campaign division and stage transition \\
+Planner & Decompose the current research state into bounded tasks and dependencies & Task specifications, plan status, and stage checklist updates \\
+Engineer & Modify artifacts, invoke tools, and run experiments for one round & Execution result, artifacts, measurements, handoff, and structured \code{review=skip|required} selection \\
+Reviewer & Independently inspect artifacts and execution records when required or requested & \code{done}, \code{continue}, or \code{blocked}, plus grounded next action and retained-state edits \\
+\bottomrule
+\end{tabularx}
+\caption{Role separation in \systemname. The Engineer executes and may self-review
+allowed low-risk bounded work; mandatory or requested independent review belongs to
+the Reviewer.}
+\label{tab:roles}
+\end{table}
+
+\begin{paperbox}{Algorithm 1: Campaign scheduling and the reviewed mission loop}
+\small
+\begin{tabbing}
+\quad\=\quad\=\quad\=\quad\=\kill
+\textbf{Input:} standing intent $\iota$, contract $K_t$, runtime state $H_t$, backlog $B$, budget $b$ \\
+$c \leftarrow \operatorname{ManagerCommit}(\iota,K_t)$; persist campaign identity \\
+\textbf{while} $b$ remains and $c$ is not complete \textbf{do} \\
+\> \textit{// campaign level: the mission boundary is fixed here} \\
+\> $N \leftarrow \operatorname{StableTopological}(\operatorname{Planner}(B,H_t,c,K_t))$ \\
+\> \textbf{for} each bounded mission $q_0 \in N$, enqueued one at a time \textbf{do} \\
+\>\> $L \leftarrow \operatorname{ExposeSkillLibraries}(q_0)$; \textit{paths only, retrieval is the agent's} \\
+\>\> $\Gamma \leftarrow [\,]$; $q \leftarrow q_0$ \\
+\>\> \textbf{repeat} \textit{// mission level: $q_0$ is now fixed for every round below} \\
+\>\>\> $(y,e,d) \leftarrow \operatorname{Engineer}(q,H_t,L)$ \\
+\>\>\> \textbf{if} $d=\code{skip}$ and $\operatorname{SelfReviewAllowed}(q)$ \\
+\>\>\>\> $r \leftarrow \operatorname{EngineerSelfReview}(q,y,e)$ \\
+\>\>\> \textbf{else} $r \leftarrow \operatorname{Reviewer}(q,y,e)$ \textit{; scoped to this round} \\
+\>\>\> append $(q,y,e,r,r.\code{source})$ to $\Gamma$ \\
+\>\>\> \textbf{if} $r=\code{continue}$ \textbf{then} $q \leftarrow \operatorname{AdaptAfterRejections}(\Gamma)$ \\
+\>\> \textbf{until} $r\in\{\code{done},\code{blocked},\code{paused}\}$ or a governance threshold fires \\
+\>\> $(\code{status},\code{reason}) \leftarrow \operatorname{PreSettlementGuard}(\Gamma,\code{status},\code{reason})$ \\
+\>\> $\tau \leftarrow \operatorname{TraceProjection}(\Gamma)$; \quad $E \leftarrow \operatorname{AdmitResult}(\tau)$ \\
+\>\> $H_{t+1} \leftarrow \operatorname{SettleMissionOutcome}(H_t,\tau,E)$ \textit{; learning happens here} \\
+\> \textbf{if} evidence proposes a contract change $K'_t$ \textbf{then} \\
+\>\> $(K_{t+1},\rho_t) \leftarrow \operatorname{ReviseContract}(K_t,K'_t,\code{by},\code{confirmation})$ \\
+\> $t \leftarrow t+1$; refill $B$ when required \\
+\textbf{end while} \\
+\textbf{Output:} accepted artifacts, inspectable trajectory, admitted contract, and updated runtime state
+\end{tabbing}
+\end{paperbox}
+
+The algorithm above separates two levels that are easy to conflate. The
+Planner runs at the campaign level and fixes the mission boundary $q_0$; the round
+loop beneath it varies $q$ only through \code{AdaptAfterRejections}, which reacts to
+Reviewer rejections \emph{within} that boundary. No component inside the round loop
+can rewrite $q_0$. Section~\ref{sec:endogenous-harness} treats the consequence of
+that asymmetry as a first-class failure mode rather than an implementation detail.
+
+Three further details matter because they differ from the idealized loop.
+\emph{Skill libraries are exposed, not injected}: the runtime publishes library paths
+and the acting agent performs its own retrieval, so no matcher decides in advance
+which prior experience is relevant. \emph{Termination is governed by named
+thresholds} rather than by Reviewer verdicts alone: a maximum round count, a
+no-progress threshold, a soft round limit, a hard escalation count, and a backend
+failure threshold each end or escalate a mission, and a pre-settlement guard may
+override the recorded status before anything is learned. \emph{Learning is settled
+per mission, not per round}: reusable state changes once, at the mission outcome.
+
+\code{ReviseContract} is where evidence becomes an authorized change of target, and
+its gate is deliberately two-tier. A \code{GoalContract} holds two kinds of clause.
+Semantic clauses, exclusions, and recorded ambiguities move freely, because
+clarifying what the user meant is ordinary Manager work. Precise clauses and the
+objective itself require a confirmation covering exactly the clause identifiers that
+change; without it the revision is refused. That split is the implemented form of the
+distinction Section~\ref{sec:problem} draws analytically: intent is stable, wording
+is negotiable, and the operational target moves only with recorded authority.
+
+\subsection{Bounded Missions over Durable State}
+
+The long-lived object in \systemname is the campaign, not a provider transcript. A
+campaign has a persisted identity and objective; its work is divided into missions
+that have explicit outcomes. The scheduler assigns one mission at a time, records
+its result, and advances only at a clean mission boundary. Mission assignment is
+transactional, preventing duplicate work under concurrency, and resumed execution
+is tied to the persistent campaign identity.
+
+Engineer and Reviewer calls use fresh provider sessions for each round. Cross-session
+continuity comes from an ordinary shared \code{CHECKPOINT.md} containing durable
+state, evidence references, open questions, and the next step. This follows the
+broader move from monolithic context toward managed memory tiers and reusable
+workflows~\citep{packer2023memgpt,wang2024workflowmemory,xu2025amem}. The Engineer
+updates the checkpoint after execution. When independent review is invoked, the
+Reviewer reads and corrects the same file and is its final editor for that round;
+on an accepted self-review path, the Engineer's version remains the handoff. The
+full history remains in artifacts and the event record.
+
+This design makes restart and upgrade behavior part of the method. A running process
+hands off only at a mission boundary, and the replacement resumes from the same
+persistent campaign identity. After an interruption, replay or reassignment begins
+from committed campaign state rather than reconstructing the task from a model
+transcript.
+
+\subsection{Review and Completion}
+
+All role invocations pass through a common instrumentation layer that records usage
+and associates each call with the mission trace. The Engineer and Reviewer share
+the same artifact state, allowing review of the actual outputs and execution record
+rather than only the Engineer's summary. A typed, append-only trace is the canonical
+timeline; user interfaces are projections over that record.
+
+The source of a mission completion verdict is explicit. When self-review is enabled
+and no vertical or task policy requires independence, an Engineer may select
+\code{review=skip}; its prompt restricts that choice to low-risk bounded work with
+a passing verifier. The runtime accepts the explicit agent judgment without adding
+a second heuristic or validator and records
+\code{review\_source=engineer\_self\_review}. Otherwise a fresh Reviewer
+returns the structured verdict, and stage-closing or vertical-required review cannot
+be waived. Completion never comes from filenames, Token volume, or prose keywords.
+The corresponding artifacts and execution records remain inspectable, while
+credential redaction and result provenance preserve the selected verdict source.
+
+\subsection{Verification-Gated Fixed-Model Runtime Self-Evolution}
+
+Equation~\ref{eq:runtime-update} separates the model from the state around it.
+Table~\ref{tab:runtime-ownership} identifies how each component can change and who
+owns the committed update. The ownership model is intentionally not uniform. Memory
+and skills use a work-versus-certification split: the Engineer or Scientist produces
+a candidate, and the Reviewer commits the retained form. Tools and procedures are
+system-configured. Stage checklists are Planner-owned, with Reviewer feedback rather
+than a second commit gate. Routing policy is Manager-committed, while task
+definitions are Planner-authored and scheduler-committed.
+
+We use \emph{verification-guided} for the overall control policy that decides whether
+to persist, stop, or pivot, and \emph{verification-gated} for the narrower admission
+condition on reusable updates. We use \emph{runtime self-evolution} in a deliberately
+narrow, fixed-model sense.
+The underlying model parameters remain unchanged; what evolves is the persistent
+state that later missions retrieve or obey. \emph{Verification-gated} is the
+umbrella term used in this report: a
+generated candidate is not reusable merely because a role produced it. Admission
+requires the task-native evidence that exists for that surface and a commit by its
+authorized owner. Depending on policy and risk, this can combine an official
+executable verifier with independent Reviewer judgment, permitted Engineer
+self-review, or a Manager, Planner, Scheduler, or system-configuration commit. It
+does not mean that every low-risk update requires an independent Reviewer. We use
+\emph{Reviewer-gated} only for the independent-Reviewer path and \emph{external
+grader} only for a task-native evaluator outside the role loop.
+
+A complete update cycle has four parts:
+(1) an execution trajectory produces a candidate memory, skill, procedure,
+verification rule, routing decision, or task definition; (2) the responsible role
+checks the candidate against artifacts and task-native evidence; (3) the authorized
+owner commits, revises, or rejects the update; and (4) a later mission retrieves the
+retained state as part of its starting context or execution policy. Activity that
+does not survive this commit-and-reuse path is not counted as self-evolution.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabularx}{\linewidth}{@{}p{2.25cm} p{2.75cm} p{2.55cm} X@{}}
+\toprule
+\rowcolor{papersand}
+\textbf{State} & \textbf{Change source} & \textbf{Commit owner} & \textbf{Persistent form} \\
+\midrule
+$M$: memory & Engineer trajectory & Reviewer & Curated checkpoint and event-derived journal \\
+$S$: skills & Engineer / Scientist & Reviewer & Versioned skill library \\
+$A$: tools and procedures & System configuration & System configuration & Versioned tool and procedure registry \\
+$V$: verification & Planner & Planner & Stage checklist; Reviewer supplies feedback \\
+$R$: routing and roles & Runtime policy & Manager & Campaign routing policy \\
+$Q$: tasks and evaluations & Planner & Scheduler & Backlog task specifications and scopes \\
+\bottomrule
+\end{tabularx}
+\caption{Attributable ownership of fixed-model runtime evolution. A mission usually
+updates only a subset of these components.}
+\label{tab:runtime-ownership}
+\end{table}
+
+Two knowledge surfaces carry reusable experience. Versioned skills store procedures
+that can be matched to later tasks. A project knowledge base stores source-linked
+records and synthesized pages derived from reviewed outcomes. Neither surface is
+treated as automatically correct: entries can be revised, archived, or retired when
+later results contradict them.
+
+This mechanism can improve a later mission without changing the model itself. A
+verified retained failure can prevent a repeated dead end; an admitted procedure can shorten
+environment inspection; a verifier can reject a previously accepted shortcut; and
+a routing update can assign independent review to a higher-risk task. The mechanism
+does not imply monotonic improvement. Some missions commit no reusable state,
+retained state can become stale, and a harder task distribution can increase cost
+even after useful state has accumulated.
+
+\subsection{Reliability and Resource Governance}
+
+Long-running systems fail through operational drift even when individual model
+calls are strong. \systemname therefore combines round-level progress
+classification with mission-boundary replanning. Work that repeatedly produces no
+decision or artifact change is stopped or reformulated, while long-running external
+jobs are tracked separately from model reasoning. These mechanisms bound execution;
+scientific correctness remains with the task evaluator and the explicitly selected
+Engineer-self-review or independent-Reviewer judgment path.
+
+Resource accounting is centralized at model-call and external-job boundaries.
+Budgets are checked before work begins and reconciled after completion, preventing
+individual roles from expanding their own allocation. Concrete scheduling,
+sandboxing, and deployment mechanisms are implementation choices rather than part
+of the scientific claim.

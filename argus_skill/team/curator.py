@@ -24,8 +24,10 @@ tracked pool, so every lifecycle path (live-owner accounting, deadline reaping,
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -37,12 +39,77 @@ from typing import Any, Callable
 from . import completion, leaderboard, pool, registry, roster, task_board
 
 log = logging.getLogger(__name__)
+_SYNCHRONIZE = 0x00100000
+_WAIT_TIMEOUT = 0x00000102
+
+
+def _windows_process_command_line(pid: int) -> str:
+    script = (
+        "$OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new();"
+        f"$p=Get-CimInstance Win32_Process -Filter 'ProcessId = {int(pid)}';"
+        "if($null -ne $p){[Console]::Out.Write($p.CommandLine)}"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=3.0,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _terminate_windows_tree(proc: Any) -> bool:
+    from ..daemon.state import _terminate_windows_process_tree
+
+    pid = int(getattr(proc, "pid", 0) or 0)
+    if pid <= 0:
+        return False
+    return _terminate_windows_process_tree(
+        pid,
+        identity_check=lambda: int(getattr(proc, "pid", 0) or 0) == pid
+        and proc.poll() is None,
+    )
+
+
+def _open_windows_process_handle(pid: int) -> int:
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        return 0
+    open_process = windll.kernel32.OpenProcess
+    open_process.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+    open_process.restype = ctypes.c_void_p
+    return int(open_process(_SYNCHRONIZE, False, int(pid)) or 0)
+
+
+def _close_windows_process_handle(handle: int) -> None:
+    windll = getattr(ctypes, "windll", None)
+    if handle > 0 and windll is not None:
+        close_handle = windll.kernel32.CloseHandle
+        close_handle.argtypes = (ctypes.c_void_p,)
+        close_handle.restype = ctypes.c_int
+        close_handle(ctypes.c_void_p(handle))
+
+
+def _windows_process_handle_alive(handle: int) -> bool:
+    windll = getattr(ctypes, "windll", None)
+    if handle <= 0 or windll is None:
+        return False
+    wait = windll.kernel32.WaitForSingleObject
+    wait.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+    wait.restype = ctypes.c_uint32
+    return wait(ctypes.c_void_p(handle), 0) == _WAIT_TIMEOUT
 
 
 def _pid_is_teammate(pid: int, member_id: str, root: Path | None = None) -> bool:
     """Verify an adopted PID against exact teammate command-line arguments."""
-    if os.name == "nt":
-        return False
+    command_line = _windows_process_command_line(pid) if os.name == "nt" else ""
     try:
         argv = [
             part.decode("utf-8", "replace")
@@ -50,15 +117,42 @@ def _pid_is_teammate(pid: int, member_id: str, root: Path | None = None) -> bool
             if part
         ]
     except OSError:
-        return False
-    if "argus_skill.team.teammate_entry" not in argv:
+        argv = []
+    if not argv and not command_line:
+        ps = "/bin/ps" if Path("/bin/ps").is_file() else "/usr/bin/ps"
+        try:
+            result = subprocess.run(
+                [ps, "-ww", "-p", str(pid), "-o", "command="],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if result.returncode != 0:
+            return False
+        command_line = result.stdout.strip()
+    if argv:
+        if "argus_skill.team.teammate_entry" not in argv:
+            return False
+    elif not re.search(
+        r"(?:^|\s)argus_skill\.team\.teammate_entry(?:\s|$)",
+        command_line,
+    ):
         return False
 
     def option(name: str) -> str:
-        try:
-            return argv[argv.index(name) + 1]
-        except (ValueError, IndexError):
-            return ""
+        if argv:
+            try:
+                return argv[argv.index(name) + 1]
+            except (ValueError, IndexError):
+                return ""
+        match = re.search(
+            rf"(?:^|\s){re.escape(name)}\s+(.+?)(?=\s+--[\w-]+(?:\s|$)|$)",
+            command_line,
+        )
+        return match.group(1).strip().strip('"') if match else ""
 
     if option("--member-id") != member_id:
         return False
@@ -80,13 +174,40 @@ class _AdoptedProc:
     ``_terminate`` rely on, so adopted children flow through every owned-child
     path unchanged."""
 
-    def __init__(self, pid: int, member_id: str, root: Path) -> None:
+    def __init__(
+        self,
+        pid: int,
+        member_id: str,
+        root: Path,
+        *,
+        windows_handle: int = 0,
+    ) -> None:
         self.pid = int(pid)
         self._member_id = member_id
         self._root = Path(root)
+        self._windows_handle = (
+            windows_handle or _open_windows_process_handle(self.pid)
+            if os.name == "nt"
+            else 0
+        )
+        if os.name == "nt" and self._windows_handle <= 0:
+            raise OSError(f"could not retain Windows process handle for pid {self.pid}")
 
     def poll(self) -> int | None:
+        if os.name == "nt":
+            if _windows_process_handle_alive(self._windows_handle):
+                return None
+            self._close_windows_handle()
+            return 0
         return None if _pid_is_teammate(self.pid, self._member_id, self._root) else 0
+
+    def _close_windows_handle(self) -> None:
+        handle = self._windows_handle
+        self._windows_handle = 0
+        _close_windows_process_handle(handle)
+
+    def __del__(self) -> None:
+        self._close_windows_handle()
 
     def wait(self, timeout: float | None = None) -> int:
         end = (time.time() + timeout) if timeout else None
@@ -95,6 +216,15 @@ class _AdoptedProc:
                 raise subprocess.TimeoutExpired(self._member_id, timeout or 0)
             time.sleep(0.1)
         return 0
+
+    def terminate(self) -> None:
+        if os.name == "nt" and self.poll() is None:
+            _terminate_windows_tree(self)
+        elif self.poll() is None:
+            os.kill(self.pid, signal.SIGTERM)
+
+    def kill(self) -> None:
+        self.terminate()
 
 
 class TrackedTeammate:
@@ -141,6 +271,7 @@ class Curator:
     def __init__(self, *, project_root: Path, default_width: int = 8,
                  tick_s: float = 5.0, teammate_timeout_s: float = 5400.0,
                  hard_grace_s: float = 600.0,
+                 max_total_in_flight: int | None = None,
                  now_fn: Callable[[], float] = time.time,
                  make_proc: Callable[..., Any] | None = None,
                  distill_fn: Callable[[str], str] | None = None,
@@ -152,6 +283,19 @@ class Curator:
         self.tick_s = float(tick_s)
         self.teammate_timeout_s = float(teammate_timeout_s)
         self.hard_grace_s = float(hard_grace_s)
+        environment = getattr(os, "environ", {})
+        configured_total = (
+            max_total_in_flight
+            if max_total_in_flight is not None
+            else int(
+                environment.get("ARGUS_TEAM_MAX_TOTAL_IN_FLIGHT")
+                or environment.get("ARGUS_SKILL_COPILOT_MAX_CONCURRENCY")
+                or "32"
+            )
+        )
+        if int(configured_total) <= 0:
+            raise ValueError("maximum total in-flight teammates must be positive")
+        self.max_total_in_flight = int(configured_total)
         self._now = now_fn
         self._make_proc = make_proc or self._default_make_proc
         self._distill_fn = distill_fn
@@ -192,8 +336,16 @@ class Curator:
             ),
         )
 
-    def _spawn_tracked(self, root: Path, *, member_id: str, task_id: str,
-                       cwd: Path, now: float | None = None) -> int:
+    def _spawn_tracked(
+        self,
+        root: Path,
+        *,
+        member_id: str,
+        task_id: str,
+        cwd: Path,
+        now: float | None = None,
+        timeout_s: float | None = None,
+    ) -> int:
         root = Path(root)
         key = _child_key(root, member_id)
         prior = self._children.get(key)
@@ -203,7 +355,12 @@ class Curator:
         self._children[key] = TrackedTeammate(
             proc, member_id=member_id, task_id=task_id, root=root,
             started_at=(self._now() if now is None else now),
-            timeout_s=self.teammate_timeout_s, hard_grace_s=self.hard_grace_s)
+            timeout_s=(
+                self.teammate_timeout_s
+                if timeout_s is None or timeout_s <= 0
+                else float(timeout_s)
+            ),
+            hard_grace_s=self.hard_grace_s)
         roster.add_member(root, {
             "id": member_id, "pid": proc.pid, "cwd": str(cwd),
             "task_id": task_id, "status": "running",
@@ -243,10 +400,22 @@ class Curator:
             child_key = _child_key(root, str(mid or ""))
             if not mid or child_key in self._children or not pid:
                 continue
-            if m.get("status") != "running" or not _pid_is_teammate(int(pid), mid, root):
+            if m.get("status") != "running":
                 continue
+            if os.name == "nt":
+                handle = _open_windows_process_handle(int(pid))
+                if handle <= 0:
+                    continue
+                if not _pid_is_teammate(int(pid), mid, root):
+                    _close_windows_process_handle(handle)
+                    continue
+                proc = _AdoptedProc(int(pid), mid, root, windows_handle=handle)
+            else:
+                if not _pid_is_teammate(int(pid), mid, root):
+                    continue
+                proc = _AdoptedProc(int(pid), mid, root)
             self._children[child_key] = TrackedTeammate(
-                _AdoptedProc(int(pid), mid, root), member_id=mid,
+                proc, member_id=mid,
                 task_id=m.get("task_id", ""), root=root, started_at=now,
                 timeout_s=self.teammate_timeout_s, hard_grace_s=self.hard_grace_s)
             adopted.append(mid)
@@ -256,8 +425,16 @@ class Curator:
         return adopted
 
     # ---- refill: keep ``width`` teammates in flight from the backlog ----
-    def _refill(self, root: Path, *, width: int, cwd: Path,
-                now: float | None = None, ttl: float = 180.0) -> dict[str, Any]:
+    def _refill(
+        self,
+        root: Path,
+        *,
+        width: int,
+        cwd: Path,
+        now: float | None = None,
+        ttl: float = 180.0,
+        spawn_budget: int | None = None,
+    ) -> dict[str, Any]:
         """Top the in-flight count back up to ``width`` from the priority backlog.
 
         Hand stale-owned tasks back ONLY when their owner is not a live child,
@@ -277,6 +454,8 @@ class Curator:
         cap = int(os.environ.get("ARGUS_TEAM_MAX_SPAWN_PER_REFILL", "0") or 0)
         if cap > 0:
             free = min(free, cap)
+        if spawn_budget is not None:
+            free = min(free, max(0, int(spawn_budget)))
         spawned: list[dict[str, Any]] = []
         failed_dead_cwd: list[str] = []
         for _ in range(free):
@@ -306,29 +485,28 @@ class Curator:
                 failed_dead_cwd.append(task["task_id"])
                 continue
             self._spawn_tracked(root, member_id=mid, task_id=task["task_id"],
-                                cwd=task_cwd, now=now)
+                                cwd=task_cwd, now=now,
+                                timeout_s=float(task.get("timeout_s", 0) or 0))
             spawned.append({"member_id": mid, "task_id": task["task_id"]})
         return {"spawned": spawned, "in_flight": in_flight, "live": len(live),
                 "occupied": occupied, "free": free, "reassigned": reassigned,
                 "failed_dead_cwd": failed_dead_cwd}
 
     # ---- reaping --------------------------------------------------------
-    def _terminate(self, tt: TrackedTeammate, *, grace: float = 2.0) -> None:
+    def _terminate(self, tt: TrackedTeammate, *, grace: float = 2.0) -> bool:
         """Kill one tracked child's process group (SIGTERM → grace → SIGKILL)."""
         proc = tt.proc
         if proc.poll() is not None:
-            return
+            return True
         if os.name == "nt":
-            proc.terminate()
-            try:
-                proc.wait(timeout=grace)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-            return
+            tree_stopped = _terminate_windows_tree(proc)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=max(grace, 5.0))
+            return tree_stopped and proc.poll() is not None
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         except (OSError, ProcessLookupError):
-            return
+            return proc.poll() is not None
         try:
             proc.wait(timeout=grace)
         except subprocess.TimeoutExpired:
@@ -336,6 +514,7 @@ class Curator:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             with contextlib.suppress(subprocess.TimeoutExpired):
                 proc.wait(timeout=5)
+        return proc.poll() is not None
 
     def _reap(self, now: float | None = None) -> dict[str, list[str]]:
         """Drop children that exited on their own; hard-kill+free those past the
@@ -359,7 +538,12 @@ class Curator:
                 dropped.append(tt.member_id)
                 continue
             if now >= tt.hard_deadline():
-                self._terminate(tt)
+                if not self._terminate(tt):
+                    log.error(
+                        "curator: timed-out teammate %s remained alive after termination",
+                        tt.member_id,
+                    )
+                    continue
                 with contextlib.suppress(Exception):
                     task_board.fail(tt.root, tt.task_id, reason="curator hard-timeout")
                     roster.set_member_status(tt.root, tt.member_id, "failed")
@@ -378,17 +562,29 @@ class Curator:
         now = self._now() if now is None else now
         self._reap(now=now)
         for marker in registry.list_markers(self.project_root):
+            live_total = sum(tt.alive() for tt in self._children.values())
+            spawn_budget = max(0, self.max_total_in_flight - live_total)
             # Per-campaign isolation: a single poisoned marker (e.g. a working dir
             # that vanished under it, or a corrupt pool file) must NEVER abort the
             # whole tick and starve every OTHER campaign of its refill. Fail loudly
             # — full traceback, with the campaign id — and carry on to the next.
             try:
-                self._tick_marker(marker, now=now)
+                self._tick_marker(
+                    marker,
+                    now=now,
+                    spawn_budget=spawn_budget,
+                )
             except Exception:  # noqa: BLE001 — one campaign must not sink the tick
                 log.exception("curator: tick failed for campaign %s; skipping it "
                               "this tick", (marker or {}).get("team_id", "?"))
 
-    def _tick_marker(self, marker: dict[str, Any], *, now: float) -> None:
+    def _tick_marker(
+        self,
+        marker: dict[str, Any],
+        *,
+        now: float,
+        spawn_budget: int | None = None,
+    ) -> None:
         """Maintain ONE campaign for this tick: adopt prior-daemon orphans, fold
         the leaderboard, then refill the pool (or wind a draining campaign down).
 
@@ -418,7 +614,13 @@ class Curator:
             return
         self._maybe_distill(root, now)
         width = int(doc["width"]) if "width" in doc else self.default_width
-        self._refill(root, width=width, cwd=cwd, now=now)
+        self._refill(
+            root,
+            width=width,
+            cwd=cwd,
+            now=now,
+            spawn_budget=spawn_budget,
+        )
 
     def _maybe_fold(self, root: Path) -> None:
         """Deterministically re-fold the leaderboard when shards have changed.
@@ -541,7 +743,12 @@ class Curator:
         stopped_roots: set[Path] = set()
         for tt in list(self._children.values()):
             status = "stopped" if tt.alive() else "exited"
-            self._terminate(tt)
+            if not self._terminate(tt):
+                log.error(
+                    "curator: teammate %s remained alive during shutdown",
+                    tt.member_id,
+                )
+                continue
             stopped_roots.add(tt.root)
             with contextlib.suppress(Exception):
                 roster.set_member_status(tt.root, tt.member_id, status)

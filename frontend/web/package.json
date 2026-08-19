@@ -1,12 +1,12 @@
 {
   "name": "argus-web",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "React web cockpit for the argus-skill autonomous-research daemon — a client of the argus-skill webapi.",
   "scripts": {
     "dev": "vite",
-    "build": "python ../../scripts/generate_event_payload_types.py --check && python ../../scripts/generate_release_manifest.py --check && tsc --noEmit && vite build",
+    "build": "python -m argus_skill.release_tools.generate_event_types --check && python -m argus_skill.release_tools.generate_manifest --check && tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "preview": "vite preview"
@@ -19,21 +19,23 @@
     "@fortawesome/react-fontawesome": "^3.4.0",
     "@tanstack/react-query": "^5.59.0",
     "gsap": "^3.15.0",
+    "lucide-react": "^0.468.0",
+    "pdfjs-dist": "^6.2.108",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
-    "@types/node": "^22",
+    "@types/node": "^22.20.1",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
-    "@vitejs/plugin-react": "^4.7.0",
+    "@vitejs/plugin-react": "^6.0.5",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.5.26",
     "tailwindcss": "^3.4.14",
     "typescript": "^5.6.3",
-    "vite": "^6.4.3",
-    "vitest": "^3.2.7"
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10"
   }
 }

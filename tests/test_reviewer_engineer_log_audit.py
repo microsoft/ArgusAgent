@@ -31,6 +31,7 @@ from argus_skill.engineer.runner import (
     SupervisedEngineer,
 )
 from argus_skill.reviewer import Reviewer, ReviewerConfig
+from argus_skill.roles.task_contract import format_native_shell_command
 from argus_skill.skills.vertical_select import persist_vertical
 
 _LOG_PATH = "/abs/global/projects/deadbeef/events.jsonl"
@@ -46,6 +47,7 @@ def _build(
     workflow_mode: str | None = "staged",
     scope: str = "",
     main_error: str | None = None,
+    objective: str = "implement and verify the kernel",
 ) -> str:
     if monkeypatch is not None:
         if workflow_mode is not None:
@@ -59,7 +61,7 @@ def _build(
             monkeypatch.delenv("ARGUS_SKILL_MEASURED_MODE", raising=False)
     r = Reviewer(runner=None, skill_store=None)
     return r._build_prompt(
-        objective="implement and verify the kernel",
+        objective=objective,
         operator_messages=[],
         planner_review_instruction="",
         round_index=4,
@@ -90,6 +92,20 @@ def test_no_audit_section_when_log_path_empty(monkeypatch) -> None:
     assert "events.jsonl" not in p
 
 
+def test_reviewer_rejects_retroactive_audit_reconstruction(monkeypatch) -> None:
+    p = _build(
+        "",
+        monkeypatch=monkeypatch,
+        objective="Review an append-only audit ledger and exact COMMAND_LOG.",
+    )
+
+    assert "operator mutation freeze or append-only requirement" in p
+    assert "compare directive order with file-write, install, and command events" in p
+    assert "cannot make an overwritten or reconstructed ledger contemporaneous" in p
+    assert "unless the cited objective text states it" in p
+    assert "missing byte-faithful command" in p
+
+
 def test_audit_recipes_scope_searches_to_current_engineer_call(monkeypatch) -> None:
     p = _build(
         _LOG_PATH,
@@ -100,8 +116,19 @@ def test_audit_recipes_scope_searches_to_current_engineer_call(monkeypatch) -> N
     )
 
     assert f"Current engineer call id: `{_CALL_ID}`" in p
-    assert f"'{sys.executable}' -I -m argus_skill.tools.event_log_query" in p
-    assert f"--log '{_LOG_PATH}' --call-id '{_CALL_ID}'" in p
+    expected = format_native_shell_command(
+        [
+            sys.executable,
+            "-I",
+            "-m",
+            "argus_skill.tools.event_log_query",
+            "--log",
+            _LOG_PATH,
+            "--call-id",
+            _CALL_ID,
+        ]
+    )
+    assert expected in p
     assert "rg -F" not in p
     assert "\n    grep -nE 'use_attach" not in p
     assert "\n    grep -nE 'pytest" not in p
@@ -266,7 +293,6 @@ def test_config_path_is_threaded_into_evaluate(tmp_path: Path) -> None:
     )
     config = SupervisedConfig(
         max_rounds=1,
-        effective_progress_timeout_seconds=0,
         background_subagent_advisory=False,
         engineer_log_path=_LOG_PATH,
     )
@@ -294,7 +320,6 @@ def test_gateway_synthesized_call_id_uses_legacy_unscoped_audit(
     )
     config = SupervisedConfig(
         max_rounds=1,
-        effective_progress_timeout_seconds=0,
         background_subagent_advisory=False,
         engineer_log_path=_LOG_PATH,
     )
@@ -320,7 +345,6 @@ def test_empty_config_path_threads_empty_string(tmp_path: Path) -> None:
     )
     config = SupervisedConfig(
         max_rounds=1,
-        effective_progress_timeout_seconds=0,
         background_subagent_advisory=False,
     )
     engine.run(

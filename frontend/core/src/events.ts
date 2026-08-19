@@ -47,10 +47,21 @@ export function isStructuredAgentPayload(event: EventMsg): boolean {
   if (!['assistant_message', 'agent_message', 'message'].includes(String(event.kind ?? ''))) {
     return false;
   }
+
   const role = String(event.agent_layer ?? event.actor ?? '');
   const text = String(event.text ?? '').trimStart();
   if (!text.startsWith('{')) return false;
   return role === 'reviewer' || role === 'planner';
+}
+
+const AGENT_HANDOFF_LINE = /^(?:MILESTONE_STATUS|OPERATOR_QUESTION|OPERATOR_OPTIONS)\s*=/i;
+
+export function visibleAgentText(value: unknown): string {
+  return String(value ?? '')
+    .split(/\r?\n/)
+    .filter((line) => !AGENT_HANDOFF_LINE.test(line.trim()))
+    .join('\n')
+    .trim();
 }
 
 export type FragmentMode = 'append' | 'snapshot' | 'auto';

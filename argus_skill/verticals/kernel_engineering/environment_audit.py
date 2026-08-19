@@ -79,6 +79,90 @@ TOOL_COMMANDS: dict[str, tuple[str, ...]] = {
     "uv": ("uv", "--version"),
 }
 
+# CUDA ships its binaries under a versioned prefix that is routinely absent from
+# PATH — a container sets CUDA_HOME but not PATH, or the operator installed the
+# toolkit without touching their shell profile. Probing PATH alone then reports
+# nvcc/ptxas/compute-sanitizer as *missing*, and the agent concludes the box
+# cannot do CUDA C++ work and silently narrows its plan. These are the tools
+# worth hunting for outside PATH, and where to look.
+_CUDA_TOOLS = frozenset({
+    "nvcc", "ptxas", "cuobjdump", "nvdisasm", "compute-sanitizer", "ncu", "nsys",
+})
+
+_CUDA_ROOT_ENV_VARS = ("CUDA_HOME", "CUDA_PATH", "CUDA_ROOT")
+_CUDA_ROOT_GLOBS = (
+    "/usr/local/cuda",
+    "/usr/local/cuda-*",
+    "/opt/cuda",
+    "/opt/cuda-*",
+    "/usr/lib/nvidia-cuda-toolkit",
+)
+# Nsight Compute/Systems install beside the toolkit rather than inside its bin.
+_CUDA_BIN_SUBDIRS = (
+    "bin",
+    "nsight-compute",
+    "nsight-systems",
+)
+
+
+def _cuda_search_roots(extra_roots: Iterable[str] = ()) -> list[Path]:
+    """Directories that may hold CUDA binaries, most specific first.
+
+    Ordered so an explicitly configured toolkit (``CUDA_HOME``) wins over
+    whatever ``/usr/local/cuda-*`` glob happens to sort last.
+    """
+    roots: list[Path] = []
+    seen: set[str] = set()
+
+    def add(candidate: Path) -> None:
+        key = str(candidate)
+        if key not in seen and candidate.is_dir():
+            seen.add(key)
+            roots.append(candidate)
+
+    for value in extra_roots:
+        if value:
+            add(Path(value))
+    for var in _CUDA_ROOT_ENV_VARS:
+        value = os.environ.get(var, "").strip()
+        if value:
+            add(Path(value))
+    for pattern in _CUDA_ROOT_GLOBS:
+        base = Path(pattern)
+        if "*" in pattern:
+            parent = base.parent
+            if parent.is_dir():
+                # Newest toolkit first: cuda-13.1 before cuda-12.4.
+                for match in sorted(parent.glob(base.name), reverse=True):
+                    add(match)
+        else:
+            add(base)
+    return roots
+
+
+def find_off_path_tool(executable: str, extra_roots: Iterable[str] = ()) -> str:
+    """Locate *executable* under a known install root when PATH misses it.
+
+    Returns the absolute path, or ``""`` when the tool really is not installed.
+    """
+    if executable not in _CUDA_TOOLS:
+        # Everything else (gcc, git, jq…) belongs on PATH; hunting for it would
+        # only produce confusing results.
+        return ""
+    for root in _cuda_search_roots(extra_roots):
+        for subdir in _CUDA_BIN_SUBDIRS:
+            base = root / subdir
+            if not base.is_dir():
+                continue
+            direct = base / executable
+            if direct.is_file() and os.access(direct, os.X_OK):
+                return str(direct)
+            # Nsight nests one more level: nsight-compute/2024.3.1/ncu
+            for nested in sorted(base.glob(f"*/{executable}"), reverse=True):
+                if nested.is_file() and os.access(nested, os.X_OK):
+                    return str(nested)
+    return ""
+
 CAPABILITY_NAMES = (
     "torch",
     "triton",
@@ -218,22 +302,69 @@ def collect_dependency_health(python_executable: str) -> dict[str, Any]:
     }
 
 
-def collect_tools() -> dict[str, dict[str, Any]]:
+def collect_tools(extra_roots: Iterable[str] = ()) -> dict[str, dict[str, Any]]:
+    """Probe each tool, looking beyond PATH for CUDA binaries.
+
+    ``present`` stays true for anything installed, on PATH or not, so
+    capability derivation reflects what the machine can actually do. The new
+    ``on_path`` / ``discovery`` fields tell the agent whether the fix is an
+    install or a one-line PATH export.
+    """
     records: dict[str, dict[str, Any]] = {}
+    extra = list(extra_roots)
     for name, command in TOOL_COMMANDS.items():
-        path = shutil.which(command[0])
+        executable = command[0]
+        path = shutil.which(executable)
+        on_path = bool(path)
         if not path:
-            records[name] = {"present": False, "path": "", "version": ""}
+            path = find_off_path_tool(executable, extra)
+        if not path:
+            records[name] = {
+                "present": False,
+                "path": "",
+                "version": "",
+                "on_path": False,
+                "discovery": "not_found",
+            }
             continue
-        result = _run(command)
+        # Run the discovered binary, not the bare name, or an off-PATH tool
+        # would fail to execute and be misreported as broken.
+        result = _run((path,) + tuple(command[1:]))
         version_text = result["stdout"] or result["stderr"]
         records[name] = {
             "present": True,
             "path": path,
             "version": _first_line(version_text),
             "version_returncode": result["returncode"],
+            "on_path": on_path,
+            "discovery": "on_path" if on_path else "installed_not_on_path",
         }
     return records
+
+
+def path_repair_hint(tools: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Directories to add to PATH so installed-but-hidden tools become usable.
+
+    Returned instead of installing anything: a second copy of a toolkit that is
+    already on disk is the wrong repair.
+    """
+    hidden = {
+        name: record for name, record in tools.items()
+        if record.get("present") and not record.get("on_path", True)
+    }
+    directories: list[str] = []
+    for record in hidden.values():
+        parent = str(Path(str(record.get("path", ""))).parent)
+        if parent and parent not in directories:
+            directories.append(parent)
+    if not directories:
+        return {"needed": False, "tools": [], "directories": [], "export": ""}
+    return {
+        "needed": True,
+        "tools": sorted(hidden),
+        "directories": directories,
+        "export": "export PATH=" + ":".join([*directories, "$PATH"]),
+    }
 
 
 def collect_gpus() -> list[dict[str, str]]:
@@ -249,6 +380,25 @@ def collect_gpus() -> list[dict[str, str]]:
             continue
         rows.append(dict(zip(keys, parts, strict=True)))
     return rows
+
+
+def collect_torch_cuda_home(python_executable: str) -> str:
+    """Ask torch which CUDA toolkit it was built against.
+
+    A wheel-installed torch carries the toolkit path even when the shell has
+    no CUDA_HOME, so this recovers install roots the environment forgot.
+    """
+    result = _run(
+        [
+            python_executable,
+            "-c",
+            "from torch.utils.cpp_extension import CUDA_HOME; print(CUDA_HOME or '')",
+        ],
+        timeout=30.0,
+    )
+    if result["returncode"] != 0:
+        return ""
+    return result["stdout"].strip()
 
 
 def collect_torch_runtime(python_executable: str) -> dict[str, Any]:
@@ -500,7 +650,10 @@ def build_report(
     python_version_probe = _run([python_executable, "--version"])
     packages = collect_packages(python_executable)
     dependency_health = collect_dependency_health(python_executable)
-    tools = collect_tools()
+    # torch knows where it was built against, which is often a toolkit the
+    # shell never exposed; feed it in as a search root before probing.
+    torch_cuda_home = collect_torch_cuda_home(python_executable)
+    tools = collect_tools([torch_cuda_home] if torch_cuda_home else [])
     gpus = collect_gpus()
     torch_runtime = collect_torch_runtime(python_executable)
     signals = collect_project_signals(project_root)
@@ -595,6 +748,7 @@ def build_report(
         "packages": packages,
         "dependency_health": dependency_health,
         "tools": tools,
+        "path_repair": path_repair_hint(tools),
         "project_signals": signals,
         "specialized_tool_registry": {
             "refreshed_at": registry.get("refreshed_at"),

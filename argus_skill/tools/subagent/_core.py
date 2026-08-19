@@ -6,7 +6,8 @@ It has been decomposed into cohesive sub-modules:
     _registry.py       -- registry/persistence, run-dir resolution, usage
     _discussion_log.py -- discussion transcript (jsonl + markdown mirror)
     _reporting.py      -- engineer inbox reporting and LLM-authored summaries
-    _direct_run.py     -- direct Popen execution, codex LLM runner, RL detection
+    _direct_run.py     -- direct Popen execution and RL detection
+    _llm.py            -- configured supervisor agent-CLI runner
     _supervised_run.py -- supervised monitoring loop with health-adaptive backoff
     _discuss_run.py    -- stop-and-discuss parking loop
 
@@ -52,6 +53,7 @@ from ._registry import (
     _read_task,
     _registry_path,
     _run_dir_from_command,
+    _task_log_dir,
     _write_task,
     reconcile_terminal_task,
 )
@@ -77,7 +79,7 @@ from ._reporting import (
     _supervisor_summarize_report,
 )
 
-# Direct execution + codex runner + RL helpers
+# Direct execution + supervisor runner + RL helpers
 from ._direct_run import (
     _KNOB_ALIASES,
     _RL_COLLAPSE_GUIDANCE_CACHE,
@@ -93,7 +95,14 @@ from ._direct_run import (
     _strip_skill_frontmatter,
     _terminate_proc,
 )
-from ._llm import _run_codex, _run_codex_with_usage
+from ._llm import (
+    _run_codex,
+    _run_codex_with_usage,
+    _run_supervisor,
+    _run_supervisor_with_usage,
+    resolve_supervisor_model,
+    resolve_supervisor_reasoning_effort,
+)
 
 # Supervised monitoring loop
 from ._supervised_run import (

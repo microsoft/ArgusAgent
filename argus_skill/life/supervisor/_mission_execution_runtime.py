@@ -22,11 +22,7 @@ from ...core.usage import UsageLedger, UsageRecord
 from ..memory import BacklogItem
 from ..mission_outcome import mission_outcome_class, mission_outcome_dimensions
 from ._cost import _CostTrackingSink
-from ._mission_execution_helpers import (
-    _MissionRunState,
-    bounded_dag_node_max_rounds,
-    is_progressive_experiment_matrix,
-)
+from ._mission_execution_helpers import _MissionRunState
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +50,28 @@ class MissionExecutionRuntimeMixin:
             prelude = rt + "\n---\n\n" + prelude if prelude else rt
         return prelude
 
+    def _resolve_mission_workdir(self, item: BacklogItem) -> Path:
+        """Resolve/adopt an ordinary Planner-selected nested repository."""
+        requested = str(getattr(item, "execution_workdir", "") or "").strip()
+        tags = {str(tag or "").strip().lower() for tag in item.tags}
+        current = self._project_workdir().expanduser().resolve(strict=True)
+        if not requested or "framework_maintenance" in tags:
+            return current
+        configured_reader = getattr(self, "_configured_worktree", None)
+        base = configured_reader() if callable(configured_reader) else current
+        base = Path(base or current).expanduser().resolve(strict=True)
+        from ...core.campaign_workdir import adopt_campaign_workdir
+
+        adopted = adopt_campaign_workdir(
+            state_root=self.memory.root,
+            base_root=base,
+            current_root=current,
+            requested=requested,
+        )
+        if adopted != current:
+            self._emit_status(f"campaign workdir adopted: {adopted}")
+        return adopted
+
     def _prepare_mission_context(
         self, item: BacklogItem, prelude: str,
     ) -> _MissionRunState:
@@ -62,9 +80,31 @@ class MissionExecutionRuntimeMixin:
         Emits ``LIFE_MISSION_STARTED``. Returns the scratch state that the
         rest of the lifecycle phases read from and write to.
         """
+        resolved_mission_workdir = self._resolve_mission_workdir(item)
         state = _MissionRunState(item)
         state.prelude = prelude
+        # Workdir adoption happens before stage/context resolution so the
+        # mission, Reviewer, and Manager all see one canonical research tree.
         state.pipeline_stage_at_start = self._current_pipeline_stage() or ""
+        if "framework_maintenance" not in {
+            str(tag or "").strip().lower() for tag in item.tags
+        }:
+            from ...verticals._base import vertical_mission_prelude
+
+            vertical_state_root = Path(self._artifact_root())
+            block = vertical_mission_prelude(
+                vertical_root=vertical_state_root,
+                project_root=resolved_mission_workdir,
+                state_root=self.memory.root,
+                stage=state.pipeline_stage_at_start,
+                mission=item,
+            )
+            if block:
+                state.prelude = (
+                    block + "\n\n---\n" + state.prelude
+                    if state.prelude
+                    else block
+                )
         state.usage_attempt_id = f"{item.id}:attempt:{max(1, int(item.attempt or 1))}"
         self._missions_started += 1
         state.item_scope = self._planner_scope_from_item(item)
@@ -113,6 +153,11 @@ class MissionExecutionRuntimeMixin:
                 scope=state.item_scope,
                 objective=item.objective,
                 acceptance_check=getattr(item, "acceptance_check", ""),
+                plan_hypothesis=getattr(item, "plan_hypothesis", ""),
+                goal_contribution=getattr(item, "goal_contribution", ""),
+                expected_regressions=getattr(item, "expected_regressions", ""),
+                decision_rule=getattr(item, "decision_rule", ""),
+                execution_workdir=str(resolved_mission_workdir),
                 non_goals=list(getattr(item, "non_goals", []) or []),
                 context_refs=list(getattr(item, "context_refs", []) or []),
                 plan_id=item.plan_id,
@@ -141,15 +186,14 @@ class MissionExecutionRuntimeMixin:
             str(tag).strip().lower()
             for tag in getattr(item, "tags", [])
         }
-        state.execution_workdir = self._project_workdir()
+        state.execution_workdir = resolved_mission_workdir
         state.configured_execution_workdir = str(
             getattr(item, "execution_workdir", "") or ""
         ).strip()
-        if state.configured_execution_workdir:
-            if "framework_maintenance" not in state.item_tags:
-                raise ValueError(
-                    "execution_workdir is reserved for framework maintenance"
-                )
+        if (
+            state.configured_execution_workdir
+            and "framework_maintenance" in state.item_tags
+        ):
             state.execution_workdir = Path(
                 state.configured_execution_workdir
             ).expanduser().resolve()
@@ -192,6 +236,20 @@ class MissionExecutionRuntimeMixin:
                 "prelude_context": state.prelude,
                 "scope": state.item_scope,
             }
+            review_lines = [item.objective]
+            acceptance_check = str(
+                getattr(item, "acceptance_check", "") or ""
+            ).strip()
+            if acceptance_check:
+                review_lines.append(f"Acceptance check: {acceptance_check}")
+            non_goals = [
+                str(value).strip()
+                for value in getattr(item, "non_goals", [])
+                if str(value).strip()
+            ]
+            if non_goals:
+                review_lines.append("Non-goals: " + "; ".join(non_goals))
+            review_objective = "\n".join(review_lines)
             original_objective = (
                 getattr(item, "original_objective", "") or item.objective
             )
@@ -272,6 +330,37 @@ class MissionExecutionRuntimeMixin:
                     public_repair + "\n\n---\n" + state.prelude
                     if state.prelude else public_repair
                 )
+            manager_decision = (
+                item.manager_decision
+                if isinstance(item.manager_decision, dict)
+                else {}
+            )
+            execution_vertical = str(
+                manager_decision.get("vertical") or ""
+            ).strip()
+            if execution_vertical:
+                from ...skills.vertical_select import (
+                    UnknownVerticalError,
+                    require_vertical,
+                )
+                from ...verticals._data_domain import (
+                    materialize_learned_data_domain,
+                )
+
+                vertical_state_root = Path(self._artifact_root())
+                materialize_learned_data_domain(
+                    self._budget_global_root(),
+                    vertical_state_root,
+                    execution_vertical,
+                )
+                try:
+                    require_vertical(execution_vertical, vertical_state_root)
+                except UnknownVerticalError:
+                    # The backlog guard already attempted a fresh Manager route.
+                    # If that authority is temporarily unavailable, execute under
+                    # the persisted project contract rather than crash repeatedly
+                    # on stale cross-machine route metadata.
+                    execution_vertical = ""
             try:
                 from inspect import Parameter, signature
 
@@ -281,6 +370,8 @@ class MissionExecutionRuntimeMixin:
                 )
                 if "original_objective" in params or _accepts_kw:
                     execute_kwargs["original_objective"] = original_objective
+                if "review_objective" in params or _accepts_kw:
+                    execute_kwargs["review_objective"] = review_objective
                 if "preplanned" in params or _accepts_kw:
                     execute_kwargs["preplanned"] = any(
                         str(tag).strip().lower() == "planner"
@@ -298,6 +389,10 @@ class MissionExecutionRuntimeMixin:
                     execute_kwargs["stage_closing"] = (
                         self._item_is_stage_closing(item)
                     )
+                if "holds_stage_authority" in params or _accepts_kw:
+                    execute_kwargs["holds_stage_authority"] = bool(
+                        getattr(self.config, "holds_stage_authority", True)
+                    )
                 if "mission_id" in params or _accepts_kw:
                     execute_kwargs["mission_id"] = item.id
                 if "usage_mission_id" in params or _accepts_kw:
@@ -313,23 +408,15 @@ class MissionExecutionRuntimeMixin:
                         if state.configured_execution_workdir
                         else ""
                     )
+                maintenance_mission = "framework_maintenance" in state.item_tags
                 if "maintenance_mission" in params or _accepts_kw:
-                    execute_kwargs["maintenance_mission"] = (
-                        "framework_maintenance" in state.item_tags
+                    execute_kwargs["maintenance_mission"] = maintenance_mission
+                if "allow_skill_changes" in params or _accepts_kw:
+                    execute_kwargs["allow_skill_changes"] = (
+                        "skill_changes:allowed" in state.item_tags
                     )
-                progressive_matrix = is_progressive_experiment_matrix(item)
-                if (
-                    "progressive_experiment_matrix" in params
-                    or _accepts_kw
-                ):
-                    execute_kwargs["progressive_experiment_matrix"] = (
-                        progressive_matrix
-                    )
-                if "bounded_dag_node" in state.item_tags and not progressive_matrix:
-                    if "max_rounds_override" in params or _accepts_kw:
-                        execute_kwargs["max_rounds_override"] = (
-                            bounded_dag_node_max_rounds()
-                        )
+                if "vertical_override" in params or _accepts_kw:
+                    execute_kwargs["vertical_override"] = execution_vertical
                 if state.repair_capability is not None:
                     if "max_rounds_override" in params or _accepts_kw:
                         execute_kwargs["max_rounds_override"] = 1
@@ -346,9 +433,16 @@ class MissionExecutionRuntimeMixin:
                     self._item_skips_stage_transition(item)
                 )
                 execute_kwargs["stage_closing"] = self._item_is_stage_closing(item)
+                execute_kwargs["holds_stage_authority"] = bool(
+                    getattr(self.config, "holds_stage_authority", True)
+                )
+                execute_kwargs["allow_skill_changes"] = (
+                    "skill_changes:allowed" in state.item_tags
+                )
                 execute_kwargs["context_packet_path"] = (
                     str(state.context_packet_path) if state.context_packet_path else ""
                 )
+                execute_kwargs["vertical_override"] = execution_vertical
                 if state.repair_capability is not None:
                     execute_kwargs["max_rounds_override"] = 1
                     execute_kwargs["workflow_mode_override"] = "direct"
@@ -371,10 +465,42 @@ class MissionExecutionRuntimeMixin:
                     stage_transition={},
                 )
             else:
-                state.outcome = self.runner.execute(**execute_kwargs)
+                tracks_active_mission = hasattr(
+                    self.runner,
+                    "_active_mission_id",
+                )
+                if tracks_active_mission:
+                    self.runner._active_mission_id = item.id
+                try:
+                    state.outcome = self.runner.execute(**execute_kwargs)
+                finally:
+                    if tracks_active_mission:
+                        self.runner._active_mission_id = ""
         except Exception as exc:  # noqa: BLE001
             state.exc_str = f"{type(exc).__name__}: {exc}"
             log.exception("life supervisor: mission raised")
+            try:
+                from ..runtime_failure_circuit import record_runtime_failure_circuit
+
+                circuit = record_runtime_failure_circuit(
+                    self.memory.root,
+                    exc,
+                    item_id=item.id,
+                )
+                self._emit({
+                    "type": EventType.LIFE_RUNTIME_FAILURE_CIRCUIT_OPENED,
+                    "item_id": item.id,
+                    "fingerprint": circuit.get("fingerprint"),
+                    "exception_type": circuit.get("exception_type"),
+                    "callsite": circuit.get("callsite"),
+                    "normalized_error": circuit.get("normalized_error"),
+                    "occurrence_count": circuit.get("occurrence_count"),
+                    "runtime_identity": circuit.get("runtime_identity"),
+                    "newly_opened": circuit.get("newly_opened"),
+                    "operator_alert": True,
+                })
+            except Exception:  # noqa: BLE001 - circuit failure cannot hide original
+                log.exception("failed to persist mission runtime failure circuit")
         state.elapsed = time.time() - state.t0
 
     # ------------------------------------------------------------------
@@ -400,6 +526,13 @@ class MissionExecutionRuntimeMixin:
         self._evolve_runtime_skills_after_mission(
             success=state.success,
             usage_mission_id=state.usage_attempt_id,
+            mission_objective=str(
+                item.original_objective or item.objective or item.title or ""
+            ),
+            mission_result=(
+                f"status={state.status}; stop_kind={state.stop_kind or 'none'}; "
+                f"reason={state.stop_reason or 'none'}"
+            ),
         )
         usage_summary = state.cost_sink.usage_summary()
         state.usage_summary = usage_summary

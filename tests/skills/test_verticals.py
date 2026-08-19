@@ -1,7 +1,7 @@
 """Verticals API + vertical-aware System-(B) stage checklists.
 
 The auto-research loop runs ONE of two *verticals*, selected by a single
-``vertical`` field in ``research/PIPELINE_STATE.json``:
+``vertical`` field in ``.argus/PIPELINE_STATE.json``:
 
 * ``research`` (the default) — the full eight-stage paper pipeline. Its
   checklist output is byte-identical to the historical hard-coded behaviour.
@@ -68,11 +68,11 @@ def _isolate_forced_vertical_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _project(tmp_path: Path, vertical: str | None, *, current: str = "run") -> Path:
-    (tmp_path / "research").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".argus").mkdir(parents=True, exist_ok=True)
     payload: dict = {"current_stage": current}
     if vertical is not None:
         payload["vertical"] = vertical
-    (tmp_path / "research" / "PIPELINE_STATE.json").write_text(
+    (tmp_path / ".argus" / "PIPELINE_STATE.json").write_text(
         json.dumps(payload), encoding="utf-8"
     )
     return tmp_path
@@ -117,7 +117,7 @@ def test_persist_vertical_records_explicit_target_venue(tmp_path: Path) -> None:
     persist_vertical(tmp_path, "research", target_venue="  AAAI 2026  ")
 
     state = json.loads(
-        (tmp_path / "research" / "PIPELINE_STATE.json").read_text(encoding="utf-8")
+        (tmp_path / ".argus" / "PIPELINE_STATE.json").read_text(encoding="utf-8")
     )
     assert state["target_venue"] == "AAAI 2026"
 
@@ -152,8 +152,8 @@ def test_resolve_raises_on_corrupt_state(tmp_path: Path) -> None:
     # Corruption of Manager-owned state is a REAL fault (distinct from the
     # legitimate "not decided yet" case) — it still raises rather than silently
     # masking a broken state file as fresh.
-    (tmp_path / "research").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "research" / "PIPELINE_STATE.json").write_text("{not json", encoding="utf-8")
+    (tmp_path / ".argus").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".argus" / "PIPELINE_STATE.json").write_text("{not json", encoding="utf-8")
     with pytest.raises(VerticalResolutionError):
         resolve_vertical(tmp_path)
 
@@ -190,7 +190,7 @@ def test_kernelbench_keeps_research_as_valid_benchmark_research_stage(tmp_path: 
 
     persist_vertical(root, "kernelbench")
 
-    payload = json.loads((root / "research" / "PIPELINE_STATE.json").read_text())
+    payload = json.loads((root / ".argus" / "PIPELINE_STATE.json").read_text())
     assert payload["vertical"] == "kernelbench"
     assert payload["current_stage"] == "research"
     assert current_stage(root) == "research"
@@ -207,7 +207,7 @@ def test_persist_vertical_never_resets_existing_stage(tmp_path: Path) -> None:
 
     persist_vertical(root, "speedrun")
 
-    payload = json.loads((root / "research" / "PIPELINE_STATE.json").read_text())
+    payload = json.loads((root / ".argus" / "PIPELINE_STATE.json").read_text())
     assert payload["vertical"] == "speedrun"
     assert payload["current_stage"] == "run"  # preserved, NOT reset to "setup"
 
@@ -225,8 +225,8 @@ def _finished_custom_domain(
         tmp_path, name, stages=list(stage_order),
         checklist_stage_order=list(stage_order), created_by="manager",
     )
-    (tmp_path / "research").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "research" / "PIPELINE_STATE.json").write_text(
+    (tmp_path / ".argus").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".argus" / "PIPELINE_STATE.json").write_text(
         json.dumps({
             "vertical": name,
             "current_stage": stage_order[-1],
@@ -255,7 +255,7 @@ def test_reset_stage_for_new_intent_preserves_inprogress_reclassification(
     )
 
     assert applied is False
-    payload = json.loads((root / "research" / "PIPELINE_STATE.json").read_text())
+    payload = json.loads((root / ".argus" / "PIPELINE_STATE.json").read_text())
     assert payload["vertical"] == "speedrun"
     assert payload["current_stage"] == "run"  # preserved, untouched
 
@@ -264,7 +264,7 @@ def test_force_replacement_resets_inprogress_pipeline_immediately(
     tmp_path: Path,
 ) -> None:
     root = _project(tmp_path, "research", current="review")
-    state_path = root / "research" / "PIPELINE_STATE.json"
+    state_path = root / ".argus" / "PIPELINE_STATE.json"
     payload = json.loads(state_path.read_text())
     payload["stages"] = {
         "research": {"status": "done"},
@@ -298,8 +298,8 @@ def test_vertical_reached_own_terminal_stage_true_and_false(tmp_path: Path) -> N
     # False: on the vertical's own last stage, but not marked done.
     root2 = tmp_path / "not_done"
     root2.mkdir()
-    (root2 / "research").mkdir(parents=True, exist_ok=True)
-    (root2 / "research" / "PIPELINE_STATE.json").write_text(
+    (root2 / ".argus").mkdir(parents=True, exist_ok=True)
+    (root2 / ".argus" / "PIPELINE_STATE.json").write_text(
         json.dumps({
             "vertical": "research",
             "current_stage": "submission",
@@ -360,7 +360,7 @@ def test_reset_stage_for_new_intent_resets_stale_stage_from_finished_prior_verti
     assert applied is True
     assert current_stage(root) == "research"  # new vertical's FIRST stage
 
-    payload = json.loads((root / "research" / "PIPELINE_STATE.json").read_text())
+    payload = json.loads((root / ".argus" / "PIPELINE_STATE.json").read_text())
     assert payload["vertical"] == "research"
     assert payload["current_stage"] == "research"
     # Downstream stages downgraded so the planner does not skip back over
@@ -389,7 +389,7 @@ def test_reset_stage_for_new_intent_reopens_finished_same_vertical(
     )
 
     assert applied is True
-    payload = json.loads((root / "research" / "PIPELINE_STATE.json").read_text())
+    payload = json.loads((root / ".argus" / "PIPELINE_STATE.json").read_text())
     assert payload["vertical"] == "same_math_family"
     assert payload["current_stage"] == "scope"
     assert vertical_reached_own_terminal_stage(root, "same_math_family") is False
@@ -400,14 +400,14 @@ def test_reset_stage_for_new_intent_reopens_finished_same_vertical(
 def test_persist_vertical_seeds_first_stage_only_when_missing(tmp_path: Path) -> None:
     # Bootstrap of a fresh state file with no stage yet still gets an initial
     # stage seeded — that is initialization, not control.
-    (tmp_path / "research").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "research" / "PIPELINE_STATE.json").write_text(
+    (tmp_path / ".argus").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".argus" / "PIPELINE_STATE.json").write_text(
         json.dumps({"vertical": "research"}), encoding="utf-8"
     )
 
     persist_vertical(tmp_path, "research")
 
-    payload = json.loads((tmp_path / "research" / "PIPELINE_STATE.json").read_text())
+    payload = json.loads((tmp_path / ".argus" / "PIPELINE_STATE.json").read_text())
     assert payload["current_stage"] == "research"  # research vertical's first stage
 
 
@@ -490,15 +490,15 @@ def test_quant_vertical_loads_and_exposes_contract() -> None:
     assert tuple(mod.STAGE_ORDER) == QUANT_STAGES
     # A factor report is certified on the full-report gate (like research),
     # NOT a numeric speedrun metric.
-    assert vertical_completion_gate(mod) == "full_paper"
+    assert vertical_completion_gate(mod) == "certified"
 
 
 def test_quant_is_a_report_vertical_not_optimize() -> None:
     # The triage layer must treat quant as a research-shaped REPORT mission, not
     # an optimize one — it produces a certified report, not a tuned number.
-    from argus_skill.manager._helpers import _OPTIMIZE_VERTICALS
+    from argus_skill.manager import Manager
 
-    assert "quant" not in _OPTIMIZE_VERTICALS
+    assert Manager._kind_for("quant") == "research"
 def test_quant_full_pipeline_checklist_is_finance_not_paper(tmp_path: Path) -> None:
     root = _project(tmp_path, "quant", current="run")
 
@@ -511,6 +511,6 @@ def test_quant_full_pipeline_checklist_is_finance_not_paper(tmp_path: Path) -> N
     assert "research.hypothesis_priors" in text
     assert "economic" in text  # economic-mechanism mandate
     assert "search ledger" in text  # search-breadth discipline
-    # It is a REPORT vertical (full_paper gate) -> keeps the submission-gate
+    # It is a REPORT vertical (certified gate) -> keeps the submission-gate
     # header, not the lean "(quant)" optimize header.
     assert "final submission gate" in text

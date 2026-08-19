@@ -15,6 +15,7 @@ from argus_skill.verticals import _data_domain as dd
 
 def _write_store(root, *, vertical: str, stages: dict) -> None:
     path = root / "research" / "CHECKLISTS.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps({"revision": 1, "vertical": vertical, "stages": stages}),
         encoding="utf-8",
@@ -69,7 +70,7 @@ def test_current_stage_uses_data_domain_under_default_research_env(tmp_path, mon
         tmp_path, "robotics_sim", stages=["scope", "simulate", "measure", "report"]
     )
     vs.persist_vertical(tmp_path, "robotics_sim")
-    state_path = tmp_path / "research" / "PIPELINE_STATE.json"
+    state_path = tmp_path / ".argus" / "PIPELINE_STATE.json"
     payload = json.loads(state_path.read_text(encoding="utf-8"))
     payload["current_stage"] = "simulate"
     state_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -111,10 +112,10 @@ def test_store_override_shows_in_render(tmp_path, monkeypatch):
     assert "simulate.seeds" in body and "Run at least 3 seeds" in body
 
 
-def test_data_domain_gate_is_not_full_paper(tmp_path, monkeypatch):
+def test_data_domain_gate_is_not_certified(tmp_path, monkeypatch):
     # R5-1: the gate / prompt call sites must thread project_root into load_vertical
     # so a Manager-authored data domain (completion_gate="none") is honored, not
-    # silently resolved to research/full_paper -- which would wedge a metric mission
+    # silently resolved to research/certified -- which would wedge a metric mission
     # forever (the EMNLP gate can never certify). The full-pipeline title is one such
     # site: a data domain must render as itself, not the EMNLP final-submission gate.
     monkeypatch.delenv("ARGUS_SKILL_VERTICAL", raising=False)

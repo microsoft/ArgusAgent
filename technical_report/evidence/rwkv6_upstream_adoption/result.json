@@ -1,0 +1,27 @@
+{
+  "case_id": "fla_rwkv6_tilelang_pr_1045",
+  "operation": "RWKV6 dense bf16 D=64 forward-intra",
+  "hardware": "NVIDIA H100 NVL",
+  "workload": {
+    "batch": 8,
+    "sequence_length": 1024,
+    "heads": 8,
+    "dimension": 64
+  },
+  "latency_ms": {
+    "forward_baseline": 0.199,
+    "forward_candidate": 0.168,
+    "forward_backward_baseline": 0.900,
+    "forward_backward_candidate": 0.747
+  },
+  "verification": {
+    "frozen_gate_passes": 13,
+    "repository_tests_passed": 14
+  },
+  "upstream": {
+    "pull_request": "https://github.com/fla-org/flash-linear-attention/pull/1045",
+    "state": "merged",
+    "merge_commit": "https://github.com/fla-org/flash-linear-attention/commit/c70f11c5530142450525549cc96d13d9f5165f69"
+  },
+  "scope_note": "Public PR evidence; measurements are scoped to the reported workload and hardware."
+}

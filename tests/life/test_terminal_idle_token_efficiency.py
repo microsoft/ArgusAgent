@@ -31,7 +31,7 @@ def _supervisor(project: Path, life: Path) -> LifeSupervisor:
         continuous=True,
         continuous_objective="keep improving",
         open_ended=True,
-        full_paper_gate=False,
+        final_certification_gate=False,
         project_worktree=project,
         artifact_root=project,
     )
@@ -46,7 +46,7 @@ def _supervisor(project: Path, life: Path) -> LifeSupervisor:
     # Goal Gate. Keep the fixture on the direct topology so a planner
     # ``project_done`` reaches the terminal-idle path under test.
     persist_vertical(project, "software", workflow_mode="direct")
-    state_path = project / "research" / "PIPELINE_STATE.json"
+    state_path = project / ".argus" / "PIPELINE_STATE.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["current_stage"] = "delivery"
     state["stages"] = {"delivery": {"status": "done"}}
@@ -142,7 +142,7 @@ def test_nonsemantic_json_timestamps_remain_ignored(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     supervisor = _supervisor(project, tmp_path / "life")
-    state_path = project / "research" / "PIPELINE_STATE.json"
+    state_path = project / ".argus" / "PIPELINE_STATE.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["updated_at"] = 1
     state_path.write_text(json.dumps(state), encoding="utf-8")

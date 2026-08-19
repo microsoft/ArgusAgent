@@ -56,3 +56,10 @@ export function clockOf(ev: Record<string, unknown>): string {
 export function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error || 'Unknown error');
 }
+
+export function managerStreamFailureMessage(error: unknown, gotDelta: boolean): string {
+  const detail = errorText(error);
+  return gotDelta
+    ? `Reply interrupted after a partial response: ${detail}`
+    : `Message failed before a response was received: ${detail}`;
+}

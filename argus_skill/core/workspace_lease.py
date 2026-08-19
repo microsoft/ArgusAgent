@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
 from pathlib import Path
 from typing import Any
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - non-POSIX fallback
-    fcntl = None  # type: ignore[assignment]
+import portalocker
 
 
 class WorkspaceLeaseBusy(RuntimeError):
@@ -34,6 +32,18 @@ def workspace_lease_path(workdir: str | Path) -> Path:
         root.chmod(0o700)
     except OSError:
         pass
+    if os.name == "nt":
+        # Mirroring an absolute C:\... path below the temp root quickly hits
+        # MAX_PATH in nested CI/user profiles.  Windows paths are also
+        # case-insensitive, so hash their normalized canonical spelling into a
+        # short, stable lock name instead.
+        identity = os.path.normcase(str(canonical))
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        leaf = "".join(
+            character if character.isalnum() or character in "-_" else "-"
+            for character in canonical.name
+        ).strip("-_")[:32] or "workspace"
+        return root / f"{leaf}-{digest[:32]}.lock"
     lease_dir = root.joinpath(*canonical.parts[1:])
     lease_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     return lease_dir / "lease.lock"
@@ -68,10 +78,47 @@ def _busy_message(canonical: Path, detail: str) -> str:
         lines.append(f"  project: {life_dir}")
     lines.append("  a workdir runs one daemon at a time. Either:")
     lines.append("    - watch the one already there:  argus --status   (or --follow)")
-    if pid:
-        lines.append(f"    - stop it:                      kill {pid}")
+    if sid:
+        lines.append(
+            "    - stop it safely:               "
+            f"argus --daemon-stop --resume {sid}"
+        )
     lines.append("    - or start this objective in a different directory")
     return "\n".join(lines)
+
+
+def _windows_owner_path(lock_path: Path) -> Path:
+    return lock_path.with_suffix(".owner.json")
+
+
+def _read_owner_detail(lock_path: Path, fd: int) -> str:
+    try:
+        if os.name == "nt":
+            # Windows byte-range locks also reject reads through a second file
+            # descriptor. Keep diagnostics beside (not inside) the locked
+            # range so a rejected launcher can still name the live owner.
+            return _windows_owner_path(lock_path).read_text(
+                encoding="utf-8", errors="replace"
+            ).strip()
+        os.lseek(fd, 0, os.SEEK_SET)
+        return os.read(fd, 4096).decode("utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+
+
+def _write_windows_owner(lock_path: Path, encoded: bytes) -> None:
+    owner_path = _windows_owner_path(lock_path)
+    temporary = owner_path.with_name(
+        f".{owner_path.name}.{os.getpid()}.{id(encoded)}.tmp"
+    )
+    try:
+        temporary.write_bytes(encoded)
+        os.replace(temporary, owner_path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def acquire_workspace_lease(
@@ -80,19 +127,13 @@ def acquire_workspace_lease(
     owner: dict[str, Any] | None = None,
 ) -> int | None:
     """Acquire a non-blocking exclusive lease and return its open fd."""
-    if fcntl is None:
-        return None
     canonical = canonical_workdir(workdir)
     path = workspace_lease_path(canonical)
     fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError as exc:
-        detail = ""
-        try:
-            detail = os.pread(fd, 4096, 0).decode("utf-8", errors="replace").strip()
-        except OSError:
-            pass
+        portalocker.lock(fd, portalocker.LOCK_EX | portalocker.LOCK_NB)
+    except portalocker.exceptions.LockException as exc:
+        detail = _read_owner_detail(path, fd)
         os.close(fd)
         raise WorkspaceLeaseBusy(
             _busy_message(canonical, detail)
@@ -104,8 +145,11 @@ def acquire_workspace_lease(
     }
     encoded = (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode()
     os.ftruncate(fd, 0)
-    os.pwrite(fd, encoded, 0)
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.write(fd, encoded)
     os.fsync(fd)
+    if os.name == "nt":
+        _write_windows_owner(path, encoded)
     return fd
 
 
@@ -113,8 +157,8 @@ def release_workspace_lease(fd: int | None, *, unlock: bool = True) -> None:
     if fd is None:
         return
     try:
-        if unlock and fcntl is not None:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+        if unlock:
+            portalocker.unlock(fd)
     finally:
         os.close(fd)
 

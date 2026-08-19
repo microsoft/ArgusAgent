@@ -4,15 +4,33 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
+from argus_skill.team import completion, leaderboard, pool, registry, roster, task_board
 from argus_skill.team import curator as cur
-from argus_skill.team import leaderboard, pool, registry, roster, task_board
 
 
 def _sleeping_proc(*_args, **_kwargs):
     import subprocess
+    import sys
 
-    return subprocess.Popen(["sleep", "60"], start_new_session=True)
+    return subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session=os.name != "nt",
+        creationflags=(
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            if os.name == "nt"
+            else 0
+        ),
+    )
+
+
+def _allow_fake_windows_adoption_handle(monkeypatch) -> None:
+    if os.name != "nt":
+        return
+    monkeypatch.setattr(cur, "_open_windows_process_handle", lambda _pid: 77)
+    monkeypatch.setattr(cur, "_windows_process_handle_alive", lambda _handle: True)
+    monkeypatch.setattr(cur, "_close_windows_process_handle", lambda _handle: None)
 
 
 # --- restart durability: adopt orphans the prior daemon left running --------
@@ -53,12 +71,127 @@ def test_adopt_reclaims_running_roster_orphan_once(tmp_path: Path, monkeypatch) 
         "_pid_is_teammate",
         lambda pid, mid, root=None: pid == 4242,
     )
+    _allow_fake_windows_adoption_handle(monkeypatch)
     c = _fake_curator(tmp_path)
     assert c._adopt_orphans(root, now=100.0) == ["w1"]
     assert {child.member_id for child in c._children.values()} == {"w1"}
     assert c.live_owner_ids(root) == {"w1"}
     # idempotent: a second pass does not re-adopt
     assert c._adopt_orphans(root, now=200.0) == []
+
+
+def test_windows_adopted_process_uses_retained_handle_for_polling(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    alive = iter((True, False))
+    closed: list[int] = []
+    monkeypatch.setattr(cur, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(cur, "_open_windows_process_handle", lambda _pid: 77)
+    monkeypatch.setattr(cur, "_windows_process_handle_alive", lambda _handle: next(alive))
+    monkeypatch.setattr(cur, "_close_windows_process_handle", closed.append)
+    monkeypatch.setattr(
+        cur,
+        "_pid_is_teammate",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("poll must not launch another identity query")
+        ),
+    )
+
+    proc = cur._AdoptedProc(4242, "w1", tmp_path)
+
+    assert proc.poll() is None
+    assert proc.poll() == 0
+    assert closed == [77]
+
+
+def test_windows_adoption_opens_handle_before_identity_check(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "team"
+    roster.add_member(root, {
+        "id": "w1",
+        "pid": 4242,
+        "cwd": str(tmp_path),
+        "task_id": "t::a",
+        "status": "running",
+    })
+    order: list[str] = []
+    monkeypatch.setattr(cur, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(
+        cur,
+        "_open_windows_process_handle",
+        lambda _pid: order.append("open") or 77,
+    )
+    monkeypatch.setattr(
+        cur,
+        "_pid_is_teammate",
+        lambda *_args, **_kwargs: order.append("verify") or True,
+    )
+    monkeypatch.setattr(cur, "_windows_process_handle_alive", lambda _handle: True)
+    monkeypatch.setattr(cur, "_close_windows_process_handle", lambda _handle: None)
+
+    c = _fake_curator(tmp_path)
+
+    assert c._adopt_orphans(root, now=100.0) == ["w1"]
+    assert order == ["open", "verify"]
+
+
+def test_windows_terminate_tree_guard_uses_popen_liveness_and_pid(
+    monkeypatch,
+) -> None:
+    from argus_skill.daemon import state as daemon_state
+
+    class Proc:
+        pid = 5151
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+    proc = Proc()
+    checks: list[bool] = []
+
+    def terminate_tree(pid: int, *, identity_check) -> bool:
+        assert pid == 5151
+        checks.append(identity_check())
+        proc.pid = 6161
+        checks.append(identity_check())
+        proc.pid = 5151
+        proc.returncode = 0
+        checks.append(identity_check())
+        return True
+
+    monkeypatch.setattr(
+        daemon_state,
+        "_terminate_windows_process_tree",
+        terminate_tree,
+    )
+
+    assert cur._terminate_windows_tree(proc) is True
+    assert checks == [True, False, False]
+
+
+def test_windows_adopted_terminate_routes_self_to_tree(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(cur, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(cur, "_windows_process_handle_alive", lambda _handle: True)
+    monkeypatch.setattr(cur, "_close_windows_process_handle", lambda _handle: None)
+    seen: list[object] = []
+    proc = cur._AdoptedProc(4242, "w1", tmp_path, windows_handle=77)
+
+    monkeypatch.setattr(
+        cur,
+        "_terminate_windows_tree",
+        lambda candidate: seen.append(candidate) or True,
+    )
+
+    proc.terminate()
+
+    assert seen == [proc]
 
 
 def test_adopt_then_stop_kills_real_orphan(tmp_path: Path) -> None:
@@ -119,6 +252,7 @@ def test_tick_adopts_orphans_so_no_duplicate_spawn(tmp_path: Path, monkeypatch) 
         "_pid_is_teammate",
         lambda pid, mid, root=None: pid == 4242,
     )
+    _allow_fake_windows_adoption_handle(monkeypatch)
     c = _fake_curator(tmp_path)
     c._tick(now=500.0)  # past ttl: would reassign+respawn if orphan were invisible
     assert c.live_owner_ids(root) == {"w1"}
@@ -137,8 +271,9 @@ def test_spawn_tracked_records_real_child_and_roster_then_stop_reaps(tmp_path: P
         tt = next(iter(c._children.values()))
         assert tt.member_id == "w1" and tt.task_id == "t::a"
         assert tt.proc.poll() is None  # alive
-        # own session (own process group) so per-child killpg can't hit the daemon
-        assert os.getpgid(pid) == pid
+        # POSIX uses an owned session; Windows uses CREATE_NEW_PROCESS_GROUP.
+        if os.name != "nt":
+            assert os.getpgid(pid) == pid
         # projected onto the roster (no heartbeat field)
         m = next(m for m in roster.members(root) if m["id"] == "w1")
         assert m["pid"] == pid and m["cwd"] == str(tmp_path)
@@ -186,6 +321,19 @@ def test_refill_fills_to_width_then_idempotent(tmp_path: Path) -> None:
     assert len(c.live_owner_ids(root)) == 3
     # pool already full → a second refill spawns nothing
     assert c._refill(root, width=3, cwd=tmp_path, now=101.0)["spawned"] == []
+
+
+def test_refill_uses_per_task_timeout(tmp_path: Path) -> None:
+    root = tmp_path / "team"
+    task_board.form(root, [
+        {"task_id": "t::bounded", "objective": "x", "timeout_s": 600},
+    ])
+    c = _fake_curator(tmp_path, teammate_timeout_s=5400)
+
+    c._refill(root, width=1, cwd=tmp_path, now=100.0)
+
+    child = next(iter(c._children.values()))
+    assert child.timeout_s == 600.0
 
 
 def test_member_ids_are_namespaced_by_campaign_root(tmp_path: Path) -> None:
@@ -337,8 +485,15 @@ def test_reap_hard_timeout_killpg_and_fails_task(tmp_path: Path, monkeypatch) ->
     root = tmp_path / "team"
     task_board.form(root, [{"task_id": "t::a", "objective": "x"}])
     killed: list = []
-    monkeypatch.setattr(cur.os, "killpg", lambda pgid, sig: killed.append((pgid, sig)))
-    monkeypatch.setattr(cur.os, "getpgid", lambda pid: pid)
+    if os.name == "nt":
+        monkeypatch.setattr(
+            cur,
+            "_terminate_windows_tree",
+            lambda proc: killed.append((proc.pid, "force")) or True,
+        )
+    else:
+        monkeypatch.setattr(cur.os, "killpg", lambda pgid, sig: killed.append((pgid, sig)))
+        monkeypatch.setattr(cur.os, "getpgid", lambda pid: pid)
     c = cur.Curator(project_root=tmp_path, make_proc=lambda *a, **k: FakeProc(),
                     teammate_timeout_s=10.0, hard_grace_s=5.0)
     c._refill(root, width=1, cwd=tmp_path, now=100.0)
@@ -353,6 +508,24 @@ def test_reap_hard_timeout_killpg_and_fails_task(tmp_path: Path, monkeypatch) ->
     member = next(m for m in roster.members(root) if m["id"] == tt.member_id)
     assert member["status"] == "failed"
     assert c._children == {}
+
+
+def test_reap_keeps_tracking_when_termination_does_not_finish(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "team"
+    task_board.form(root, [{"task_id": "t::a", "objective": "x"}])
+    c = _fake_curator(tmp_path, teammate_timeout_s=10.0, hard_grace_s=5.0)
+    c._refill(root, width=1, cwd=tmp_path, now=100.0)
+    monkeypatch.setattr(c, "_terminate", lambda _tt: False)
+
+    result = c._reap(now=200.0)
+
+    assert result["hard_killed"] == []
+    assert len(c._children) == 1
+    task = next(task for task in task_board.snapshot(root) if task["task_id"] == "t::a")
+    assert task["state"] == "claimed"
 
 
 def test_reap_keeps_alive_child_within_deadline(tmp_path: Path) -> None:
@@ -385,6 +558,35 @@ def test_tick_uses_default_width_when_pool_unset(tmp_path: Path) -> None:
     c = _fake_curator(tmp_path, default_width=3)
     c._tick(now=100.0)  # no pool.json → default width 3
     assert task_board.count_in_flight(root) == 3
+
+
+def test_tick_caps_total_live_workers_across_campaigns(tmp_path: Path) -> None:
+    for team_id in ("a", "b"):
+        root = tmp_path / f"team-{team_id}"
+        registry.write_marker(
+            tmp_path,
+            team_id=team_id,
+            team_root=root,
+            cwd=tmp_path,
+            now=1.0,
+        )
+        pool.update(root, width=3, state="running")
+        task_board.form(
+            root,
+            [
+                {"task_id": f"{team_id}::{index}", "objective": "x"}
+                for index in range(3)
+            ],
+        )
+    curator = _fake_curator(tmp_path, max_total_in_flight=4)
+
+    curator._tick(now=100.0)
+
+    assert len(curator._children) == 4
+    assert sum(
+        task_board.count_in_flight(tmp_path / f"team-{team_id}")
+        for team_id in ("a", "b")
+    ) == 4
 
 
 def test_tick_draining_stops_refill_and_removes_empty_marker(tmp_path: Path) -> None:
@@ -567,6 +769,96 @@ def test_failed_dependency_publishes_summary_with_stranded_task(tmp_path: Path) 
     record = json.loads((root / "completion_summary.json").read_text(encoding="utf-8"))
     assert record["failed"] == 1
     assert record["blocked"] == 1
+
+
+def test_failed_dependency_fallback_is_not_called_an_operator_wait(tmp_path: Path) -> None:
+    root = tmp_path / "team"
+    conversation = tmp_path / "conversation"
+    registry.write_marker(tmp_path, team_id="t1", team_root=root, cwd=tmp_path, now=1.0)
+    task_board.form(
+        root,
+        [
+            {"task_id": "t::a", "title": "foundation", "objective": "x"},
+            {"task_id": "t::b", "title": "dependent", "objective": "y", "deps": ["t::a"]},
+        ],
+    )
+    task_board.fail(root, "t::a", reason="proof failed")
+    c = _fake_curator(tmp_path, conversation_root=conversation, completion_fn=None)
+
+    c._tick(now=100.0)
+
+    from argus_skill.core.transcript import read_turns
+
+    (turn,) = read_turns(conversation)
+    assert "Blocked: dependent" in turn["text"]
+    assert "Waiting for operator" not in turn["text"]
+
+
+def test_operator_wait_publishes_blocked_state_without_retry(tmp_path: Path) -> None:
+    root = tmp_path / "team"
+    conversation = tmp_path / "conversation"
+    registry.write_marker(tmp_path, team_id="t1", team_root=root, cwd=tmp_path, now=1.0)
+    task_board.form(root, [{"task_id": "t::a", "title": "valuation", "objective": "x"}])
+    assert task_board.claim_top(root, "t::w1", now=1.0)
+    task_board.block_for_operator(
+        root,
+        "t::a",
+        question="Choose the authorized data source",
+        reason="operator decision required",
+    )
+    prompts: list[str] = []
+    c = _fake_curator(
+        tmp_path,
+        conversation_root=conversation,
+        completion_fn=lambda prompt: prompts.append(prompt) or "Waiting for operator.",
+    )
+
+    c._tick(now=100.0)
+
+    assert len(prompts) == 1
+    assert '"state": "blocked"' in prompts[0]
+    assert "Choose the authorized data source" in prompts[0]
+    task = task_board.snapshot(root)[0]
+    assert task["state"] == "blocked"
+    assert task["owner"] == "t::w1"
+    assert c.live_owner_ids(root) == set()
+    record = json.loads((root / "completion_summary.json").read_text(encoding="utf-8"))
+    assert record["failed"] == 0
+    assert record["blocked"] == 1
+
+
+def test_resumed_blocked_task_publishes_final_completion_summary(tmp_path: Path) -> None:
+    root = tmp_path / "team"
+    conversation = tmp_path / "conversation"
+    registry.write_marker(
+        tmp_path, team_id="t1", team_root=root, cwd=tmp_path, now=1.0
+    )
+    marker = registry.list_markers(tmp_path)[0]
+    task_board.form(root, [{"task_id": "t::a", "title": "valuation", "objective": "x"}])
+    assert task_board.claim_top(root, "t::w1", now=1.0)
+    task_board.block_for_operator(root, "t::a", question="Choose source", reason="waiting")
+    summaries: list[str] = []
+
+    assert completion.publish_if_complete(
+        root,
+        marker=marker,
+        conversation_root=conversation,
+        summarize=lambda _prompt: summaries.append("blocked") or "Waiting.",
+    )
+    task_board.resume(root, "t::a", answer="Use source A")
+    assert task_board.claim_top(root, "t::w2", now=2.0)
+    task_board.complete(root, "t::a", shard="result.jsonl")
+    assert completion.publish_if_complete(
+        root,
+        marker=marker,
+        conversation_root=conversation,
+        summarize=lambda _prompt: summaries.append("done") or "Completed.",
+    )
+
+    assert summaries == ["blocked", "done"]
+    record = json.loads((root / "completion_summary.json").read_text(encoding="utf-8"))
+    assert record["done"] == 1
+    assert record["blocked"] == 0
 
 
 def test_start_then_stop_runs_ticks_and_reaps_real_child(tmp_path: Path) -> None:

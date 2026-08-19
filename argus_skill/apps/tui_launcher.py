@@ -8,13 +8,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-_PYTHON_ADMIN_COMMANDS = frozenset({"wiki", "learn"})
+_PYTHON_ADMIN_COMMANDS = frozenset({"doctor", "repair", "update", "wiki", "learn"})
 
 _PYTHON_ADMIN_FLAGS = frozenset(
     {
         "-h",
         "--help",
+        "-doctor",
         "--version",
+        "--update",
         "--daemon",
         "--daemon-fg",
         "--daemon-stop",
@@ -25,7 +27,7 @@ _PYTHON_ADMIN_FLAGS = frozenset(
         "--gc",
         "--watch",
         "--follow",
-        "--web",
+        "--pair-plan",
         "--notify",
         "--init-identity",
         "--setup",
@@ -36,9 +38,6 @@ _PYTHON_ADMIN_FLAGS = frozenset(
         "--ppt-master-status",
         "--approve-publication",
         "--list-pending-publications",
-        "--skill-stats",
-        "--skill-stats-json",
-        "--skill-cleanse",
         "--export-builtin-skills",
         "--evidence-chain-check",
         "--anti-mediocrity-check",
@@ -53,8 +52,11 @@ _PYTHON_PRE_ACTION_VALUE_OPTIONS = frozenset(
         "--life-dir",
         "--gc-days",
         "--objective",
+        "--mission-width",
         "--web-host",
+        "--host",
         "--web-port",
+        "--port",
         "--notify-stage",
         "--backend",
         "--auth-mode",
@@ -71,6 +73,10 @@ _PYTHON_PRE_ACTION_BOOL_OPTIONS = frozenset(
     {
         "--drain",
         "--force",
+        "--fix-safe",
+        "--json",
+        "--deep",
+        "--verify",
         "--gc-dry-run",
         "--no-daemon",
         "--new",
@@ -88,6 +94,23 @@ _PYTHON_PRE_ACTION_BOOL_OPTIONS = frozenset(
 )
 
 
+def _configure_windows_console_encoding(*, platform_name: str | None = None) -> None:
+    """Keep the Python admin CLI usable on legacy Windows code pages.
+
+    The CLI deliberately renders status glyphs and multilingual diagnostics.
+    A normal zh-CN PowerShell process still exposes CP936 text streams, where
+    writing one of those glyphs raises ``UnicodeEncodeError`` before the actual
+    command can report its result.  Reconfigure only the Windows console-facing
+    streams; child processes already receive an explicit UTF-8 environment.
+    """
+    if (os.name if platform_name is None else platform_name) != "nt":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def _bundle_path() -> Path | None:
     explicit = os.environ.get("ARGUS_TUI_BUNDLE")
     candidates = [
@@ -100,7 +123,7 @@ def _bundle_path() -> Path | None:
     return next((path for path in candidates if path is not None and path.is_file()), None)
 
 
-def _node_major(node: str) -> int | None:
+def _node_version(node: str) -> tuple[int, int, int] | None:
     try:
         completed = subprocess.run(
             [node, "--version"],
@@ -111,8 +134,14 @@ def _node_major(node: str) -> int | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    match = re.search(r"v?(\d+)", completed.stdout or completed.stderr or "")
-    return int(match.group(1)) if match else None
+    match = re.search(
+        r"v?(\d+)\.(\d+)(?:\.(\d+))?",
+        completed.stdout or completed.stderr or "",
+    )
+    if match is None:
+        return None
+    major, minor, patch = (int(part or 0) for part in match.groups())
+    return major, minor, patch
 
 
 def _run_python_admin(argv: list[str]) -> int:
@@ -122,6 +151,15 @@ def _run_python_admin(argv: list[str]) -> int:
 
 
 def _uses_python_admin(argv: list[str]) -> bool:
+    # `argus --web` is a cockpit surface: it needs the TUI's automatic port
+    # selection and browser launch. Keep the legacy raw WebAPI spelling on the
+    # Python path only when its backend-specific options are present.
+    if "--web" in argv and any(
+        arg == option or arg.startswith(f"{option}=")
+        for arg in argv
+        for option in ("--web-host", "--host", "--web-port", "--port")
+    ):
+        return True
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -173,15 +211,50 @@ def _configure_tui_backend_bin() -> None:
         return
     if os.environ.get("ARGUS_SKILL_BIN", "").strip():
         return
-    sibling = Path(sys.executable).parent / "argus-skill"
+    backend_name = "argus-skill.exe" if os.name == "nt" else "argus-skill"
+    sibling = Path(sys.executable).parent / backend_name
     if sibling.is_file():
         os.environ["ARGUS_SKILL_BIN"] = str(sibling)
 
 
+def _configure_tui_life_dir(argv: list[str]) -> list[str]:
+    forwarded: list[str] = []
+    index = 0
+    while index < len(argv):
+        argument = argv[index]
+        if argument == "--life-dir":
+            os.environ["ARGUS_SKILL_HOME"] = str(
+                Path(argv[index + 1]).expanduser().resolve()
+            )
+            index += 2
+            continue
+        if argument.startswith("--life-dir="):
+            os.environ["ARGUS_SKILL_HOME"] = str(
+                Path(argument.split("=", 1)[1]).expanduser().resolve()
+            )
+            index += 1
+            continue
+        forwarded.append(argument)
+        index += 1
+    return forwarded
+
+
+def _needs_foreground_spawn() -> bool:
+    """Whether this platform must wait for the cockpit instead of exec-ing it.
+
+    Windows has no real exec: ``os.execv`` starts the child and exits the
+    parent, so the shell prints its next prompt while the Ink cockpit still
+    owns the console and both compete for the keyboard.
+    """
+    return os.name == "nt"
+
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_windows_console_encoding()
     forwarded = list(sys.argv[1:] if argv is None else argv)
     if _uses_python_admin(forwarded):
         return _run_python_admin(forwarded)
+    forwarded = _configure_tui_life_dir(forwarded)
     from ..life.special_prompts import describe_special_prompt_gate
 
     ok, detail = describe_special_prompt_gate()
@@ -196,13 +269,17 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     node = shutil.which("node")
     if node is None:
-        sys.stderr.write("argus: Ink TUI requires Node.js 18 or newer.\n")
+        sys.stderr.write("argus: Ink TUI requires Node.js 22.12 or newer.\n")
         return 2
-    major = _node_major(node)
-    if major is None or major < 18:
-        found = "unknown" if major is None else str(major)
+    node_version = _node_version(node)
+    if node_version is None or node_version < (22, 12, 0):
+        found = (
+            "unknown"
+            if node_version is None
+            else ".".join(str(part) for part in node_version)
+        )
         sys.stderr.write(
-            f"argus: Ink TUI requires Node.js 18 or newer (found {found}).\n"
+            f"argus: Ink TUI requires Node.js 22.12 or newer (found {found}).\n"
         )
         return 2
     _configure_tui_backend_bin()
@@ -211,8 +288,21 @@ def main(argv: list[str] | None = None) -> int:
         # The TUI must own the real frozen backend process, not an npm wrapper
         # that would leave argus-core orphaned when the ownership PID is stopped.
         os.environ["ARGUS_BINARY_MODE"] = "cli"
+    if _needs_foreground_spawn():
+        # Windows has no real exec. os.execv() there starts the child and
+        # returns/exits the parent immediately, so the shell prints its next
+        # prompt while the Ink TUI keeps running on the *same* console. Two
+        # processes then compete for the keyboard, the cursor position, and
+        # stdout, which is why typed characters land below the input box —
+        # letters and digits equally, nothing to do with input methods.
+        # Run it in the foreground and exit with its status instead.
+        try:
+            completed = subprocess.run([node, str(bundle), *forwarded], check=False)
+        except KeyboardInterrupt:
+            return 130
+        return int(completed.returncode or 0)
     os.execv(node, [node, str(bundle), *forwarded])
-    return 0  # pragma: no cover - execv replaces the process
+    return 0  # pragma: no cover - execv replaces the process on POSIX
 
 
 __all__ = ["main"]

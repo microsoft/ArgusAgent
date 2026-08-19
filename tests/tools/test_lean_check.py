@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 
 import pytest
 
+from argus_skill.tools import lean_check as lean_check_module
 from argus_skill.tools.lean_check import (
     CANONICAL_LEAN_SOURCE,
     COMPILE_LOG,
@@ -43,10 +46,18 @@ def _fake_lean(tmp_path: Path, behavior: str) -> Path:
             "raise SystemExit(3 if '--run' in sys.argv else 0)"
         ),
     }
-    path.write_text(
-        "#!/usr/bin/env python3\n" + bodies[behavior] + "\n",
-        encoding="utf-8",
-    )
+    body = bodies[behavior] + "\n"
+    if os.name == "nt":
+        script = path.with_suffix(".py")
+        script.write_text(body, encoding="utf-8")
+        launcher = path.with_suffix(".cmd")
+        os.environ["ARGUS_TEST_PYTHON"] = sys.executable
+        launcher.write_text(
+            '@echo off\n"%ARGUS_TEST_PYTHON%" "%~dp0' + script.name + '" %*\n',
+            encoding="ascii",
+        )
+        return launcher
+    path.write_text("#!/usr/bin/env python3\n" + body, encoding="utf-8")
     path.chmod(0o755)
     return path
 
@@ -59,17 +70,26 @@ def _source(tmp_path: Path, text: str = DIVISIBILITY_SMOKE_THEOREM) -> Path:
 
 def _fake_lake_with_versions(tmp_path: Path) -> Path:
     path = tmp_path / "lake-versioned"
-    path.write_text(
-        "#!/usr/bin/env python3\n"
+    body = (
         "import sys\n"
         "args = sys.argv[1:]\n"
         "if args == ['--version']:\n"
         "    print('Lake workspace version')\n"
         "elif args == ['env', 'lean', '--version']:\n"
         "    print('Lean workspace version')\n"
-        "raise SystemExit(0)\n",
-        encoding="utf-8",
+        "raise SystemExit(0)\n"
     )
+    if os.name == "nt":
+        script = path.with_suffix(".py")
+        script.write_text(body, encoding="utf-8")
+        launcher = path.with_suffix(".cmd")
+        os.environ["ARGUS_TEST_PYTHON"] = sys.executable
+        launcher.write_text(
+            '@echo off\n"%ARGUS_TEST_PYTHON%" "%~dp0' + script.name + '" %*\n',
+            encoding="ascii",
+        )
+        return launcher
+    path.write_text("#!/usr/bin/env python3\n" + body, encoding="utf-8")
     path.chmod(0o755)
     return path
 
@@ -103,15 +123,31 @@ def test_user_elan_bin_is_found_without_shell_path(
     elan_bin = home / ".elan" / "bin"
     elan_bin.mkdir(parents=True)
     fake = _fake_lean(elan_bin, "success")
-    fake.rename(elan_bin / "lean")
-    monkeypatch.setenv("HOME", str(home))
+    installed = elan_bin / ("lean.cmd" if os.name == "nt" else "lean")
+    fake.rename(installed)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
     result = run_lean_check(_source(tmp_path))
 
     assert result["status"] == "success"
-    assert result["command"][0] == str((elan_bin / "lean").resolve())
+    assert result["command"][0] == str(installed.resolve())
     assert result["tools"]["lean"]["available"] is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ELAN executable contract")
+def test_windows_elan_fallback_resolves_lean_exe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    lean_exe = home / ".elan" / "bin" / "lean.exe"
+    lean_exe.parent.mkdir(parents=True)
+    lean_exe.write_bytes(b"MZ-test-placeholder")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
+
+    assert lean_check_module._resolve_executable("lean") == str(lean_exe.resolve())
 
 
 def test_lake_runs_from_source_workspace(tmp_path: Path) -> None:
@@ -155,7 +191,9 @@ def test_lake_versions_are_probed_in_the_compilation_environment(
     assert result["status"] == "success"
     assert result["tools"]["lake"]["version"] == "Lake workspace version"
     assert result["tools"]["lean"]["version"] == "Lean workspace version"
-    assert result["tools"]["lean"]["path"].endswith("lake-versioned env lean")
+    assert result["tools"]["lean"]["path"].endswith(
+        ("lake-versioned env lean", "lake-versioned.cmd env lean")
+    )
 
 
 def test_lake_proof_hole_uses_workspace_version_metadata(
@@ -195,7 +233,7 @@ def test_lake_uses_persistent_mathlib_workspace_for_external_source(
     )
     external = tmp_path / "external"
     external.mkdir()
-    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
 
     result = run_lean_check(
         _source(external),
@@ -403,7 +441,7 @@ def test_cli_writes_structured_json(tmp_path: Path, capsys) -> None:
     )
 
     assert rc == 0
-    assert json.loads(output.read_text())["status"] == "success"
+    assert json.loads(output.read_text(encoding="utf-8"))["status"] == "success"
     assert json.loads(capsys.readouterr().out)["status"] == "success"
 
 
@@ -443,25 +481,30 @@ def test_cli_materializes_four_canonical_math_artifacts(
 
     assert rc == 0
     assert descriptive_source.exists()
-    assert (artifact_dir / CANONICAL_LEAN_SOURCE).read_text() == (
-        descriptive_source.read_text()
+    assert (artifact_dir / CANONICAL_LEAN_SOURCE).read_text(encoding="utf-8") == (
+        descriptive_source.read_text(encoding="utf-8")
     )
-    assert (artifact_dir / STATEMENT_FIDELITY).read_text() == (
-        fidelity_source.read_text()
+    assert (artifact_dir / STATEMENT_FIDELITY).read_text(encoding="utf-8") == (
+        fidelity_source.read_text(encoding="utf-8")
     )
-    result = json.loads((artifact_dir / LEAN_CHECK_RESULT).read_text())
+    result = json.loads(
+        (artifact_dir / LEAN_CHECK_RESULT).read_text(encoding="utf-8")
+    )
     assert result["status"] == "success"
     assert result["source"] == str(
         (artifact_dir / CANONICAL_LEAN_SOURCE).resolve()
     )
-    compile_log = (artifact_dir / COMPILE_LOG).read_text()
+    compile_log = (artifact_dir / COMPILE_LOG).read_text(encoding="utf-8")
     assert str((artifact_dir / CANONICAL_LEAN_SOURCE).resolve()) in compile_log
     assert "exit_code: 0" in compile_log
     assert "audit_exit_code: 0" in compile_log
     assert json.loads(capsys.readouterr().out)["status"] == "success"
 
 
-def test_artifact_mode_rejects_symlink_destinations(tmp_path: Path) -> None:
+def test_artifact_mode_rejects_symlink_destinations(
+    tmp_path: Path,
+    require_symlink_support,
+) -> None:
     source = tmp_path / "Descriptive.lean"
     source.write_text(DIVISIBILITY_SMOKE_THEOREM, encoding="utf-8")
     fidelity = tmp_path / "fidelity.md"
@@ -486,7 +529,7 @@ def test_artifact_mode_rejects_symlink_destinations(tmp_path: Path) -> None:
         )
 
     assert exc.value.code == 2
-    assert outside.read_text() == "do not overwrite\n"
+    assert outside.read_text(encoding="utf-8") == "do not overwrite\n"
 
 
 def test_artifact_mode_rejects_output_collision(tmp_path: Path) -> None:
@@ -543,8 +586,8 @@ def test_artifact_mode_output_cannot_overwrite_inputs(
         )
 
     assert exc.value.code == 2
-    assert source.read_text() == DIVISIBILITY_SMOKE_THEOREM
-    assert fidelity.read_text() == "# Fidelity\n\nNo added assumptions.\n"
+    assert source.read_text(encoding="utf-8") == DIVISIBILITY_SMOKE_THEOREM
+    assert fidelity.read_text(encoding="utf-8") == "# Fidelity\n\nNo added assumptions.\n"
 
 
 def test_artifact_mode_rejects_source_aliasing_compile_log(
@@ -571,7 +614,7 @@ def test_artifact_mode_rejects_source_aliasing_compile_log(
         )
 
     assert exc.value.code == 2
-    assert source.read_text() == DIVISIBILITY_SMOKE_THEOREM
+    assert source.read_text(encoding="utf-8") == DIVISIBILITY_SMOKE_THEOREM
 
 
 def test_artifact_mode_rejects_fidelity_aliasing_main(tmp_path: Path) -> None:
@@ -596,4 +639,4 @@ def test_artifact_mode_rejects_fidelity_aliasing_main(tmp_path: Path) -> None:
         )
 
     assert exc.value.code == 2
-    assert fidelity.read_text() == "# Not a valid source replacement\n"
+    assert fidelity.read_text(encoding="utf-8") == "# Not a valid source replacement\n"

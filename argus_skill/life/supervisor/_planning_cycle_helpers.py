@@ -33,14 +33,22 @@ def _render_revision_request(
     revision_request: dict[str, Any],
     active_items: list[BacklogItem],
 ) -> str:
+    challenge = revision_request.get("plan_challenge")
+    challenge = challenge if isinstance(challenge, dict) else {}
     lines = [
-        "DYNAMIC PLAN REVISION REQUEST (Reviewer-authored, L4 decides):",
+        "DYNAMIC PLAN REVISION REQUEST (Reviewer evidence; Manager already routed authority):",
+        "- manager_action: " + str(challenge.get("manager_action") or "revise"),
+        "- authority_impact: " + str(challenge.get("authority_impact") or "technical"),
         "- reason: "
         + (
             _revision_reason(revision_request)
             or "Reviewer requested reconsideration; inspect the referenced "
             "artifacts and current CHECKPOINT.md before deciding."
         ),
+        "- challenged_assumption: "
+        + str(challenge.get("challenge") or _revision_reason(revision_request)),
+        "- proposed_alternative: "
+        + str(challenge.get("alternative") or "none; inspect evidence before choosing"),
         "- remaining active nodes:",
     ]
     lines.extend(
@@ -48,7 +56,11 @@ def _render_revision_request(
     )
     lines.append(
         "Return a complete replacement batch for the remaining active nodes. "
-        "Completed nodes are immutable. Do not return project_done. Exception: if "
+        "Completed nodes are immutable. User goals, safety, authority, and trust "
+        "limits remain hard constraints; candidates, methods, decomposition, and "
+        "validators are revisable working choices. Compare the proposed alternative "
+        "against the user objective instead of preserving stale mission wording. "
+        "Do not return project_done. Exception: if "
         "current_stage itself makes the prerequisite repair illegal, return "
         "waiting=true with a waiting_contract whose "
         "stage_reconciliation_required=true; emit no replacement tasks and let the "
@@ -64,11 +76,23 @@ def _research_project_done_issue(
 ) -> str:
     """Require a current-target final Reviewer ``done`` before Planner success."""
     from ...core.research_contract import (
-        resolve_research_target_contract,
+        research_target_contract,
+        resolve_research_target_level,
         resolve_research_target_set_at,
     )
+    from ...skills.vertical_select import resolve_checklist_vertical
+    from ...verticals._base import load_vertical_contract
 
-    target_contract = resolve_research_target_contract(project_root)
+    vertical = resolve_checklist_vertical(project_root)
+    supported = (
+        load_vertical_contract(vertical, project_root=project_root).research_target_levels
+        if vertical is not None
+        else ()
+    )
+    target_contract = research_target_contract(
+        supported_levels=supported,
+        selected_level=resolve_research_target_level(project_root),
+    )
     target_level = target_contract.selected_level
     if target_contract.required and target_level is None:
         return "missing_research_target_level"
@@ -103,12 +127,11 @@ def _staged_goal_completion_issue(project_root: object) -> str:
     from ...skills.stage_machine import current_stage
     from ...skills.vertical_select import (
         resolve_vertical,
-        vertical_has_current_completion_certificate,
+        vertical_completion_certificate_status,
     )
     from ...verticals._base import (
         load_vertical,
         vertical_checklist_stage_order,
-        vertical_completion_contract_version,
         vertical_completion_gate,
     )
 
@@ -118,25 +141,39 @@ def _staged_goal_completion_issue(project_root: object) -> str:
         if vertical_completion_gate(module) != "none":
             return ""
         stages = vertical_checklist_stage_order(module)
-        if not stages or vertical_has_current_completion_certificate(
-            project_root,
-            vertical,
-        ):
+        status = vertical_completion_certificate_status(project_root, vertical)
+        if not stages or status.get("ok"):
             return ""
-        contract_version = vertical_completion_contract_version(module)
-        contract_suffix = ""
-        if contract_version > 0:
-            from ...skills.stage_machine import completion_contract_fingerprint
-
-            contract_sha256 = completion_contract_fingerprint(
-                project_root,
-                stages[-1],
-                version=contract_version,
+        # Name the stage that actually holds the disputed record and BOTH
+        # fingerprints. Bug #41: this used to advertise a fresh hash of the
+        # FINAL stage while the comparison that failed was on whichever stage
+        # was certified — so the Planner was handed a number that appears
+        # nowhere in the ledger, and every attempt to reconcile it chased a
+        # stage that had never been completed.
+        detail = f"current_stage={current_stage(project_root)}"
+        stage = str(status.get("stage") or "")
+        if stage:
+            detail += f", certified_stage={stage}"
+        persisted = str(status.get("persisted") or "")
+        expected = str(status.get("expected") or "")
+        if expected:
+            detail += f", contract=v{status.get('version')}:{expected}"
+        if persisted and persisted != expected:
+            detail += f", persisted=v{status.get('persisted_version')}:{persisted}"
+        source = str(status.get("source") or "")
+        if source:
+            detail += f", certified_by={source}"
+        reason = str(status.get("reason") or "")
+        remedy = ""
+        if persisted and expected and persisted != expected:
+            remedy = (
+                " — the stored certificate was computed against a different "
+                "checklist; re-certify the stage through the running framework "
+                "to restamp it"
             )
-            contract_suffix = f", contract=v{contract_version}:{contract_sha256}"
         return (
             f"{vertical} final-stage Goal Gate is not Reviewer-certified "
-            f"(current_stage={current_stage(project_root)}{contract_suffix})"
+            f"({detail}{f'; {reason}' if reason else ''}){remedy}"
         )
     except Exception:  # noqa: BLE001
         return "staged Goal Gate could not be resolved"
@@ -145,15 +182,9 @@ def _staged_goal_completion_issue(project_root: object) -> str:
 def goal_gate_task_title(project_root: object) -> str:
     """Name the Goal Gate mission after the stage it has to finish.
 
-    "Complete and certify the current Goal Gate" was the title of every such
-    mission regardless of stage. On a single-stage vertical like `software`
-    that is the mission which does *all* the work, so an operator watching the
-    queue saw a task named after certification while the Engineer was actually
-    writing the code — observed on all twelve runs on 2026-07-26.
-
-    Naming the stage also makes the deduplication signature stage-specific,
-    which is more correct: the gate task for `delivery` and the gate task for
-    `submission` are different work, not a repeat.
+    Include the active stage so the operator sees the work being completed, not
+    only the certification step. The stage name also keeps deduplication keys
+    distinct across different gates.
     """
     from ...skills.stage_machine import current_stage
 
@@ -178,6 +209,7 @@ class _PlanCycleState:
 
         # Set by the intake/gate phase.
         self.operator_messages: list[str] = []
+        self.fresh_operator_messages: list[str] = []
         self.revision_active_items: list[BacklogItem] = []
         self.expected_plan_id: str = ""
         self.expected_plan_version: int = 0
@@ -196,6 +228,8 @@ class _PlanCycleState:
         self.added_titles: list[str] = []
         self.added_impact_scores: list[int] = []
         self.skipped_duplicate_titles: list[str] = []
+        self.skipped_certification_reproposal_titles: list[str] = []
+        self.skipped_certification_reproposal_reasons: list[str] = []
         self.skipped_recent_failure_titles: list[str] = []
         self.skipped_subagent_family_failure_titles: list[str] = []
         self.new_plan_id: str = ""

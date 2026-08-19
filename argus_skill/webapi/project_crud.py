@@ -16,6 +16,7 @@ from ..core import paths as core_paths
 from ..core.session import (
     SessionMeta,
     normalize_session_name,
+    read_session_meta,
     session_lifecycle_lock,
     session_meta_lock,
     update_session_meta,
@@ -79,7 +80,7 @@ def delete_project(
     lifecycle_root: Path | str | None = None,
 ) -> dict[str, Any] | None:
     """Reversibly remove a stopped session by moving it to projects_trash."""
-    from .manager_bridge import manager_context_lock, release_manager_context
+    from .manager_state import manager_context_lock, release_manager_context
 
     root = _global_root(global_root)
     lock_root = _global_root(lifecycle_root) if lifecycle_root is not None else root
@@ -97,6 +98,16 @@ def delete_project(
                         "error": "pause the daemon before deleting this session",
                     }
 
+                meta = read_session_meta(root, sid)
+                workdir = str(getattr(meta, "workdir", "") or "").strip()
+                workdir_path = Path(workdir).expanduser().resolve() if workdir else None
+                workdir_preserved = bool(
+                    workdir_path
+                    and workdir_path.is_dir()
+                    and workdir_path != life_dir.resolve()
+                    and life_dir.resolve() not in workdir_path.parents
+                )
+
                 date = time.strftime("%Y%m%d", time.localtime())
                 dest_parent = root / "projects_trash" / date
                 dest_parent.mkdir(parents=True, exist_ok=True)
@@ -109,6 +120,8 @@ def delete_project(
                     "ok": True,
                     "sid": sid,
                     "trash_path": str(dest.relative_to(root)),
+                    "workdir": workdir,
+                    "workdir_preserved": workdir_preserved,
                 }
 
 
@@ -225,11 +238,11 @@ def set_continuous(
     if life_dir is None:
         return None
     if not enabled:
-        from .manager_bridge import disable_manager_continuous
+        from .manager_dispatch import disable_manager_continuous
 
         disable_manager_continuous(sid, life_dir=life_dir)
         return True
-    from .manager_bridge import manager_continuous_handoff
+    from .manager_dispatch import manager_continuous_handoff
 
     manager_continuous_handoff(
         sid,

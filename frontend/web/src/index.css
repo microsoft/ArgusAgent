@@ -343,8 +343,8 @@ body {
 .workspace-tabs {
   position: relative;
   display: grid;
-  width: 142px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 222px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   padding: 3px;
   border: 1px solid rgb(var(--glass-edge) / 58%);
   border-radius: 9px;
@@ -371,7 +371,7 @@ body {
   top: 3px;
   bottom: 3px;
   left: 3px;
-  width: calc((100% - 6px) / 2);
+  width: calc((100% - 6px) / 3);
   border: 1px solid transparent;
   border-radius: 6px;
   background:
@@ -385,6 +385,38 @@ body {
 
 .workspace-tabs[data-active='activity'] .workspace-tab-indicator {
   transform: translateX(100%);
+}
+
+.workspace-tabs[data-active='workbench'] .workspace-tab-indicator {
+  transform: translateX(200%);
+}
+
+.workbench-module-tab {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  padding: 0.35rem 0.6rem;
+  color: rgb(var(--ink-faint));
+  font-size: 0.72rem;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.workbench-module-tab:hover {
+  border-color: rgb(var(--glass-edge) / 55%);
+  background: rgb(var(--glass-raised) / 45%);
+  color: rgb(var(--ink));
+}
+
+.workbench-module-tab[data-selected='true'] {
+  border-color: rgb(var(--spectral-blue) / 42%);
+  background:
+    linear-gradient(100deg, rgb(var(--spectral-blue) / 12%), rgb(var(--spectral-gold) / 8%)),
+    rgb(var(--glass-raised) / 72%);
+  color: rgb(var(--ink));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 34%);
 }
 
 .role-log-group {
@@ -448,6 +480,102 @@ body {
 @media (hover: none), (pointer: coarse) {
   .brand-button:active {
     filter: brightness(0.92);
+  }
+}
+
+/* ── Mobile ───────────────────────────────────────────────────────────────
+ * The shell paints edge to edge (viewport-fit=cover), so anything anchored to
+ * an edge has to add the corresponding safe-area inset itself or it ends up
+ * under the notch, the home indicator, or the rounded corners. */
+
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  /* Height of the mobile tab bar, including its own bottom inset. Panels above
+   * it reserve this much room so the last row is never covered. */
+  --mobile-tabbar-height: calc(3.25rem + var(--safe-bottom));
+  /* How much the on-screen keyboard currently covers, published by
+   * useVisualViewport. Zero on desktop and whenever the keyboard is closed. */
+  --keyboard-inset: 0px;
+}
+
+.safe-inset-x {
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
+}
+
+.safe-inset-top {
+  padding-top: var(--safe-top);
+}
+
+.safe-inset-bottom {
+  padding-bottom: var(--safe-bottom);
+}
+
+/* Coarse pointers get real touch targets. The workbench chrome is drawn at
+ * 32px, which is fine for a mouse and too small for a thumb — Apple's HIG and
+ * Material both land at 44–48px. The visual size is left alone; the tappable
+ * area is grown with a pseudo-element so nothing reflows. */
+@media (pointer: coarse) {
+  .icon-control,
+  .compact-control,
+  .workspace-tab {
+    position: relative;
+  }
+
+  .icon-control::after,
+  .compact-control::after,
+  .workspace-tab::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* Below the desktop breakpoint the tab bar owns the bottom edge, so any panel
+ * that reaches it reserves the bar's height. */
+@media (max-width: 1023px) {
+  .mobile-scroll-region {
+    padding-bottom: calc(var(--mobile-tabbar-height) + 0.5rem);
+  }
+}
+
+/* The bar rides above the software keyboard rather than sitting behind it. */
+.mobile-tabbar {
+  bottom: var(--keyboard-inset);
+  padding-bottom: var(--safe-bottom);
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
+  transition: bottom 120ms ease-out;
+}
+
+/* The composer is the one control that must stay visible while typing. iOS
+ * Safari does not resize the layout viewport when the keyboard opens, so
+ * `100dvh` alone still leaves the input covered; `--keyboard-inset` (published
+ * by useVisualViewport) is what actually lifts it. On phones it additionally
+ * clears the tab bar. Single declaration per breakpoint — two classes both
+ * setting padding-bottom would be decided by stylesheet order. */
+.composer-dock {
+  padding-bottom: calc(var(--keyboard-inset) + 1.5rem);
+  transition: padding-bottom 120ms ease-out;
+}
+
+@media (max-width: 1023px) {
+  .composer-dock {
+    padding-bottom: calc(var(--mobile-tabbar-height) + var(--keyboard-inset) + 1.5rem);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-dock,
+  .mobile-tabbar {
+    transition: none;
   }
 }
 

@@ -17,12 +17,12 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from ...core.codex_usage import TokenUsage
 from ...core.event_catalog import EventType
 from ...core.metrics import metrics_root_for_project, record_metric
 from ...core.models import RunnerResult
 from ...core.secret_guard import redact_secrets_text
 from ...core.stop_kinds import normalize_stop_kind
+from ...core.token_usage import TokenUsage
 from ._options import resolve_pricing_model
 
 if TYPE_CHECKING:

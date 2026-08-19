@@ -30,12 +30,26 @@ from argus_skill.life.supervisor._constants import (
 from argus_skill.life.supervisor._core import LifeSupervisor
 
 
+def _with_mission_quality(text: str) -> str:
+    lines: list[str] = []
+    for line in text.splitlines():
+        lines.append(line)
+        if line.strip().startswith("TASK_OBJECTIVE="):
+            lines.extend([
+                "TASK_HYPOTHESIS=The task tests its stated mechanism.",
+                "TASK_GOAL_CONTRIBUTION=Advance the requested project outcome.",
+                "TASK_EXPECTED_REGRESSIONS=Local checks may regress during repair.",
+                "TASK_DECISION_RULE=Replan if evidence refutes the mechanism.",
+            ])
+    return "\n".join(lines)
+
+
 class _CapturingPlannerRunner:
     """Fake planner backend that returns a fixed key-value verdict and records
     every prompt it was called with, so tests can assert on advisory text."""
 
     def __init__(self, verdict_text: str) -> None:
-        self._verdict_text = verdict_text
+        self._verdict_text = _with_mission_quality(verdict_text)
         self.prompts: list[str] = []
 
     def run_exec(self, *, prompt, options, run_label, resume_thread_id=None):
@@ -77,7 +91,7 @@ def _make_supervisor(
         continuous=True,
         continuous_objective="keep improving the project",
         paper_mission=False,
-        full_paper_gate=False,
+        final_certification_gate=False,
         open_ended=False,
         project_worktree=project_worktree,
     )
@@ -98,7 +112,7 @@ def _make_supervisor(
     monkeypatch.setattr(sup, "_wiki_collect_task_if_due_under_blocker", lambda: None)
     monkeypatch.setattr(sup, "_render_journal_for_planner", lambda: "")
     monkeypatch.setattr(sup, "_recent_no_progress_failures", lambda: {})
-    monkeypatch.setattr(sup, "_effective_full_paper_gate", lambda *_a, **_k: False)
+    monkeypatch.setattr(sup, "_effective_final_certification_gate", lambda *_a, **_k: False)
     monkeypatch.setattr(sup, "_planner_runtime_with_idle_note", lambda: "")
     return sup
 
@@ -186,7 +200,7 @@ def test_missing_parent_context_ref_is_dropped_without_rejecting_batch(
     assert getattr(parent, "context_refs", []) == []
 
 
-def test_active_dedup_preserves_review_and_stage_transition_semantics(
+def test_active_dedup_ignores_planner_owned_review_routing(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -225,10 +239,10 @@ def test_active_dedup_preserves_review_and_stage_transition_semantics(
 
     assert len(items) == 2
     assert any("stage_closing" in item.tags for item in items)
-    assert any("stage_transition:skip" in item.tags for item in items)
+    assert not any("stage_transition:skip" in item.tags for item in items)
 
 
-def test_stage_closing_dedup_uses_effective_required_review(
+def test_planner_stage_closing_flag_does_not_force_review_or_dedup(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -262,9 +276,12 @@ def test_stage_closing_dedup_uses_effective_required_review(
         )
     )
 
-    assert supervisor._plan_next_work() == PLAN_RETRY
-
-    assert len(supervisor.memory.backlog.all()) == 1
+    assert supervisor._plan_next_work() is True
+    items = supervisor.memory.backlog.all()
+    assert len(items) == 2
+    newest = items[-1]
+    assert "stage_closing" not in newest.tags
+    assert "review:required" not in newest.tags
 
 
 def test_revision_rejection_helper_opens_existing_circuit_breaker(
@@ -325,7 +342,7 @@ def test_dedup_uses_canonical_scope_and_acceptance_metadata(
             "TASK_TITLE=Validate candidate",
             "TASK_OBJECTIVE=Run the deterministic validator.",
             "TASK_EVIDENCE=validator exits zero",
-            "TASK_ACCEPTANCE_CHECK=",
+            "TASK_ACCEPTANCE_CHECK=validator exits zero",
             "TASK_SCOPE=final_submission",
             "TASK_STAGE_CLOSING=false",
             "TASK_REQUIRE_INDEPENDENT_REVIEW=false",

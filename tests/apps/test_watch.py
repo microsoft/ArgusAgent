@@ -75,6 +75,15 @@ def _wait_until(predicate, *, timeout: float = 10.0) -> None:
     raise AssertionError("timed out waiting for condition")
 
 
+def _request_watch_exit(proc: subprocess.Popen[str]) -> None:
+    if os.name == "nt":
+        # Windows' Popen does not support SIGINT. TerminateProcess is sufficient
+        # here because these rendering tests only need deterministic teardown.
+        proc.terminate()
+        return
+    proc.send_signal(signal.SIGINT)
+
+
 def _run_watch_until_output(
     *,
     global_root: Path,
@@ -83,6 +92,7 @@ def _run_watch_until_output(
     expected: str,
 ) -> str:
     output_path = repo_dir / "watch-output.log"
+    stopped_by_test = False
     with output_path.open("w", encoding="utf-8") as output:
         proc = subprocess.Popen(
             [
@@ -106,11 +116,13 @@ def _run_watch_until_output(
                 or expected in output_path.read_text(encoding="utf-8")
             )
             if proc.poll() is None:
-                proc.send_signal(signal.SIGINT)
+                stopped_by_test = True
+                _request_watch_exit(proc)
             proc.wait(timeout=10)
         finally:
             if proc.poll() is None:
-                proc.send_signal(signal.SIGINT)
+                stopped_by_test = True
+                _request_watch_exit(proc)
                 try:
                     proc.wait(timeout=10)
                 except subprocess.TimeoutExpired:
@@ -118,7 +130,8 @@ def _run_watch_until_output(
                     proc.wait(timeout=10)
 
     rendered = output_path.read_text(encoding="utf-8")
-    assert proc.returncode == 0, rendered
+    if not (os.name == "nt" and stopped_by_test):
+        assert proc.returncode == 0, rendered
     assert expected in rendered
     return rendered
 
@@ -539,6 +552,10 @@ def test_watch_subprocess_renders_inbox_guidance_and_keeps_offset(tmp_path: Path
 
 
 @pytest.mark.integration
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Popen.send_signal(SIGTERM) is forced termination on Windows",
+)
 def test_watch_subprocess_redirected_output_flushes_and_exits_on_sigterm(
     tmp_path: Path,
 ) -> None:

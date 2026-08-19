@@ -89,6 +89,148 @@ def test_a_self_reviewed_prior_task_never_satisfies_a_certification() -> None:
     )
 
 
+class _StageCertificationGuard:
+    def __init__(self, tmp_path) -> None:
+        from argus_skill.life.supervisor._planning_context import PlanningContextMixin
+        from argus_skill.life.supervisor._planning_cycle_enqueue import (
+            PlanningCycleEnqueueMixin,
+        )
+
+        self._impl = PlanningCycleEnqueueMixin
+        self._item_pipeline_stage = PlanningCycleEnqueueMixin._item_pipeline_stage
+        self._item_is_stage_closing = PlanningContextMixin._item_is_stage_closing
+        self.memory = SimpleNamespace(backlog=Backlog(tmp_path / "backlog.jsonl"))
+
+    @staticmethod
+    def _current_pipeline_stage() -> str:
+        return "baseline"
+
+    def blocker(self):
+        return self._impl._stage_closing_reproposal_blocker(
+            self,
+            SimpleNamespace(stage_closing=True),
+        )
+
+
+def _reviewed_stage_item(
+    *,
+    item_id: str,
+    stage: str = "baseline",
+    stage_closing: bool = True,
+    finished_ts: float = 10.0,
+) -> BacklogItem:
+    tags = ["planner", "scope:bounded", f"stage:{stage}"]
+    if stage_closing:
+        tags.extend(["stage_closing", "review:required"])
+    return BacklogItem(
+        id=item_id,
+        ts=finished_ts - 1,
+        title=item_id,
+        objective=item_id,
+        status="done",
+        tags=tags,
+        finished_ts=finished_ts,
+        outcome={
+            "execution_status": "completed",
+            "review_status": "done",
+            "stage_certification": "not_certified",
+        },
+    )
+
+
+def test_reviewed_gate_requires_an_intervening_repair_before_recertification(
+    tmp_path,
+) -> None:
+    guard = _StageCertificationGuard(tmp_path)
+    prior = _reviewed_stage_item(item_id="prior-certification")
+    guard.memory.backlog.add(prior)
+
+    blocked = guard.blocker()
+
+    assert blocked is not None
+    assert blocked[0].id == prior.id
+    assert "non-stage-closing repair" in blocked[1]
+
+
+def test_host_stage_certificate_blocks_reworded_legacy_reproposal(tmp_path) -> None:
+    from argus_skill.core.stage_certificate import record_stage_review
+
+    guard = _StageCertificationGuard(tmp_path)
+    legacy = SimpleNamespace(
+        id="legacy-certification",
+        acceptance_check="review baseline",
+        context_refs=[],
+    )
+    guard.memory.root = tmp_path
+    record_stage_review(
+        state_root=guard.memory.root,
+        project_root=tmp_path,
+        stage="baseline",
+        item=legacy,
+        manager_action="hold",
+    )
+
+    blocked = guard.blocker()
+
+    assert blocked is not None
+    assert blocked[0].id == "legacy-certification"
+
+
+def test_successful_same_stage_repair_unlocks_one_recertification(tmp_path) -> None:
+    guard = _StageCertificationGuard(tmp_path)
+    guard.memory.backlog.add(_reviewed_stage_item(item_id="prior-certification"))
+    guard.memory.backlog.add(
+        _reviewed_stage_item(
+            item_id="evidence-repair",
+            stage_closing=False,
+            finished_ts=20.0,
+        )
+    )
+
+    assert guard.blocker() is None
+
+
+def test_reviewed_gate_from_another_stage_does_not_block_current_stage(tmp_path) -> None:
+    guard = _StageCertificationGuard(tmp_path)
+    guard.memory.backlog.add(
+        _reviewed_stage_item(item_id="scope-certification", stage="scope")
+    )
+
+    assert guard.blocker() is None
+
+
+def test_planner_tasks_are_tagged_with_the_current_stage() -> None:
+    from argus_skill.life.supervisor._planning_context import PlanningContextMixin
+
+    class Harness(PlanningContextMixin):
+        @staticmethod
+        def _normalize_planner_scope(_value: str) -> str:
+            return "bounded"
+
+        @staticmethod
+        def _effective_final_certification_gate(_root) -> bool:
+            return False
+
+        @staticmethod
+        def _artifact_root():
+            return "."
+
+        @staticmethod
+        def _current_pipeline_stage() -> str:
+            return "baseline"
+
+    tags = Harness()._planner_task_tags(
+        SimpleNamespace(
+            scope="bounded",
+            stage_closing=True,
+            require_independent_review=True,
+            skip_stage_transition=False,
+        )
+    )
+
+    assert "stage:baseline" in tags
+
+
 def test_terminal_unrecoverable_gate_is_indexed_as_duplicate(tmp_path) -> None:
     from argus_skill.life.supervisor._helpers import _planner_task_signature
     from argus_skill.life.supervisor._planning_cycle_enqueue import (

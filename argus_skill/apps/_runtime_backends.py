@@ -38,7 +38,7 @@ class _Outcome:
     completion_evidence: str = ""
     # The Manager's stage-transition verdict for this mission completion (the
     # Manager is the sole writer of current_stage). Shape:
-    # ``{"action": advance|hold|rollback, "target_stage", "reason",
+    # ``{"action": advance|hold|rollback|complete, "target_stage", "reason",
     # "current_stage", "source"}``. Empty dict when the decision
     # was skipped (error) or never ran. Journaled by the supervisor; the stage
     # write itself already happened inside execute.
@@ -46,6 +46,11 @@ class _Outcome:
     # True when a trusted review-only workflow deliberately bypassed the formal
     # stage writer. Persisted separately so recovery cannot replay the review.
     stage_transition_skipped: bool = False
+    # True when a Planner-authored intermediate node held the stage rather than
+    # closing it. The opposite of the flag above: the Reviewer verdict is real
+    # and campaign-level reconciliation is meant to replay it once the stage's
+    # planned work drains.
+    stage_transition_deferred: bool = False
     # The reviewer's named ``OPERATOR_QUESTION`` verdict field from the
     # FINAL round, when the mission stopped with ``status == "blocked"``. The
     # supervisor persists this onto the backlog item (``pending_question``)
@@ -53,9 +58,18 @@ class _Outcome:
     # without this, the question only ever existed for as long as whatever
     # cockpit process happened to be tailing events.jsonl at that instant.
     operator_question: str = ""
+    operator_options: list[dict] = field(default_factory=list)
     final_review_status: str = ""
+    final_review_source: str = ""
     final_review_reason: str = ""
     final_review_next_action: str = ""
+    summary: str = ""
+    research_result: dict | None = None
+    # Reviewer-confirmed artifact paths and evidence from the terminal round.
+    # Settlement turns these into a safe, operator-facing delivery receipt.
+    final_frontier_report: dict = field(default_factory=dict)
+    final_planner_report: dict = field(default_factory=dict)
+    plan_challenge: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -82,12 +96,14 @@ class _MemoryRunner:
 
     def __init__(self) -> None:
         self.workdir: Path | None = None
+        self.manager: Any = None
 
     def execute(
         self,
         *,
         objective: str,
         original_objective: str = "",  # noqa: ARG002 — protocol parity
+        review_objective: str = "",  # noqa: ARG002 — protocol parity
         sink: EventSink,
         preload_injects: list[str] | None = None,  # noqa: ARG002 — protocol parity
         prelude_context: str = "",  # noqa: ARG002 — protocol parity

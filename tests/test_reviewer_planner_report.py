@@ -12,6 +12,9 @@ def test_named_reviewer_verdict_preserves_planner_report() -> None:
         "OPERATOR_QUESTION=none\n"
         "FORWARD_PROGRESS=false\n"
         "PLAN_SIGNAL=reconsider\n"
+        "PLAN_CHALLENGE=The skip-zero candidate is no longer required.\n"
+        "PLAN_ALTERNATIVE=Use the no-gap validator.\n"
+        "AUTHORITY_IMPACT=technical\n"
     )
 
     assert decision is not None
@@ -19,8 +22,14 @@ def test_named_reviewer_verdict_preserves_planner_report() -> None:
     assert decision.planner_report == {
         "forward_progress": False,
         "plan_signal": "reconsider",
+        "challenge": "The skip-zero candidate is no longer required.",
+        "alternative": "Use the no-gap validator.",
+        "authority_impact": "technical",
     }
-    assert "planner_report" not in decision.to_event_payload()
+    event = decision.to_event_payload()
+    assert event["plan_challenge"] == "The skip-zero candidate is no longer required."
+    assert event["plan_alternative"] == "Use the no-gap validator."
+    assert "planner_report" not in event
 
 
 def test_legacy_json_reviewer_verdict_preserves_planner_report() -> None:

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useI18n } from '../i18n';
 import type { BacklogItem } from '../api';
 import { PanelHeader, Button, EmptyHint, Chip } from './primitives';
 import { visibleBacklogItems } from '../../../core/src/backlog';
@@ -33,6 +34,7 @@ export function BacklogPanel({
   busy: boolean;
   readOnly?: boolean;
 }) {
+  const { t } = useI18n();
   const [showHistory, setShowHistory] = useState(false);
   const active = visibleBacklogItems(items, false);
   const history = visibleBacklogItems(items, true);
@@ -40,7 +42,7 @@ export function BacklogPanel({
   return (
     <section className={`card flex flex-col ${shown.length > 0 ? 'min-h-0 flex-1' : 'shrink-0'}`}>
       <PanelHeader
-        title="Backlog"
+        title={t('panel.backlog')}
         right={
           <button
             className="text-[10px] text-ink-faint transition-colors hover:text-ink"

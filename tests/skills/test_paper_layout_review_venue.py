@@ -8,11 +8,11 @@ venue profile rather than hardcoded ACL page numbers.
 """
 from __future__ import annotations
 
-from argus_skill.skills.venue_profiles import AAAI_PROFILE, EMNLP_PROFILE
 from argus_skill.verticals.research.paper_layout_review import (
     _deterministic_assessment,
     _vision_prompt,
 )
+from argus_skill.verticals.research.venue_profiles import AAAI_PROFILE, EMNLP_PROFILE
 
 
 def _layout(pages: list[str]) -> str:
@@ -80,7 +80,7 @@ def test_figure_review_uses_good_enough_non_looping_standard() -> None:
 
 
 def test_top_level_heading_detection_ignores_abstract_conclusion_label() -> None:
-    from argus_skill.skills.venue_profiles import FRONTIERS_SLEEP_PROFILE
+    from argus_skill.verticals.research.venue_profiles import FRONTIERS_SLEEP_PROFILE
 
     layout = _layout(
         [
@@ -103,7 +103,7 @@ def test_top_level_heading_detection_ignores_abstract_conclusion_label() -> None
 
 
 def test_frontiers_has_no_fixed_page_underfill_or_overflow_gate() -> None:
-    from argus_skill.skills.venue_profiles import FRONTIERS_SLEEP_PROFILE
+    from argus_skill.verticals.research.venue_profiles import FRONTIERS_SLEEP_PROFILE
 
     result = _assess(
         _layout(["CONCLUSION", "REFERENCES\nSmith (2024)"]),

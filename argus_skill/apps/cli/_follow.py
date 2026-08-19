@@ -12,6 +12,7 @@ from typing import Any, Callable, Sequence
 from urllib.parse import urlencode
 
 from ...core import paths as core_paths
+from ...core.role_reply import strip_named_lines
 from ...core.secret_guard import known_secret_values, redact_secrets_text
 from .._inbox import format_inbox_event
 from . import _core
@@ -326,10 +327,14 @@ def _format_follow_agent_message(layer: str, text: str, *, full: bool = False) -
             reason = _clean_follow_text(str(data.get("reason") or ""), limit=None)
             verdict = "project done" if done else f"queue {count} task(s)"
             return f"💭 planner verdict: {verdict}" + (f" · {reason}" if reason else "")
-    body = _clean_follow_text(text, limit=None)
-    # ``full`` (the Ctrl+O reasoning pane) shows the WHOLE thought — the pane
-    # word-wraps it, so there is no edge truncation and no "(+N chars)" tail.
-    return "💭 " + (body if full else _clip_follow_summary(body, 240))
+    body = _clean_follow_text(
+        strip_named_lines(
+            text,
+            ("MILESTONE_STATUS", "NEXT_OWNER", "OPERATOR_QUESTION", "OPERATOR_OPTIONS"),
+        ),
+        limit=None,
+    )
+    return "💭 " + body
 
 
 def _format_follow_command(event: dict) -> str:
@@ -404,10 +409,31 @@ def _read_recent_project_events(
     *,
     limit: int = 80,
 ) -> list[dict[str, Any]]:
-    events = _read_recent_jsonl_events(life_dir / "events.jsonl", limit=limit)
-    if events:
-        return events
-    return _read_recent_jsonl_events(life_dir / "events.jsonl.1", limit=limit)
+    if limit <= 0:
+        return []
+    current = _read_recent_jsonl_events(life_dir / "events.jsonl", limit=limit)
+    previous = _read_recent_jsonl_events(
+        life_dir / "events.jsonl.1",
+        limit=limit,
+    )
+    return _merge_recent_event_rows(previous, current, limit=limit)
+
+
+def _merge_recent_event_rows(
+    previous: list[dict[str, Any]],
+    current: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Join rollover/live tails while removing only their exact boundary overlap."""
+    if limit <= 0:
+        return []
+    overlap = 0
+    for size in range(min(len(previous), len(current)), 0, -1):
+        if previous[-size:] == current[:size]:
+            overlap = size
+            break
+    return [*previous, *current[overlap:]][-limit:]
 
 
 def _format_follow_planner_task_added(event: dict) -> str:

@@ -20,6 +20,7 @@ from argus_skill.core.role_reply import (
     read_key_values,
     read_list,
     read_optional,
+    strip_named_lines,
 )
 
 _KEYS = ("VERTICAL", "WORKFLOW_MODE", "CONFIDENCE", "RATIONALE", "TARGET_VENUE")
@@ -68,6 +69,18 @@ def test_a_leading_status_emoji_does_not_hide_the_decision() -> None:
     assert values == {
         "CHOICE": "existing",
         "VERTICAL": "software",
+    }
+
+
+def test_missing_newline_after_intro_does_not_hide_first_decision() -> None:
+    values = read_key_values(
+        "I inspected the repository.CHOICE=existing\nVERTICAL=math",
+        ("CHOICE", "VERTICAL"),
+    )
+
+    assert values == {
+        "CHOICE": "existing",
+        "VERTICAL": "math",
     }
 
 
@@ -215,24 +228,18 @@ def test_a_daemon_still_answering_in_json_is_not_broken() -> None:
 
 def test_the_routing_prompt_no_longer_demands_json() -> None:
     from argus_skill.roles.prompts.manager import (
-        build_fast_vertical_decision_prompt,
         build_vertical_decision_prompt,
     )
 
-    fast = build_fast_vertical_decision_prompt(
-        task="make it faster",
-        verticals_with_purpose={"software": ""},
-        domains_with_purpose={},
-    )
     grounded = build_vertical_decision_prompt(
         "make it faster",
         verticals_with_purpose={"software": ""},
         domains_with_purpose={},
     )
 
-    assert "JSON" not in fast
     assert "JSON" not in grounded
-    assert "CHOICE=existing" in fast and "CHOICE=existing" in grounded
+    assert "ARGUS_ROLE_DECISION=" in grounded
+    assert '"choice":"existing"' in grounded
 
 
 # -- values that are genuinely prose -----------------------------------------
@@ -261,6 +268,20 @@ OPERATOR_QUESTION=none
     assert read_key_values(reply, _VERDICT)["NEXT_ACTION"] == (
         "Fuse the epilogue and re-measure."
     )
+
+
+def test_internal_handoff_lines_are_removed_from_visible_speech() -> None:
+    visible = strip_named_lines(
+        (
+            "Waiting for your format choice.\n"
+            "MILESTONE_STATUS=continue\n"
+            "OPERATOR_QUESTION=Which format?\n"
+            "OPERATOR_OPTIONS=json :: false :: JSON :: Structured report"
+        ),
+        ("MILESTONE_STATUS", "OPERATOR_QUESTION", "OPERATOR_OPTIONS"),
+    )
+
+    assert visible == "Waiting for your format choice."
 
 
 def test_a_block_stops_at_the_next_key_not_at_the_end() -> None:
@@ -361,6 +382,7 @@ def test_the_stage_prompt_no_longer_demands_json() -> None:
     prompt = build_stage_decision_prompt(
         current_stage="delivery",
         next_stage="",
+        later_stages=[],
         earlier_stages=[],
         checklist_md="- x",
         review=review,
@@ -371,7 +393,31 @@ def test_the_stage_prompt_no_longer_demands_json() -> None:
     )
 
     assert "JSON" not in prompt
-    assert "ACTION=advance|hold|rollback" in prompt
+    assert "ARGUS_ROLE_DECISION=" in prompt
+    assert '"action":"hold"' in prompt
+
+
+def test_stage_prompt_exposes_dynamic_later_stage_choices() -> None:
+    from types import SimpleNamespace
+
+    from argus_skill.roles.prompts.manager import build_stage_decision_prompt
+
+    prompt = build_stage_decision_prompt(
+        current_stage="research",
+        next_stage="plan",
+        later_stages=["plan", "benchmark", "run", "analysis", "draft"],
+        earlier_stages=[],
+        checklist_md="- literature is grounded",
+        review=SimpleNamespace(status="done", reason="scope and sources verified"),
+        continuous_objective="Write a literature-only survey with no experiments.",
+    )
+
+    assert "Legal ADVANCE targets (later stages)" in prompt
+    assert "`plan`, `benchmark`, `run`, `analysis`, `draft`" in prompt
+    assert "literature-only survey" in prompt
+    assert "Manager chooses ADVANCE, HOLD, ROLLBACK, or COMPLETE" in prompt
+    assert "## Operator objective" in prompt
+    assert "survey with no experiments" in prompt
 
 
 # -- prompt rewrite ----------------------------------------------------------
@@ -613,12 +659,31 @@ def test_skill_placements_keep_their_shape_and_their_fallback() -> None:
     )
 
 
-def test_a_single_placement_verdict_reads_from_named_lines() -> None:
-    from argus_skill.manager.skill_review import _named_placement
+def test_a_single_placement_uses_the_batch_contract(monkeypatch) -> None:
+    from argus_skill.manager import skill_review
 
-    verdict = _named_placement(
-        "This one is reusable anywhere.\n\nPLACEMENT=global\nVERTICAL=\nWHY=no assumptions\n"
+    calls: list[dict] = []
+
+    class _Result:
+        last_agent_message = (
+            "CANDIDATE_ID=single\n"
+            "PLACEMENT=global\n"
+            "VERTICAL=\n"
+            "WHY=no assumptions\n"
+        )
+
+    def _run(_runner, **kwargs):
+        calls.append(kwargs)
+        return _Result()
+
+    monkeypatch.setattr(skill_review, "gateway_run_exec", _run)
+    verdict = skill_review.classify_skill_placement(
+        content="Reusable method",
+        task="Ship a result",
+        candidate_verticals=["software"],
+        runner=object(),
     )
 
-    assert verdict == {"placement": "global", "vertical": "", "why": "no assumptions"}
-    assert _named_placement("just prose") is None
+    assert verdict == skill_review.PlacementVerdict("global", "", "no assumptions")
+    assert calls[0]["run_label"] == "manager.skill_placement_batch"
+    assert '"candidate_id": "single"' in calls[0]["prompt"]

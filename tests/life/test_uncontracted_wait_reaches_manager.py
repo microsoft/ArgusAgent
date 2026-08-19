@@ -1,8 +1,7 @@
 """A wait with no contract is where the Manager review matters most.
 
-Measured on 2026-07-26
-(/tmp/argus-night/home/projects/b5626a40e50a/events.jsonl): a kernel_engineering
-campaign emitted six consecutive `life.planner.waiting` verdicts, every one with
+Measured on 2026-07-26 in a captured project event log: a kernel_engineering
+campaign emitted several consecutive `life.planner.waiting` verdicts, every one with
 `waiting_contract: null`, and produced zero Manager stage reviews. Thirteen
 provider calls, no progress, and the Planner had already said exactly what was
 wrong:
@@ -62,6 +61,7 @@ class _Probe:
         self.skill_store = None
         self.sink = SimpleNamespace(handle_event=None)
         self.events: list[dict] = []
+        self.manager_feedback: list[dict] = []
 
     @staticmethod
     def _waiting_contract_key(contract):
@@ -95,45 +95,48 @@ class _Probe:
     def _persist_planner_waiting_contract(self, contract):
         # The real one returns None without a recheck_condition, which is the
         # second short-circuit this test exists to hold.
+        if str(getattr(contract, "recheck_condition", "") or "").strip():
+            return {
+                "blocker_fingerprint": contract.blocker_fingerprint,
+                "recheck_token": contract.recheck_token,
+            }
+        return None
+
+    def _persist_manager_planner_feedback(self, **feedback):
+        self.manager_feedback.append(feedback)
+        return True
+
+    def _deactivate_planner_waiting_contract(self) -> None:
+        return None
+
+    def _clear_planner_wait_resolution(self) -> None:
         return None
 
     def _apply_manager_wait_resolution(self, *a, **k):
         return None
 
+    def _bound_manager(self):
+        probe = self
+
+        class _Marker:
+            def decide_stage_transition(self, **kwargs):
+                probe.manager_calls += 1
+                return SimpleNamespace(
+                    action="hold",
+                    target_stage="scope",
+                    reason="held",
+                    current_stage="scope",
+                    source="manager_llm",
+                    diagnostic="",
+                    resolves_wait=False,
+                )
+
+        return _Marker()
+
 
 def _reconciles(probe: _Probe, verdict) -> bool:
-    """Did the reconciliation actually reach the Manager?
-
-    Asserted by counting a real call rather than by "it did not return early":
-    my first version of this test passed while a *second* guard — persisting a
-    contract that does not exist — still short-circuited the review, and only a
-    live run caught it. Marking the Manager construction is the one signal that
-    cannot be satisfied by an early return.
-    """
-    import argus_skill.manager as manager_mod
-
-    original = manager_mod.Manager
-
-    class _Marker:
-        def __init__(self, **kwargs):
-            probe.manager_calls += 1
-
-        def decide_stage_transition(self, **kwargs):
-            return SimpleNamespace(
-                action="hold",
-                target_stage="scope",
-                reason="held",
-                current_stage="scope",
-                source="manager_llm",
-                diagnostic="",
-                resolves_wait=False,
-            )
-
-    manager_mod.Manager = _Marker
-    try:
-        probe._reconcile(verdict)
-    finally:
-        manager_mod.Manager = original
+    """Did reconciliation invoke the composed Manager's stage decision?"""
+    probe._reconcile(verdict)
     return probe.manager_calls > 0
 
 
@@ -141,6 +144,13 @@ def test_an_uncontracted_wait_still_reaches_the_manager() -> None:
     probe = _Probe()
 
     assert _reconciles(probe, _verdict()) is True
+    assert probe.manager_feedback == [
+        {
+            "stage": "research",
+            "reason": "held",
+            "diagnostic": "manager_hold_requires_stage_repair",
+        }
+    ]
 
 
 def test_a_wait_with_no_reason_at_all_is_left_alone() -> None:
@@ -165,6 +175,40 @@ def test_an_operator_gated_wait_is_never_reconciled() -> None:
     result = probe._reconcile(_verdict(waiting_contract=contract))
 
     assert result == ""
+
+
+def test_deterministic_subagent_event_wait_never_polls_the_manager() -> None:
+    probe = _Probe()
+    contract = SimpleNamespace(
+        blocker_fingerprint="live-subagents:abc",
+        recheck_token="run-1",
+        operator_action_required=False,
+        stage_reconciliation_required=False,
+        wait_mode="event",
+        wake_on=("subagent_state",),
+    )
+
+    result = probe._reconcile(_verdict(waiting_contract=contract))
+
+    assert result == ""
+    assert probe.manager_calls == 0
+
+
+def test_event_wait_without_wake_source_still_reaches_the_manager() -> None:
+    probe = _Probe()
+    contract = SimpleNamespace(
+        blocker_fingerprint="live-subagents:abc",
+        recheck_token="run-1",
+        operator_action_required=False,
+        stage_reconciliation_required=False,
+        wait_mode="event",
+        wake_on=(),
+        recheck_condition="wait for a real event source",
+    )
+
+    probe._reconcile(_verdict(waiting_contract=contract))
+
+    assert probe.manager_calls == 1
 
 
 @pytest.mark.parametrize(

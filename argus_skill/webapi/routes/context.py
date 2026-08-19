@@ -141,18 +141,9 @@ class ServerContext:
                 sid = str(project.get("id") or "")
                 if not sid or sid in seen:
                     continue
-                # The Web sidebar is a session picker, not a raw life-store
-                # browser. Legacy cwd-fingerprint/internal project dirs remain
-                # resumable through the CLI, but without session.json they have
-                # no stable label/workdir contract and surface as mysterious hex
-                # rows in investor/demo sessions.
-                #
-                # A *live* daemon is the exception. Hiding running work is worse
-                # than showing an unfamiliar row: an operator who started a
-                # daemon with `argus --daemon` and then opened the cockpit could
-                # neither see it nor stop it there, which is what happened while
-                # testing on 2026-07-26. It is also not mysterious — the label
-                # below is already the campaign objective, not the hex id.
+                # The sidebar lists sessions with stable metadata. Keep a
+                # metadata-free entry only while its daemon is live, because
+                # hiding active work would also hide its stop controls.
                 if (
                     not sid.startswith("s-")
                     and not (

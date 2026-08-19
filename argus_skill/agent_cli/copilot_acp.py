@@ -40,6 +40,11 @@ _DEFAULT_MANAGER_TIMEOUT_S = 300.0
 _CANCEL_GRACE_S = 5.0
 _DEFAULT_SESSION_RECYCLE = 12
 _FRONT_DOOR_LABEL = "manager-frontdoor-classify"
+# Passed as the whole ``--available-tools`` allowlist for lean classifier
+# processes, so the allowlist matches nothing. Spelled to be unmistakable in a
+# process listing and impossible to collide with a real tool name. See
+# ``CopilotAcpClient._spawn`` for why an empty value does not work.
+_NO_TOOLS_SENTINEL = "__argus_no_tools__"
 _TRANSPORT_CANCEL_NOTICE = "Info: Operation cancelled by user"
 _CONTENT_FILTER_NOTICE = (
     "The model returned no content because the response was blocked by content filtering."
@@ -139,6 +144,19 @@ class _Turn:
         self.last_event = "prompt_started"
 
 
+def _terminate_windows_acp_tree(
+    process: subprocess.Popen[str],
+    *,
+    identity_check: Callable[[], bool],
+) -> bool:
+    from ..daemon.state import _terminate_windows_process_tree
+
+    return _terminate_windows_process_tree(
+        process.pid,
+        identity_check=identity_check,
+    )
+
+
 class CopilotAcpClient:
     """One warm ``copilot --acp`` subprocess + a JSON-RPC/stdio client.
 
@@ -159,6 +177,7 @@ class CopilotAcpClient:
         lean: bool = False,
         read_only: bool = False,
         add_dirs: tuple[str, ...] = (),
+        startup_timeout_s: float = 30.0,
     ) -> None:
         self._agent_bin = agent_bin
         self._model = model
@@ -166,6 +185,7 @@ class CopilotAcpClient:
         self._lean = bool(lean)
         self._read_only = bool(read_only)
         self._add_dirs = tuple(str(path) for path in add_dirs if str(path).strip())
+        self._startup_timeout_s = max(1.0, float(startup_timeout_s))
         self._proc: subprocess.Popen[str] | None = None
         self._reader: threading.Thread | None = None
         self._alive = False
@@ -190,7 +210,18 @@ class CopilotAcpClient:
         with self._start_lock:
             if self._alive and self._proc is not None and self._proc.poll() is None:
                 return
-            self._spawn()
+            stale = self._proc
+            if stale is not None and stale.poll() is None:
+                self._terminate_subprocess(stale)
+            self._proc = None
+            try:
+                self._spawn()
+            except BaseException:
+                failed = self._proc
+                self._proc = None
+                if failed is not None and failed.poll() is None:
+                    self._terminate_subprocess(failed)
+                raise
 
     def _spawn(self) -> None:
         cmd = [self._agent_bin, "--acp"]
@@ -201,10 +232,28 @@ class CopilotAcpClient:
         if self._lean:
             # Classifier prompts are self-contained and tool-free. Repository
             # instructions and built-in MCPs only inflate their input context.
+            #
+            # The value below is deliberately a name no tool will ever have.
+            # ``--available-tools=`` with an EMPTY value reads like "no tools"
+            # and is a no-op in Copilot CLI 1.0.80: the classifier kept the full
+            # 18-tool surface — bash, create, edit, web_fetch, task — costing
+            # ~20k of tool schemas per call and, worse, letting a triage call
+            # act. That is how a front-door classify ran 270s, burned 14.2k
+            # reasoning tokens, issued a tool_call, and was killed by the 60s
+            # idle watchdog. An unknown name empties the allowlist for real
+            # (24.0k -> 3.5k input tokens, measured) at the cost of one
+            # "Unknown tool name in the tool allowlist" notice on the CLI's own
+            # output, which ACP does not surface.
+            #
+            # An allowlist, not ``--excluded-tools``: a denylist has to
+            # enumerate today's tools, so the next tool Copilot ships silently
+            # re-arms the classifier. This fails closed instead — if a future
+            # CLI rejects unknown names outright the classify call fails loudly,
+            # and the operator is told why (``_frontdoor_failure``).
             cmd += [
                 "--no-custom-instructions",
                 "--disable-builtin-mcps",
-                "--available-tools=",
+                f"--available-tools={_NO_TOOLS_SENTINEL}",
             ]
         elif self._read_only:
             # Manager SELF is deliberately read-only. Keep it on the warm ACP
@@ -249,12 +298,29 @@ class CopilotAcpClient:
         )
         self._reader.start()
         resp = self._request(
-            "initialize", {"protocolVersion": 1, "clientCapabilities": {}}, timeout=20
+            "initialize",
+            {"protocolVersion": 1, "clientCapabilities": {}},
+            timeout=self._startup_timeout_s,
         )
         if resp is None or "error" in resp:
             self._alive = False
             raise RuntimeError(f"acp initialize failed: {resp}")
-        self._agent_caps = (resp.get("result") or {}).get("agentCapabilities") or {}
+        init_result = resp.get("result") or {}
+        auth_methods = init_result.get("authMethods") or []
+        if auth_methods:
+            method_id = str(auth_methods[0].get("id") or "").strip()
+            if not method_id:
+                self._alive = False
+                raise RuntimeError("acp initialize returned an authentication method without an id")
+            auth_resp = self._request(
+                "authenticate",
+                {"methodId": method_id},
+                timeout=self._startup_timeout_s,
+            )
+            if auth_resp is None or "error" in auth_resp:
+                self._alive = False
+                raise RuntimeError(f"acp authenticate failed: {auth_resp}")
+        self._agent_caps = init_result.get("agentCapabilities") or {}
 
     def _on_dead(self) -> None:
         self._alive = False
@@ -272,23 +338,40 @@ class CopilotAcpClient:
         self._session_premium_multipliers.clear()
         self._session_models.clear()
 
+    def _terminate_subprocess(self, proc: subprocess.Popen[str]) -> None:
+        if proc.poll() is not None:
+            return
+        if os.name == "nt":
+            try:
+                tree_stopped = _terminate_windows_acp_tree(
+                    proc,
+                    identity_check=lambda: (
+                        self._proc is proc and proc.poll() is None
+                    ),
+                )
+            except Exception:  # noqa: BLE001
+                tree_stopped = False
+            if tree_stopped:
+                return
+        try:
+            proc.terminate()
+            proc.wait(timeout=2.0)
+        except Exception:  # noqa: BLE001
+            try:
+                proc.kill()
+                proc.wait(timeout=1.0)
+            except Exception:  # noqa: BLE001
+                pass
+
     def close(self) -> None:
         """Terminate the warm ACP subprocess and release all session state."""
         with self._start_lock:
             proc = self._proc
-            self._proc = None
             self._alive = False
             self._active_turn = None
-            if proc is not None and proc.poll() is None:
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=2.0)
-                except Exception:  # noqa: BLE001
-                    try:
-                        proc.kill()
-                        proc.wait(timeout=1.0)
-                    except Exception:  # noqa: BLE001
-                        pass
+            if proc is not None:
+                self._terminate_subprocess(proc)
+            self._proc = None
             self._on_dead()
 
     def prewarm(self, cwd: str, *, front_door_session: bool = False) -> None:
@@ -301,7 +384,8 @@ class CopilotAcpClient:
     # ── reader / dispatch ────────────────────────────────────────────────────
     def _reader_loop(self, proc: subprocess.Popen[str]) -> None:
         try:
-            assert proc.stdout is not None
+            if proc.stdout is None:
+                raise RuntimeError("Copilot ACP stdout pipe was not created")
             for line in proc.stdout:
                 line = line.strip()
                 if not line:
@@ -857,6 +941,7 @@ class CopilotAcpClient:
             completed = (stop_reason == "end_turn") and not cancelled["v"]
             if completed and _looks_like_content_filter_notice(turn.raw_text):
                 self._invalidate_session(sid)
+                self.close()
                 return self._fail_result(
                     "Copilot content filtering blocked the response; the identical "
                     "prompt must not be retried",
@@ -931,6 +1016,7 @@ _CLIENTS: dict[
     CopilotAcpClient,
 ] = {}
 _CLIENTS_LOCK = threading.Lock()
+_MAX_CLIENTS_PER_SCOPE = 3
 
 
 def get_client(
@@ -953,19 +1039,32 @@ def get_client(
         normalized_dirs,
         str(scope or "shared"),
     )
+    evicted: list[CopilotAcpClient] = []
     with _CLIENTS_LOCK:
-        client = _CLIENTS.get(key)
-        if client is None:
-            client = CopilotAcpClient(
-                agent_bin,
-                model,
-                reasoning_effort,
-                lean=lean,
-                read_only=read_only,
-                add_dirs=normalized_dirs,
-            )
+        client = _CLIENTS.pop(key, None)
+        if client is not None:
             _CLIENTS[key] = client
-        return client
+            return client
+        scope_key = str(scope or "shared")
+        scoped_keys = [candidate for candidate in _CLIENTS if candidate[-1] == scope_key]
+        overflow = len(scoped_keys) - _MAX_CLIENTS_PER_SCOPE + 1
+        for stale_key in scoped_keys[:max(0, overflow)]:
+            evicted.append(_CLIENTS.pop(stale_key))
+        client = CopilotAcpClient(
+            agent_bin,
+            model,
+            reasoning_effort,
+            lean=lean,
+            read_only=read_only,
+            add_dirs=normalized_dirs,
+        )
+        _CLIENTS[key] = client
+    for stale_client in evicted:
+        try:
+            stale_client.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return client
 
 
 def close_clients_for_scope(scope: str) -> None:

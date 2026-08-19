@@ -3,12 +3,10 @@
 Validates that each configured route in
 ``~/.argus-skill/capabilities/model_api.json`` points at a real,
 reachable model deployment **before** the daemon starts pushing
-work to it. Catches the class of bugs where the vault references
-``gpt-5.5-mini`` but only ``gpt-5.5`` actually exists on Azure
-(observed 2026-06-01: 47 min / $2.50 wasted in a doom loop because
-the daemon couldn't tell its own config was wrong).
+work to it. This prevents repeated calls to missing deployments or invalid
+credentials when runtime configuration is stale.
 
-Pure plumbing per edit-principle skills/04 — this is a **structural** check
+This is a **structural** check
 ("does the endpoint respond with non-404 to a minimal probe?"),
 not a quality judgment.
 

@@ -59,7 +59,7 @@ requantization, vector/SFU, divider, round/saturate, DMA, buffers, and control.
 Measure the mux/control and cycle cost: reuse is a PPA hypothesis, not an automatic win.
 Keep an append-only frontier ledger with non-SRAM delta area/cells, Fmax, cycles,
 remaining area reserve, and the exact RTL/constraint hashes. Stop repeated local tweaks
-when gains saturate and escalate to structural folding or an honest Pareto/no-go result.
+when gains saturate and escalate to structural folding or an honest Pareto characterization.
 
 Compare a proposed edge-LLM accelerator against at least one reusable open design
 such as Gemmini or VTA under matched resources. Keep Jetson/Hailo/Apple/Qualcomm

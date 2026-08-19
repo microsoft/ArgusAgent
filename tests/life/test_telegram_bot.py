@@ -36,7 +36,7 @@ def test_detect_active_layer_reads_explicit_agent_layer() -> None:
         )
     )
 
-    assert router._detect_active_layer(mem) == "👷 工程师 (L1)"
+    assert router._detect_active_layer(mem) == "👷 Engineer · 执行"
 
 
 def _router(tmp_path):
@@ -80,12 +80,29 @@ def test_add_enqueues_only_manager_execution_task(tmp_path, monkeypatch) -> None
     item = LifeMemory.open(life_dir).backlog.all()[0]
     assert item.title == "draft the MRAM paper"
     assert item.objective == "draft the MRAM paper"
+    assert item.manager_decision == {"routed": True}
     assert captured == {
         "text": "draft the MRAM paper; Manager owns the right sidebar",
         "root_task_id": item.id,
     }
     assert raw not in (life_dir / "backlog.jsonl").read_text()
     assert replies and "draft the MRAM paper" in replies[-1]
+
+
+def test_free_text_manager_self_reply_is_not_enqueued(
+    tmp_path, monkeypatch,
+) -> None:
+    router, life_dir, replies = _router(tmp_path)
+    monkeypatch.setattr(
+        front_door,
+        "manager_triage",
+        lambda mem, text, state: "在的，有什么需要我处理？",
+    )
+
+    router.dispatch("在吗")
+
+    assert LifeMemory.open(life_dir).backlog.all() == []
+    assert replies == ["在的，有什么需要我处理？"]
 
 
 def test_continuous_persists_only_manager_execution_task(
@@ -150,6 +167,11 @@ def test_free_text_reports_manager_handoff_failure(
         raise ManagerHandoffError("safe handoff unavailable")
 
     monkeypatch.setattr(front_door, "manager_bounded_handoff", fail_handoff)
+    monkeypatch.setattr(
+        front_door,
+        "manager_triage",
+        lambda *_args, **_kwargs: None,
+    )
     router.dispatch("write paper; Manager owns the sidebar")
 
     assert LifeMemory.open(life_dir).backlog.all() == []

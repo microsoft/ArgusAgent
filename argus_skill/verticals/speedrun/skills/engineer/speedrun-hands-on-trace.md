@@ -74,14 +74,18 @@ CAND <name, ON TOP OF which floor>
 
 ## My run: the concrete operations
 
-Project: `/home/argustest/nanogpt-speedrun-h100`. Scorer (frozen):
+Project: the operator-provided nanoGPT speedrun workspace. Scorer (frozen):
 `./eval_solution.sh solution <N>` — ships `solution/{train.py,triton_kernels.py}` to 8xH100
-(`ssh h100`, frozen interp `/scratch/nano/envs/sr210/bin/python`, torch 2.10+cu128 / triton
+through the manifest's remote command and frozen interpreter (torch 2.10+cu128 / triton
 3.6 / FA3), runs `torchrun --nproc_per_node=8` N times, `analyze_sweep.py` runs the one-sided
 t-test `t=(mean-3.28)/(sd/√n)`, prints `SCORE valid=<bool> n=<N> val_loss=<m>±sd
 p(mean<3.28)=<p> train_time=<m>±sd s`. `valid` iff `p<0.01`. Iterate at N=3, certify at N=10.
 Target `val_loss<=3.28`, minimize `train_time`. Anchors (8xH100): #83 official 79.7s; our #83
 re-measure 80.18s; automated frontier (Recursive) 77.3s.
+
+Initialize `$NANOGPT_REMOTE`, `$NANOGPT_BENCH_ROOT`, `$NANOGPT_DATA_ROOT`,
+and `$NANOGPT_PYTHON` from the mission manifest before using the commands
+below. Missing values are an infrastructure blocker, not values to guess.
 
 ### OP 0 — SEARCH the literature, reproduce the anchor, extract the curve
 
@@ -105,7 +109,7 @@ against a second source, and treat it as a hypothesis to reproduce — not a fac
 the anchor on our own box and read the real curve:
 
 ```bash
-cd /home/argustest/nanogpt-speedrun-h100
+cd "$NANOGPT_BENCH_ROOT"
 ./eval_solution.sh solution 3                                   # reproduce the #83 seed on OUR box
 grep -E 'step:[0-9]+/1385 val_loss:' experiments/<RUNID>/run_1.txt   # extract the curve
 ```
@@ -138,9 +142,10 @@ CAND seed #83 — baseline (no edits)
 ```bash
 # nsys/ncu/nvprof are NOT installed on the H100 image — torch.profiler only.
 # wrap steps 1250-1255 (Stage 3, the expensive regime) via the existing env hooks:
-ssh h100 'cd /scratch/nano && NANOGPT_PROFILE_START=1250 NANOGPT_PROFILE_END=1255 \
-  DATA_PATH=/scratch/nano OMP_NUM_THREADS=8 \
-  /scratch/nano/envs/sr210/bin/python -m torch.distributed.run --standalone --nproc_per_node=8 train.py'
+ssh "$NANOGPT_REMOTE" "cd '$NANOGPT_BENCH_ROOT' && \
+  NANOGPT_PROFILE_START=1250 NANOGPT_PROFILE_END=1255 \
+  DATA_PATH='$NANOGPT_DATA_ROOT' OMP_NUM_THREADS=8 \
+  '$NANOGPT_PYTHON' -m torch.distributed.run --standalone --nproc_per_node=8 train.py"
 ```
 
 ```text

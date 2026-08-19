@@ -17,9 +17,14 @@ import {
   slashMenuVisibleRows,
   slashMenuWindow,
 } from '../src/components/SlashMenu.js';
-import { DaemonReplacementPicker } from '../src/components/DaemonReplacementPicker.js';
+import {
+  daemonReplacementInputIntent,
+  DaemonReplacementPicker,
+  type DaemonReplacementState,
+} from '../src/components/DaemonReplacementPicker.js';
 import { CostGauge } from '../src/components/CostGauge.js';
 import { MissionCockpit } from '../src/components/MissionCockpit.js';
+import { PendingDecisionPrompt } from '../src/components/PendingDecisionPrompt.js';
 import { emptyMissionView } from '../../core/src/missionView.js';
 import type { EventMsg, Snapshot } from '../src/api.js';
 import { SLASH_COMMANDS } from '../src/input/slash.js';
@@ -165,6 +170,15 @@ test('header establishes the autonomous research lab identity without ops clutte
 test('mission cockpit keeps mission, team, and timeline readable at 60 columns', async () => {
   const view = emptyMissionView();
   view.mission.objective = 'Optimize FlashAttention on B200 beyond 65% SOL';
+  view.mission.summary = 'Improved the kernel and verified the measured result.';
+  view.routing = {
+    route: 'team',
+    vertical: 'kernel_engineering',
+    workflow_mode: 'staged',
+    lifetime: 'bounded',
+    continuous: true,
+    open_ended: false,
+  };
   view.mission.elapsed_seconds = 8040;
   view.stage = { id: 'optimize', label: 'Optimize' };
   view.round = { current: 7, max: 24 };
@@ -179,9 +193,86 @@ test('mission cockpit keeps mission, team, and timeline readable at 60 columns',
   assert.match(output, /AI RESEARCH TEAM/);
   assert.match(output, /LIVE RESEARCH TIMELINE/);
   assert.match(output, /Comparing 3 branches/);
+  assert.match(output, /MISSION SUMMARY/);
+  assert.match(output, /MODE TEAM · kernel_engineering · STAGED · BOUNDED · FINITE/);
+  assert.match(output, /CONTINUOUS/);
+  assert.match(output, /Improved the kernel/);
   assert.match(output, /● Comparing 3 branches/);
   assert.doesNotMatch(output, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
   assert.ok(output.split('\n').every((line) => stringWidth(line) <= 60));
+});
+
+test('operator decision prompt shows the full blocker and answer controls', async () => {
+  const card = {
+    id: 'decision-1',
+    item_id: 'mission-1',
+    revision: 1,
+    status: 'pending' as const,
+    title: 'macOS Accessibility permission required',
+    reason: 'The verification process cannot control System Events.',
+    question: (
+      'Open System Settings → Privacy & Security → Accessibility, enable '
+      + 'Terminal and Node, then return here to retry the verification.'
+    ),
+    evidence: [],
+    options: [
+      {
+        id: 'retry',
+        label: 'Permission enabled — retry',
+        description: 'Resume the same mission and rerun the verification.',
+        requires_note: false,
+      },
+      {
+        id: 'custom',
+        label: 'Give different guidance',
+        description: 'Tell Argus what to do instead.',
+        requires_note: true,
+      },
+    ],
+    selected_option: '',
+    note: '',
+  };
+  const output = await renderNode(React.createElement(PendingDecisionPrompt, {
+    card,
+    selection: 1,
+    note: { value: 'Use the signed helper app', cursor: 25 },
+    busy: false,
+    error: '',
+  }), 80);
+
+  assert.match(output, /ACTION REQUIRED/);
+  assert.match(output, /System Settings/);
+  assert.match(output, /Permission enabled — retry/);
+  assert.match(output, /Use the signed helper app/);
+  assert.match(output, /Enter confirm/);
+  assert.ok(output.split('\n').every((line) => stringWidth(line) <= 80));
+});
+
+test('operator decision prompt never fabricates choices when the agent supplied none', async () => {
+  const output = await renderNode(React.createElement(PendingDecisionPrompt, {
+    card: {
+      id: 'decision-freeform',
+      item_id: 'mission-freeform',
+      revision: 1,
+      status: 'pending',
+      title: 'Accessibility permission required',
+      reason: '',
+      question: 'Which terminal should receive Accessibility permission?',
+      evidence: [],
+      options: [],
+      options_source: 'none',
+      selected_option: '',
+      note: '',
+    },
+    selection: 0,
+    note: { value: 'Visual Studio Code', cursor: 18 },
+    busy: false,
+    error: '',
+  }), 80);
+
+  assert.match(output, /Your response › Visual Studio Code/);
+  assert.match(output, /Type your answer · Enter send/);
+  assert.doesNotMatch(output, /按建议继续|给出其他指示|保留当前结果并停止/);
 });
 
 test('operations panel owns cost, quota, pid, backend, and model details', async () => {
@@ -257,6 +348,33 @@ test('daemon replacement picker shows running work and state-preservation promis
   assert.match(output, /running held-out benchmark/);
   assert.match(output, /checkpoints, skills, and wiki stay/);
   assert.match(output, /saved\./);
+});
+
+test('daemon replacement modal gives Ctrl-C/Ctrl-D exit priority even while busy', () => {
+  const state: DaemonReplacementState = {
+    targetProject: 's-new',
+    running: [],
+    limit: 1,
+    activeCount: 1,
+    selection: 0,
+    resumeContinuous: false,
+    busy: true,
+    error: '',
+  };
+
+  assert.equal(
+    daemonReplacementInputIntent(state, 'c', { ctrl: true, return: true }),
+    'exit',
+  );
+  assert.equal(
+    daemonReplacementInputIntent(state, 'd', { ctrl: true, downArrow: true }),
+    'exit',
+  );
+  assert.equal(daemonReplacementInputIntent(state, '', { return: true }), null);
+  assert.equal(
+    daemonReplacementInputIntent({ ...state, busy: false }, '', { return: true }),
+    'replace',
+  );
 });
 
 test('request quotas render alongside monetary spend', async () => {
@@ -789,19 +907,20 @@ test('live activity stays concise and the detail pane never prints raw prompts',
   const live = await renderNode(React.createElement(LiveActivity, { events, width: 120, background: true }), 120);
   assert.match(live, /searching recent papers/);
   assert.match(live, /Background/);
-  assert.match(live, /Ctrl\+O details/);
+  assert.doesNotMatch(live, /Ctrl\+O/);
   const pane = await renderNode(React.createElement(ActivityPane, { events }), 120);
   assert.match(pane, /observable actions only/);
   assert.doesNotMatch(pane, /DO NOT SHOW/);
 });
 
-test('footer keeps backend and model details out of the main hierarchy', async () => {
+test('footer exposes only stable cockpit controls', async () => {
   const output = await renderNode(
     React.createElement(Footer, { notice: '', width: 160 }),
     160,
   );
-  assert.match(output, /Ctrl\+O operations/);
-  assert.doesNotMatch(output, /Copilot|gpt-|pid/);
+  assert.match(output, /Enter send/);
+  assert.match(output, /Ctrl-R rewrite/);
+  assert.doesNotMatch(output, /Ctrl\+O|Ctrl\+T|Copilot|gpt-|pid/);
 });
 
 test('searchable event and full task panels stay useful at 60 columns', async () => {

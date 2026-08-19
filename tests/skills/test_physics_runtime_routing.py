@@ -30,7 +30,7 @@ def _isolate_forced_vertical_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _state(root: Path) -> dict:
-    return json.loads((root / "research" / "PIPELINE_STATE.json").read_text(encoding="utf-8"))
+    return json.loads((root / ".argus" / "PIPELINE_STATE.json").read_text(encoding="utf-8"))
 
 
 def test_physics_is_a_selectable_builtin_vertical() -> None:
@@ -93,11 +93,9 @@ def test_planner_resolution_chain_reads_physics_role_banner(tmp_path: Path) -> N
 
 def test_physics_is_custom_kind_not_optimize_not_paper() -> None:
     # Requirement (Part 4): the Manager routes physics as a dynamic/report ("custom")
-    # vertical — never a lean optimize loop and never the paper/full_paper kind.
+    # vertical — never a lean optimize loop and never the paper/certified kind.
     from argus_skill.manager import Manager
-    from argus_skill.manager._helpers import _OPTIMIZE_VERTICALS
 
     assert Manager._kind_for("physics") == "custom"
-    assert "physics" not in _OPTIMIZE_VERTICALS
     # Parity with the sibling dynamic vertical (math), which is also "custom".
     assert Manager._kind_for("physics") == Manager._kind_for("math")

@@ -1,0 +1,72 @@
+\section{Limitations and Future Work}
+\label{sec:limitations}
+
+\paragraph{User-guided pivots are not publicly evaluated prospectively.}
+Internal system-verification use has produced concrete cases in which stopping or
+surfacing a contradiction helped real researchers refine the operational task.
+Those cases contain project-specific research details and user interactions that
+cannot be disclosed here. They motivate the mechanism but do not constitute a
+public prospective study of clarification quality, researcher calibration, or time
+to identify the binding constraint. A publishable evaluation requires consented,
+prospectively designed collaboration studies with disclosure-safe tasks.
+
+\paragraph{Contract refinement can still fail.}
+Evidence and explicit authority reduce goal drift but do not eliminate it. A
+Manager or operator can approve a poorly framed tradeoff, a recorded standing
+intent can omit a tacit requirement, and the report-level $K_t/X_t$ projection is
+distributed across several runtime surfaces rather than one atomic transaction.
+Future work should test adversarial refinements, invariant-preservation checks,
+disagreement handling, and rollback of harmful contract changes.
+
+\paragraph{Verification is only as sound as its evidence boundary.}
+An executable test, formal checker, benchmark, or model Reviewer can encode the
+wrong property. The runtime can record and revise a verifier, but that does not make
+the verifier correct. Controlled studies should separately seed implementation
+bugs, specification bugs, and mismatches between them, then measure whether the
+runtime localizes the faulty side rather than merely satisfying the current check.
+
+\paragraph{Attribution and task sequence.}
+The SWE-Bench Pro experiment compares the complete \systemname runtime with Direct
+Copilot. Reviewer routing is adaptive, the 22 completed Waves (24 Wave IDs with two
+incomplete Waves excluded) follow one task order, and
+per-Wave Direct-Copilot Token/time records are unavailable. The current results
+therefore characterize whole-system behavior over this sequence. Matched
+frozen-state runs, randomized task orders, and randomized review routing will
+separate the contributions of persistent state, role separation, and review. The
+startup-to-mature comparison is observational rather than a causal learning ablation.
+
+\paragraph{Generality across models, domains, and evaluators.}
+The seven benchmark arenas use different metrics, hardware, and execution
+protocols, while the mathematical analysis follows one vertical campaign. Results
+are interpreted in their native units rather than combined into a universal score.
+The in-progress GLM-5.2 run on Claude Code is the first evidence that the runtime
+transfers across both backbone and execution surface, but it is incomplete and has
+no matched Direct baseline, so it bounds nothing yet. Repeated campaigns,
+additional backbones, and external domain review will measure how the runtime
+transfers across task families and research standards.
+
+\paragraph{ACE-2 is certified for a demonstrated scope, not for silicon.}
+The chip result establishes functional closure of a 24-layer, two-token
+Qwen2.5-0.5B W4A8 integration and canonical mapped SKY130 synthesis with static
+timing. It is not routed timing, power signoff, DRC/LVS, GDS or tapeout, silicon
+validation, generation beyond two tokens, or an FPGA prototype, and the
+certificate records those exclusions itself. Whether the same runtime reaches
+signoff-quality physical design or fabricated silicon is untested.
+
+\paragraph{Metric calibration and model transfer.}
+The efficiency analysis labels whole role calls by mission purpose; finer segment
+labels would sharpen the reasoning, action, and verification factors. Reviewer
+sensitivity and false-acceptance rate require randomized routing with an external
+verifier, and the counterfactual reuse value $G_L$ requires paired future tasks with
+and without a state update. The runtime-to-model path is currently a training
+direction: held-out trajectory splits and scaffold-removal studies will measure how
+much of the long-horizon control loop can be internalized by the model.
+
+\paragraph{Scope of the paper-production case study.}
+The six paper projects come from one shared research environment, campaign-hours
+overlap in calendar time, stored review snapshots are model-generated, and runtime
+logging evolved across projects. Within that scope, the case study establishes
+end-to-end lifecycle behavior and recovery under review across six domains and two
+venue formats, not paper acceptance, scientific novelty, or superiority to human
+research teams. It also does not establish a measured zero-touch rate. Recorded
+costs in the public data exclude utility calls without a priced event.

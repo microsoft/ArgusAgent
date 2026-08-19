@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import json
 
-from argus_skill.skills.venue_profiles import AAAI_PROFILE, EMNLP_PROFILE, VenueProfile
 from argus_skill.verticals.research.paper_layout_review import (
     MAX_BODY_WIDE_FIGURES,
     _deterministic_assessment,
     _single_column_wide_role_figures,
     _vision_prompt,
 )
+from argus_skill.verticals.research.venue_profiles import AAAI_PROFILE, EMNLP_PROFILE, VenueProfile
 
 
 def _single_col_venue() -> VenueProfile:

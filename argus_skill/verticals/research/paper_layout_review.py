@@ -25,7 +25,6 @@ from argus_skill.tools.image_api import (
     _require_route,
 )
 
-from ...skills.venue_profiles import VenueProfile, resolve_venue_profile
 from ._review_contract_constants import (
     LAYOUT_REVIEW_GENERATED_BY,
     LAYOUT_REVIEW_HISTORY_PATH,
@@ -35,6 +34,7 @@ from ._review_contract_constants import (
     review_sha256_json,
     review_sha256_text,
 )
+from .venue_profiles import VenueProfile, resolve_venue_profile
 
 PAPER_MAIN_PDF_PATH = Path("paper/main.pdf")
 PAPER_MAIN_TEX_PATH = Path("paper/main.tex")
@@ -695,19 +695,26 @@ def _deterministic_assessment(
         and conclusion_page is not None
         and conclusion_page < venue.conclusion_underfill_page
     ):
-        penalty += 0.7
+        # Advisory, not a gate. The venue page count is a *limit*, not a quota:
+        # a complete, well-argued paper that ends early is not deficient for
+        # ending early. This used to carry hard_gate=True, which rejected short
+        # papers on arithmetic and pushed authors to pad the body. Reviewers
+        # should block only when a page count that low means something material
+        # is actually missing — which they judge by reading the paper, not from
+        # this signal.
+        penalty += 0.2
         issues.append(
             _issue(
                 "rendered_main_body_underfilled",
-                "major",
+                "advisory",
                 (
-                    f"Conclusion starts before page {venue.conclusion_underfill_page}, so "
-                    f"the paper has not visibly filled the {venue.body_page_limit}-page "
-                    f"{venue.display_name} body budget; add source-backed body content before "
-                    "the Conclusion instead of padding after it"
+                    f"Conclusion starts before page {venue.conclusion_underfill_page} of the "
+                    f"{venue.body_page_limit}-page {venue.display_name} budget. That is allowed "
+                    "— the limit is a ceiling, not a quota. Check whether any method, evidence, "
+                    "or argument a reader needs is actually missing; if nothing is missing, the "
+                    "length is fine and no padding is warranted"
                 ),
                 page=conclusion_page,
-                hard_gate=True,
                 action="expand_evidence_content",
                 target=f"page {conclusion_page} early Conclusion",
             )

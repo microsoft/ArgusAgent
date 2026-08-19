@@ -13,7 +13,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from ..core.file_lock import exclusive_file_lock
@@ -40,6 +40,7 @@ _PUBLICATION_OPENED = "opened"
 _PUBLICATION_FAILED = "failed"
 _PUBLICATION_RETRY_SECONDS = 300.0
 _IDLE_CANARY_STABILITY_SECONDS = 30.0
+_REPAIR_FAMILY_FAILURE_LIMIT = 2
 _PRIVATE_RUNTIME_PATHS = (
     ".autors",
     ".argus-self-maintenance-runtime",
@@ -49,6 +50,7 @@ _OBSERVED_EVENT_TYPES = frozenset({
     "life.planner.error",
     "life.planner.waiting",
     "life.mission.completed",
+    "life.runtime_failure.circuit_opened",
     "round.start",
     "round.review.completed",
     "wiki.hook.warning",
@@ -56,8 +58,45 @@ _OBSERVED_EVENT_TYPES = frozenset({
 _EVENT_AUDIT_TYPES = frozenset({
     "life.supervisor.error",
     "life.planner.error",
+    "life.runtime_failure.circuit_opened",
     "wiki.hook.warning",
 })
+_COMMON_OBSERVATION_DETAIL_KEYS = (
+    "status",
+    "error",
+    "reason",
+    "stop_kind",
+    "prompt_mode",
+    "prompt_chars",
+    "prompt_estimated_tokens",
+    "input_tokens",
+    "cached_input_tokens",
+    "output_tokens",
+    "reasoning_output_tokens",
+    "cost_usd",
+    "elapsed_seconds",
+    "model_call_skipped",
+    "wait_mode",
+    "waiting_contract",
+    "fingerprint",
+    "exception_type",
+    "callsite",
+    "normalized_error",
+    "occurrence_count",
+    "runtime_identity",
+    "prompt_block_stats",
+    "operation",
+)
+_MISSION_COMPLETED_OBSERVATION_DETAIL_KEYS = (
+    "item_id",
+    "title",
+    "terminal_status",
+    "failure_reason",
+    "stop_reason",
+    "recoverable",
+    "resumable",
+    "usage_record_count",
+)
 
 
 @dataclass(frozen=True)
@@ -72,6 +111,8 @@ class SelfMaintenanceSnapshot:
     publication_status: str
     publication_error: str
     awaiting_commit: str = ""
+    maintenance_mode: str = ""
+    maintenance_error: str = ""
 
 
 @dataclass(frozen=True)
@@ -114,6 +155,10 @@ def read_self_maintenance_snapshot(
             if str(value.get("publication_status") or "") == _PUBLICATION_AWAITING
             else ""
         ),
+        maintenance_mode=str(value.get("maintenance_mode") or "").strip(),
+        maintenance_error=str(
+            value.get("maintenance_error") or value.get("isolation_error") or ""
+        ).strip()[:500],
     )
 
 
@@ -137,7 +182,7 @@ def _run(
 @contextmanager
 def _frontend_dependency_links(source_root: Path, worktree: Path):
     """Expose existing frontend dependencies to a private Git worktree."""
-    created: list[Path] = []
+    created: list[tuple[Path, str]] = []
     try:
         for relative in (
             Path("frontend/web/node_modules"),
@@ -156,12 +201,47 @@ def _frontend_dependency_links(source_root: Path, worktree: Path):
                     f"dependencies at {source}"
                 )
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.symlink_to(source, target_is_directory=True)
-            created.append(target)
+            link_kind = _create_frontend_dependency_link(source, target)
+            created.append((target, link_kind))
         yield
     finally:
-        for path in reversed(created):
-            path.unlink(missing_ok=True)
+        for path, link_kind in reversed(created):
+            try:
+                if link_kind == "junction":
+                    path.rmdir()
+                else:
+                    path.unlink(missing_ok=True)
+            except FileNotFoundError:
+                pass
+
+
+def _create_frontend_dependency_link(source: Path, target: Path) -> str:
+    try:
+        target.symlink_to(source, target_is_directory=True)
+        return "symlink"
+    except OSError as symlink_error:
+        if os.name != "nt":
+            raise
+        # Directory junctions do not require Developer Mode or elevation and
+        # avoid copying a multi-gigabyte node_modules tree into every repair
+        # worktree. ``cmd`` is used only for its built-in mklink command; argv
+        # remains a non-shell list so paths are quoted by subprocess.
+        completed = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(target), str(source)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30.0,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()
+            raise OSError(
+                "could not expose frontend dependencies with a symlink or "
+                f"Windows junction: {detail or symlink_error}"
+            ) from symlink_error
+        return "junction"
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -186,26 +266,10 @@ def _compact_event(event: dict[str, Any]) -> dict[str, Any] | None:
     if event_type not in _OBSERVED_EVENT_TYPES:
         return None
     details: dict[str, Any] = {}
-    for key in (
-        "status",
-        "error",
-        "reason",
-        "stop_kind",
-        "prompt_mode",
-        "prompt_chars",
-        "prompt_estimated_tokens",
-        "input_tokens",
-        "cached_input_tokens",
-        "output_tokens",
-        "reasoning_output_tokens",
-        "cost_usd",
-        "elapsed_seconds",
-        "model_call_skipped",
-        "wait_mode",
-        "waiting_contract",
-        "prompt_block_stats",
-        "operation",
-    ):
+    detail_keys = _COMMON_OBSERVATION_DETAIL_KEYS
+    if event_type == "life.mission.completed":
+        detail_keys = detail_keys + _MISSION_COMPLETED_OBSERVATION_DETAIL_KEYS
+    for key in detail_keys:
         value = event.get(key)
         if value in (None, "", [], {}):
             continue
@@ -479,6 +543,50 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
             })
             _atomic_json(self.state_path, state)
 
+    def _record_repair_failure(
+        self,
+        state: dict[str, Any],
+        *,
+        phase: str,
+        error: str,
+    ) -> None:
+        revision = str(state.get("repair_revision") or "")
+        paths = [
+            str(path)
+            for path in (state.get("repair_paths") or [])
+            if str(path)
+        ]
+        current = self._state()
+        previous_revision = str(current.get("failed_repair_revision") or "")
+        previous_paths = [
+            str(path)
+            for path in (current.get("failed_repair_paths") or [])
+            if str(path)
+        ]
+        previous_count = (
+            int(current.get("failed_repair_attempts") or 0)
+            if revision
+            and revision == previous_revision
+            and paths == previous_paths
+            else 0
+        )
+        failure_count = previous_count + 1 if revision else previous_count
+        self._write_state(
+            phase=phase,
+            error=error[:2000],
+            failed_repair_revision=revision or previous_revision,
+            failed_repair_paths=paths or previous_paths,
+            failed_repair_attempts=failure_count,
+            failed_repair_at=time.time(),
+        )
+        self._emit({
+            "type": "manager.self_maintenance.repair_failed",
+            "failure_count": failure_count,
+            "affected_paths": paths,
+            "error": error[:1000],
+            "agent_layer": "manager",
+        })
+
     def _active_item(self) -> BacklogItem | None:
         active_id = str(self._state().get("active_item_id") or "")
         for item in self.memory.backlog.all():
@@ -525,6 +633,59 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
         except ValueError:
             return 1800.0
 
+    def _framework_source_error(self) -> str:
+        """Return why this runtime cannot create a reviewed Git worktree.
+
+        PyInstaller's ``_internal`` directory is an immutable release payload,
+        not a source checkout.  Detect that from the local ``.git`` marker
+        before invoking Git so a packaged Desktop never advertises repair
+        capability and then fails at ``git rev-parse``.  Source maintenance is
+        also refused for a dirty/unborn checkout because a worktree based on
+        HEAD would not represent the code that is actually running.
+        """
+        marker = self.framework_root / ".git"
+        if not marker.exists():
+            return (
+                "framework runtime is not a Git source checkout; use a verified "
+                "Argus release update built from a separate maintenance repository"
+            )
+        try:
+            probe = _run(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=self.framework_root,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"Git source probe failed: {type(exc).__name__}: {exc}"
+        if probe.returncode != 0:
+            return "framework Git source probe failed"
+        try:
+            repo = Path(probe.stdout.strip()).resolve()
+        except (OSError, RuntimeError, ValueError):
+            return "framework Git source root is malformed"
+        if repo != self.framework_root:
+            return "framework source root is not the Git repository root"
+        try:
+            head = _run(
+                ["git", "rev-parse", "--verify", "HEAD^{commit}"],
+                cwd=repo,
+                check=False,
+            )
+            if head.returncode != 0 or not head.stdout.strip():
+                return "framework Git source has no committed HEAD"
+            status = _run(
+                ["git", "status", "--porcelain", "--untracked-files=normal"],
+                cwd=repo,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"Git source validation failed: {type(exc).__name__}: {exc}"
+        if status.returncode != 0:
+            return "framework Git source status is unavailable"
+        if status.stdout.strip():
+            return "framework Git source is dirty; release repair requires a clean checkout"
+        return ""
+
     def preflight_isolation(self, *, force: bool = False) -> bool:
         state = self._state()
         now = time.time()
@@ -535,14 +696,28 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
             return state.get("maintenance_available") is True
         probe = self.root / "isolation-probe"
         probe.mkdir(parents=True, exist_ok=True)
-        error = ""
-        if self.backend == "copilot":
+        error = self._framework_source_error()
+        source_available = not error
+        full_access = (
+            os.environ.get("ARGUS_SKILL_SAFE_MODE", "0").strip().lower()
+            not in {"1", "true", "yes", "on"}
+        )
+        if not source_available:
             available = False
+            maintenance_mode = "release_update"
+        elif full_access:
+            available = True
+            maintenance_mode = "source_worktree"
+            error = ""
+        elif self.backend in {"copilot", "pi"}:
+            available = False
+            maintenance_mode = "deferred"
             error = (
-                "Copilot self-maintenance deferred: safe isolated authentication "
-                "is unavailable without exposing GitHub repository credentials"
+                f"{self.backend} self-maintenance deferred: safe isolated "
+                "authentication is unavailable without exposing provider credentials"
             )
         else:
+            maintenance_mode = "source_worktree"
             try:
                 from ..core.sandbox import isolated_workdir_command
 
@@ -570,6 +745,9 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
         previous = state.get("maintenance_available")
         updates: dict[str, Any] = {
             "maintenance_available": available,
+            "maintenance_mode": maintenance_mode,
+            "maintenance_error": error[:1000],
+            "access_mode": "full" if full_access else "isolated",
             "isolation_checked_at": now,
             "isolation_error": error[:1000],
         }
@@ -579,7 +757,14 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
             except (AttributeError, OSError):
                 active_item = None
             if active_item is None:
-                updates.update(phase="deferred", active_item_id="")
+                updates.update(
+                    phase=(
+                        "release_update_required"
+                        if maintenance_mode == "release_update"
+                        else "deferred"
+                    ),
+                    active_item_id="",
+                )
         self._write_state(
             **updates,
         )
@@ -587,6 +772,7 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
             self._emit({
                 "type": "manager.self_maintenance.availability",
                 "available": available,
+                "mode": maintenance_mode,
                 "error": error[:1000],
                 "agent_layer": "manager",
             })
@@ -600,7 +786,15 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
         state = self._state()
         if str(state.get("handoff_error") or "").strip():
             return ""
-        if str(state.get("phase") or "") in {
+        now = time.time()
+        phase = str(state.get("phase") or "")
+        if (
+            phase == "review_rejected"
+            and now - float(state.get("updated_at") or 0.0)
+            < self._audit_interval()
+        ):
+            return ""
+        if phase in {
             "queued",
             "handoff_requested",
             "canary_running",
@@ -611,7 +805,6 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
             "pr_open",
         }:
             return ""
-        now = time.time()
         due = (
             bool(state.get("event_audit_pending"))
             or now - float(state.get("last_audit_at") or 0.0)
@@ -697,9 +890,10 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
         if incident_id == str(state.get("last_incident_id") or ""):
             return ""
         if not affected_paths or any(
-            Path(path).is_absolute()
-            or ".." in Path(path).parts
-            or ".git" in Path(path).parts
+            PurePosixPath(path).is_absolute()
+            or PureWindowsPath(path).is_absolute()
+            or ".." in PurePosixPath(path.replace("\\", "/")).parts
+            or ".git" in PurePosixPath(path.replace("\\", "/")).parts
             for path in affected_paths
         ):
             error = "Manager returned unsafe affected paths"
@@ -713,6 +907,47 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
                 "incident_id": incident_id,
                 "error": error,
                 "affected_paths": list(affected_paths),
+                "agent_layer": "manager",
+            })
+            return ""
+        from ..core.runtime_identity import source_revision
+
+        repair_revision = (
+            str(source_revision() or "").strip() or str(self.framework_root)
+        )
+        repair_paths = sorted(
+            str(path).strip().replace("\\", "/")
+            for path in affected_paths
+            if str(path).strip()
+        )
+        state = self._state()
+        prior_revision = str(state.get("failed_repair_revision") or "")
+        prior_paths = [
+            str(path)
+            for path in (state.get("failed_repair_paths") or [])
+            if str(path)
+        ]
+        prior_failures = int(state.get("failed_repair_attempts") or 0)
+        if (
+            repair_revision == prior_revision
+            and repair_paths == prior_paths
+            and prior_failures >= _REPAIR_FAMILY_FAILURE_LIMIT
+        ):
+            self._mark_observations_adjudicated(observations)
+            error = (
+                "suppressed repeated framework repair after "
+                f"{prior_failures} failed attempts for the same source/path family"
+            )
+            self._write_state(
+                phase="repair_suppressed",
+                repair_revision=repair_revision,
+                repair_paths=repair_paths,
+                error=error,
+            )
+            self._emit({
+                "type": "manager.self_maintenance.repair_suppressed",
+                "failure_count": prior_failures,
+                "affected_paths": repair_paths,
                 "agent_layer": "manager",
             })
             return ""
@@ -790,6 +1025,11 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
                 "scientific evidence changes",
                 "direct main push or merge",
             ],
+            manager_decision={
+                "routed": True,
+                "vertical": "argus_maintenance",
+                "workflow_mode": "direct",
+            },
         ))
         self._write_state(
             active_item_id=item.id,
@@ -804,6 +1044,8 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
             problem=decision.problem,
             acceptance_check=decision.acceptance_check,
             affected_paths=list(affected_paths),
+            repair_revision=repair_revision,
+            repair_paths=repair_paths,
             error="",
         )
         self._emit({
@@ -819,6 +1061,9 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
         return item.id
 
     def _prepare_worktree(self, incident_id: str) -> tuple[Path, str]:
+        source_error = self._framework_source_error()
+        if source_error:
+            raise ValueError(source_error)
         probe = _run(
             ["git", "rev-parse", "--show-toplevel"],
             cwd=self.framework_root,
@@ -1090,14 +1335,21 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
             or not bool(outcome.get("success"))
             or str(outcome.get("review_status") or "") != "done"
         ):
-            self._write_state(
+            self._record_repair_failure(
+                state,
                 phase="review_rejected",
-                error=str(outcome.get("stop_reason") or outcome.get("status") or ""),
+                error=str(
+                    outcome.get("stop_reason") or outcome.get("status") or ""
+                ),
             )
             return None
         worktree = Path(str(state.get("worktree") or ""))
         if not worktree.is_dir():
-            self._write_state(phase="review_rejected", error="private worktree missing")
+            self._record_repair_failure(
+                state,
+                phase="review_rejected",
+                error="private worktree missing",
+            )
             return None
         try:
             base_revision = str(state.get("base_revision") or "")
@@ -1263,7 +1515,7 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
             dependency_root = self._dependency_source_root(state)
             with _frontend_dependency_links(dependency_root, worktree):
                 _run(
-                    [sys.executable, "scripts/build_release.py"],
+                    [sys.executable, "-m", "argus_skill.release_tools.build_release"],
                     cwd=worktree,
                     timeout=300.0,
                 )
@@ -1276,7 +1528,7 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
                     + ", ".join(outside)
                 )
             _run(
-                [sys.executable, "scripts/generate_release_manifest.py", "--check"],
+                [sys.executable, "-m", "argus_skill.release_tools.generate_manifest", "--check"],
                 cwd=worktree,
                 timeout=120.0,
             )
@@ -1328,10 +1580,34 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
             )
             commit = _run(["git", "rev-parse", "HEAD"], cwd=worktree).stdout.strip()
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
-            self._write_state(
+            self._record_repair_failure(
+                state,
                 phase="commit_failed",
                 error=f"{type(exc).__name__}: {exc}"[:2000],
             )
+            return None
+        regression = ""
+        try:
+            regression = self._handoff_regression(commit)
+        except (OSError, subprocess.SubprocessError):
+            regression = ""
+        if regression:
+            self._write_state(
+                phase="handoff_declined",
+                canary_kind="repair",
+                commit=commit,
+                old_source_root=str(self.framework_root),
+                canary_source_root=str(worktree),
+                error=f"handoff declined: {regression}",
+            )
+            self._emit({
+                "type": "manager.self_maintenance.handoff_declined",
+                "incident_id": incident_id,
+                "commit": commit,
+                "worktree": str(worktree),
+                "reason": regression,
+                "agent_layer": "manager",
+            })
             return None
         self._write_state(
             phase="handoff_requested",
@@ -1341,9 +1617,75 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
             canary_source_root=str(worktree),
             pr_url="",
             adopted_at=None,
+            failed_repair_revision="",
+            failed_repair_paths=[],
+            failed_repair_attempts=0,
             error="",
         )
         return worktree
+
+    def _handoff_regression(self, commit: str) -> str:
+        """Why the running framework must not be replaced by ``commit``, if it must not.
+
+        Bug #42. A repair worktree is branched from ``main`` (see
+        ``_prepare_worktree``), and ``git worktree add`` materializes *committed*
+        content only. When the operator is running a framework with unmerged
+        commits or uncommitted edits — the normal state here, since agents leave
+        work uncommitted for the operator to commit — handing the live daemon to
+        that worktree silently reverts every one of those changes.
+
+        That is not hypothetical. On 2026-08-15 at 01:05:37 this daemon handed
+        itself to a canary 36 commits behind main. The math vertical's
+        ``REQUIRE_INDEPENDENT_REVIEW = True`` was an uncommitted edit, so the
+        canary's contract simply lacked the attribute, ``getattr(..., False)``
+        answered False, and the next 14 missions closed on the Engineer's own
+        say-so with no Reviewer. The same rollback shipped an older stage
+        checklist, which stamped a completion fingerprint the operator's
+        framework could not reproduce and deadlocked the Goal Gate for the rest
+        of the run (#41).
+
+        A repair is still authored, reviewed, committed and publishable. Only the
+        live takeover is refused, because a canary that is not a superset of the
+        running framework cannot validate it.
+        """
+        root = self.framework_root
+        head = _run(
+            ["git", "rev-parse", "HEAD"], cwd=root, check=False
+        )
+        if head.returncode != 0:
+            # Not a git checkout (an installed deployment). Nothing to lose.
+            return ""
+        dirty = _run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=root,
+            check=False,
+        )
+        if dirty.returncode == 0 and dirty.stdout.strip():
+            changed = [
+                parts[1]
+                for line in dirty.stdout.splitlines()
+                if (parts := line.strip().split(maxsplit=1)) and len(parts) == 2
+            ]
+            preview = ", ".join(changed[:5])
+            if len(changed) > 5:
+                preview += f", and {len(changed) - 5} more"
+            return (
+                f"the running framework at {root} has {len(changed)} uncommitted "
+                f"file(s) ({preview}) that a worktree checkout cannot contain"
+            )
+        if commit:
+            ahead = _run(
+                ["git", "rev-list", "--count", f"{commit}..HEAD"],
+                cwd=root,
+                check=False,
+            )
+            if ahead.returncode == 0 and (ahead.stdout.strip() or "0") != "0":
+                return (
+                    f"the running framework at {root} is "
+                    f"{ahead.stdout.strip()} commit(s) ahead of the reviewed "
+                    f"canary {commit[:12]}"
+                )
+        return ""
 
     def mark_canary_started(self, *, loaded_source_root: Path, revision: str) -> bool:
         state = self._state()
@@ -1375,6 +1717,8 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
             # the window so downtime never counts as healthy canary runtime.
             canary_started_at=time.time(),
             canary_pid=os.getpid(),
+            canary_mission_observed=False,
+            canary_success_observed=False,
             handoff_error="",
             error="",
         )
@@ -1407,6 +1751,28 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
             if str(state.get("handoff_error") or "").strip():
                 self._write_state(handoff_error="", error="")
             return None
+        # Last gate before the live process is replaced. The repair path checks
+        # this too, but a handoff can also have been requested by an earlier
+        # daemon (or by the adoption path), and the running framework may have
+        # moved since. Never re-exec into a source root that does not contain
+        # what is running now — see ``_handoff_regression``.
+        try:
+            regression = self._handoff_regression(str(state.get("commit") or ""))
+        except (OSError, subprocess.SubprocessError):
+            regression = ""
+        if regression:
+            self._write_state(
+                phase="handoff_declined",
+                error=f"handoff declined: {regression}",
+            )
+            self._emit({
+                "type": "manager.self_maintenance.handoff_declined",
+                "commit": str(state.get("commit") or ""),
+                "worktree": str(candidate),
+                "reason": regression,
+                "agent_layer": "manager",
+            })
+            return None
         return candidate
 
     def _reviewed_source_is_valid(
@@ -1432,7 +1798,7 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
             return False
         try:
             _run(
-                [sys.executable, "scripts/generate_release_manifest.py", "--check"],
+                [sys.executable, "-m", "argus_skill.release_tools.generate_manifest", "--check"],
                 cwd=candidate,
                 timeout=120.0,
             )
@@ -1628,6 +1994,24 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
             resuming_publication
         ):
             return ""
+        result_rows = [
+            result
+            for result in (summary.get("results") or [])
+            if isinstance(result, dict)
+        ]
+        positive_mission = any(
+            result.get("success") is True
+            and str(result.get("status") or "") == "done"
+            for result in result_rows
+        )
+        if phase == "canary_running" and result_rows:
+            self._write_state(
+                canary_mission_observed=True,
+                canary_success_observed=bool(
+                    state.get("canary_success_observed") or positive_mission
+                ),
+            )
+            state = self._state()
         legacy_publication_failure = phase == "publication_failed"
         expected_root = Path(
             str(state.get("canary_source_root") or "")
@@ -1646,17 +2030,9 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
                     error=f"canary supervisor stopped by {stopped_by}",
                 )
                 return f"rollback:{state.get('old_source_root') or ''}"
-            results = summary.get("results")
-            made_progress = (
-                isinstance(results, list)
-                and any(
-                    isinstance(result, dict)
-                    and result.get("success") is True
-                    and str(result.get("status") or "") == "done"
-                    for result in results
-                )
-            ) or (
-                int(summary.get("planning_cycles") or 0) > 0
+            made_progress = positive_mission or (
+                not bool(state.get("canary_mission_observed"))
+                and int(summary.get("planning_cycles") or 0) > 0
                 and stopped_by
                 in {
                     "planner_retry",
@@ -1667,7 +2043,8 @@ class DaemonSelfMaintenance(SelfMaintenanceState):
             )
             stable_idle = (
                 stopped_by == "backlog_empty"
-                and (not isinstance(results, list) or not results)
+                and not result_rows
+                and not bool(state.get("canary_mission_observed"))
                 and float(state.get("canary_started_at") or 0.0) > 0.0
                 and (
                     time.time() - float(state.get("canary_started_at") or 0.0)

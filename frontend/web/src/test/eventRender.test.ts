@@ -38,6 +38,68 @@ describe('renderEvent', () => {
     expect(r!.tone).toBe('bright');
   });
 
+  it('keeps complete multi-line agent speech', () => {
+    const text = `Implementation update\\n${'verification detail '.repeat(80)}`;
+    const rendered = renderEvent({
+      type: 'engineer.progress',
+      kind: 'agent_message',
+      text,
+      agent_layer: 'engineer',
+    } as EventMsg);
+
+    expect(rendered?.text).toBe(text.trim());
+    expect(rendered?.text.endsWith('…')).toBe(false);
+  });
+
+  it('hides role handoff fields from agent speech', () => {
+    const rendered = renderEvent({
+      type: 'engineer.progress',
+      kind: 'agent_message',
+      text: (
+        'I need the operator to choose the report format.\n'
+        + 'MILESTONE_STATUS=continue\n'
+        + 'OPERATOR_QUESTION=Which format?\n'
+        + 'OPERATOR_OPTIONS=markdown :: false :: Markdown :: Human-readable report'
+      ),
+      agent_layer: 'engineer',
+    } as EventMsg);
+
+    expect(rendered?.text).toBe('I need the operator to choose the report format.');
+  });
+
+  it('shows real command and tool details instead of generic summaries', () => {
+    expect(renderEvent({
+      type: 'engineer.progress',
+      kind: 'command_execution',
+      text: 'npm test -- --runInBand',
+      action_summary: 'running project command',
+      agent_layer: 'engineer',
+    } as EventMsg)?.text).toBe('npm test -- --runInBand');
+    expect(renderEvent({
+      type: 'engineer.progress',
+      kind: 'tool_use',
+      text: 'read: {"path":"src/harness.ts","offset":1,"limit":2000}',
+      action_summary: 'using a tool',
+      agent_layer: 'engineer',
+    } as EventMsg)?.text).toBe(
+      'read: {"path":"src/harness.ts","offset":1,"limit":2000}',
+    );
+  });
+
+  it('shows all Manager routing axes', () => {
+    expect(renderEvent({
+      type: 'life.manager.intent.completed',
+      route: 'team',
+      vertical: 'software',
+      workflow_mode: 'staged',
+      lifetime: 'bounded',
+      continuous: true,
+      open_ended: false,
+    } as EventMsg)?.text).toBe(
+      '→ TEAM · software · STAGED · BOUNDED · FINITE CONTINUOUS',
+    );
+  });
+
   it('renders operator and Manager conversation turns in Activity', () => {
     const operator = renderEvent({ type: 'ui.operator', text: '继续实验' } as EventMsg);
     const manager = renderEvent({ type: 'ui.argus', text: '已开始运行' } as EventMsg);
@@ -140,8 +202,9 @@ describe('renderEvent', () => {
       type: 'life.mission.completed',
       status: 'done',
       success: true,
+      summary: 'Created RESULT.txt and verified its contents.',
     } as EventMsg)).toMatchObject({
-      text: 'Task completed',
+      text: 'Task completed · Created RESULT.txt and verified its contents.',
       tone: 'ok',
     });
     expect(renderEvent({

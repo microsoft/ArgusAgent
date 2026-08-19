@@ -3,6 +3,7 @@ extractor used by the exemplar_grounding gate)."""
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +19,14 @@ from argus_skill.verticals.research.format_facts import (
 # Re-use pdf_chat's PDF builder so we test against real (toy) PDFs, not
 # golden fixtures.
 from tests.tools.test_pdf_chat import _build_pdf  # type: ignore
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    return env
 
 
 @pytest.fixture
@@ -160,6 +169,8 @@ def test_cli_json_emits_facts(toy_pdf: Path) -> None:
     proc = subprocess.run(
         [sys.executable, "-m", "argus_skill.verticals.research.format_facts",
          str(toy_pdf), "--json"],
+        cwd=REPO_ROOT,
+        env=_subprocess_env(),
         capture_output=True, text=True, timeout=60,
     )
     assert proc.returncode == 0, proc.stderr
@@ -173,6 +184,8 @@ def test_cli_write_creates_sidecar(toy_pdf: Path, tmp_path: Path) -> None:
     proc = subprocess.run(
         [sys.executable, "-m", "argus_skill.verticals.research.format_facts",
          str(toy_pdf), "--write", str(sidecar)],
+        cwd=REPO_ROOT,
+        env=_subprocess_env(),
         capture_output=True, text=True, timeout=60,
     )
     assert proc.returncode == 0, proc.stderr
@@ -185,6 +198,8 @@ def test_cli_missing_pdf_errors() -> None:
     proc = subprocess.run(
         [sys.executable, "-m", "argus_skill.verticals.research.format_facts",
          "/tmp/__nope__.pdf"],
+        cwd=REPO_ROOT,
+        env=_subprocess_env(),
         capture_output=True, text=True, timeout=30,
     )
     assert proc.returncode == 2

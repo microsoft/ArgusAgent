@@ -10,11 +10,13 @@ project path is prepended to the first post-rotation turn.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from argus_skill.life.memory import BacklogItem, LifeMemory
-from argus_skill.webapi import manager_bridge, manager_state
+from argus_skill.webapi import manager_bridge, manager_dispatch, manager_state
 
 
 def _make_project(root: Path, sid: str = "s-rot00001") -> Path:
@@ -33,13 +35,14 @@ def test_manager_prewarm_schedule_is_one_shot_after_success(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    manager_bridge._STATES.clear()
-    manager_bridge._MANAGER_PREWARMING.clear()
+    manager_state._STATES.clear()
+    manager_state._MANAGER_PREWARMING.clear()
+    monkeypatch.setattr(manager_state, "_MANAGER_PREWARM_OWNER", None)
     calls: list[tuple[str, Path | None]] = []
 
     def fake_prewarm(sid: str, *, global_root=None) -> None:
         calls.append((sid, Path(global_root) if global_root is not None else None))
-        manager_bridge._STATES.setdefault(sid, {})["_manager_acp_prewarmed"] = True
+        manager_state._STATES.setdefault(sid, {})["_manager_acp_prewarmed"] = True
 
     class InlineThread:
         def __init__(self, *, target, name: str, daemon: bool) -> None:  # noqa: ANN001
@@ -57,13 +60,95 @@ def test_manager_prewarm_schedule_is_one_shot_after_success(
     manager_state.schedule_manager_prewarm("s-prewarm01", global_root=tmp_path)
 
     assert calls == [("s-prewarm01", tmp_path)]
-    assert manager_bridge._MANAGER_PREWARMING == set()
+    assert manager_state._MANAGER_PREWARMING == set()
+
+
+def test_manager_prewarm_schedule_does_not_wait_for_busy_manager_turn(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A compact snapshot must not queue behind a long-running Manager call."""
+    sid = "s-prewarm-busy"
+    manager_state._STATES.clear()
+    manager_state._MANAGER_PREWARMING.clear()
+    monkeypatch.setattr(manager_state, "_MANAGER_PREWARM_OWNER", None)
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+    schedule_returned = threading.Event()
+    prewarm_started = threading.Event()
+
+    def hold_manager_lock() -> None:
+        with manager_state.manager_context_lock(sid):
+            lock_held.set()
+            release_lock.wait(2)
+
+    def fake_prewarm(_sid: str, *, global_root=None) -> None:  # noqa: ANN001
+        prewarm_started.set()
+
+    holder = threading.Thread(target=hold_manager_lock)
+    holder.start()
+    assert lock_held.wait(1)
+    monkeypatch.setattr(manager_state, "_prewarm_manager_context", fake_prewarm)
+
+    def schedule() -> None:
+        manager_state.schedule_manager_prewarm(sid, global_root=tmp_path)
+        schedule_returned.set()
+
+    caller = threading.Thread(target=schedule)
+    caller.start()
+    try:
+        assert schedule_returned.wait(0.5), "prewarm scheduling blocked on the Manager lock"
+        assert prewarm_started.wait(0.5)
+    finally:
+        release_lock.set()
+        holder.join(timeout=1)
+        caller.join(timeout=1)
+
+
+def test_manager_prewarm_uses_manager_backend(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sid = "s-prewarm-manager-backend"
+    _make_project(tmp_path, sid)
+    manager_state._STATES.clear()
+    monkeypatch.setattr(manager_state, "_MANAGER_PREWARM_OWNER", sid)
+    manager_state._STATES[sid] = {
+        "backend": "copilot",
+        "last_access_monotonic": time.monotonic(),
+    }
+    calls: list[tuple[str, bool]] = []
+
+    default_backend = SimpleNamespace(
+        prewarm_acp_client=lambda **kwargs: calls.append(
+            ("default", bool(kwargs["lean"]))
+        )
+    )
+    manager_backend = SimpleNamespace(
+        prewarm_acp_client=lambda **kwargs: calls.append(
+            ("manager", bool(kwargs["lean"]))
+        )
+    )
+    runner = SimpleNamespace(
+        _backend=default_backend,
+        manager_backend=manager_backend,
+    )
+    monkeypatch.setattr(
+        "argus_skill.manager.front_door._ensure_manager_runner",
+        lambda _state, _memory: runner,
+    )
+
+    manager_state._prewarm_manager_context(sid, global_root=tmp_path)
+
+    assert calls == [("manager", True), ("default", False)]
+    assert manager_state._STATES[sid]["_manager_acp_prewarmed"] is True
 
 
 def test_warm_manager_contexts_are_bounded_and_oldest_is_closed(
     monkeypatch,
 ) -> None:
-    manager_bridge._STATES.clear()
+    manager_state._STATES.clear()
+    manager_state._CONTROL_GENERATIONS.clear()
     monkeypatch.setenv("ARGUS_SKILL_MANAGER_WARM_CONTEXT_LIMIT", "2")
     monkeypatch.setenv("ARGUS_SKILL_MANAGER_WARM_CONTEXT_IDLE_SECONDS", "99999")
     closed: list[str] = []
@@ -83,7 +168,7 @@ def test_warm_manager_contexts_are_bounded_and_oldest_is_closed(
             pass
 
     now = time.monotonic()
-    manager_bridge._STATES.update({
+    manager_state._STATES.update({
         "s-old": {
             "manager_runner": Runner("s-old"),
             "last_access_monotonic": now - 2,
@@ -93,18 +178,39 @@ def test_warm_manager_contexts_are_bounded_and_oldest_is_closed(
             "last_access_monotonic": now - 1,
         },
     })
+    manager_state.interrupt_manager_turns("s-old")
 
     manager_state._chat_state_for("s-third")
 
-    assert "s-old" not in manager_bridge._STATES
-    assert {"s-new", "s-third"} <= set(manager_bridge._STATES)
+    assert "s-old" not in manager_state._STATES
+    assert "s-old" not in manager_state._CONTROL_GENERATIONS
+    assert {"s-new", "s-third"} <= set(manager_state._STATES)
     assert closed == ["s-old"]
+
+
+def test_manager_shutdown_clears_control_generations() -> None:
+    manager_state._STATES.clear()
+    manager_state._CONTROL_GENERATIONS.clear()
+    manager_state.interrupt_manager_turns("s-old")
+
+    manager_state.shutdown_manager_bridge()
+
+    assert manager_state._CONTROL_GENERATIONS == {}
+
+
+def test_latest_explicit_project_becomes_prewarm_owner(monkeypatch) -> None:
+    monkeypatch.setattr(manager_state, "_MANAGER_PREWARM_OWNER", None)
+
+    manager_state._claim_manager_prewarm_owner("s-first")
+    assert manager_state._MANAGER_PREWARM_OWNER == "s-first"
+    manager_state._claim_manager_prewarm_owner("s-second")
+    assert manager_state._MANAGER_PREWARM_OWNER == "s-second"
 
 
 def test_manager_session_rotates_with_structured_handoff(tmp_path: Path, monkeypatch) -> None:
     _make_project(tmp_path)
     monkeypatch.setenv("ARGUS_SKILL_MANAGER_ROTATE_TURNS", "4")
-    manager_bridge._STATES.clear()
+    manager_state._STATES.clear()
 
     seen: list[str] = []
 
@@ -129,7 +235,9 @@ def test_manager_session_rotates_with_structured_handoff(tmp_path: Path, monkeyp
         assert r["kind"] == "chat"
     events = [
         json.loads(line)
-        for line in (tmp_path / "projects" / "s-rot00001" / "events.jsonl").read_text().splitlines()
+        for line in (tmp_path / "projects" / "s-rot00001" / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
         if line.strip()
     ]
     assert [event["type"] for event in events if event["type"].startswith("ui.")] == [
@@ -138,7 +246,7 @@ def test_manager_session_rotates_with_structured_handoff(tmp_path: Path, monkeyp
         for event_type in ("ui.operator", "ui.argus")
     ]
     assert all("SESSION HANDOFF" not in b for b in seen)
-    st = manager_bridge._STATES["s-rot00001"]
+    st = manager_state._STATES["s-rot00001"]
     assert st["last_thread_id"] == "thread-xyz"
 
     # Turn 5 crosses the threshold → rotate: fresh thread + handoff prepended.
@@ -160,7 +268,7 @@ def test_rotation_resets_cached_runner_seed(tmp_path: Path, monkeypatch) -> None
     """
     _make_project(tmp_path, sid="s-rot00003")
     monkeypatch.setenv("ARGUS_SKILL_MANAGER_ROTATE_TURNS", "4")
-    manager_bridge._STATES.clear()
+    manager_state._STATES.clear()
 
     class _FakeRunner:
         def __init__(self) -> None:
@@ -205,7 +313,7 @@ def test_rotation_resets_cached_runner_seed(tmp_path: Path, monkeypatch) -> None
 
 def test_handoff_names_identity_and_path(tmp_path: Path) -> None:
     life = _make_project(tmp_path, "s-rot00002")
-    ho = manager_bridge._build_handoff(life)
+    ho = manager_dispatch._build_handoff(life)
     assert "Argus Manager" in ho
     assert str(life) in ho
     assert "events.jsonl" in ho  # tells it where to self-serve state
@@ -217,7 +325,7 @@ def test_manager_stream_announces_classification_before_model_call(
 ) -> None:
     """A silent classifier still leaves the TUI on a truthful concrete phase."""
     _make_project(tmp_path, "s-phase001")
-    manager_bridge._STATES.clear()
+    manager_state._STATES.clear()
     fragments: list[tuple[str, dict]] = []
 
     def _classify(mem, text, chat_state, *, root_task_id=None):
@@ -250,7 +358,7 @@ def test_manager_stream_and_persisted_reply_share_message_id(
     monkeypatch,
 ) -> None:
     life = _make_project(tmp_path, "s-stream001")
-    manager_bridge._STATES.clear()
+    manager_state._STATES.clear()
     fragments: list[tuple[str, dict]] = []
 
     monkeypatch.setattr(
@@ -276,7 +384,7 @@ def test_manager_stream_and_persisted_reply_share_message_id(
     delta = next(payload for kind, payload in fragments if kind == "delta")
     persisted = [
         json.loads(line)
-        for line in (life / "events.jsonl").read_text().splitlines()
+        for line in (life / "events.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
     reply = next(event for event in persisted if event["type"] == "ui.argus")
@@ -296,7 +404,7 @@ def test_natural_language_abort_is_control_not_backlog_work(
         BacklogItem.new(title="long task", objective="run a long task")
     )
     memory.backlog.mark_running(item.id)
-    manager_bridge._STATES.clear()
+    manager_state._STATES.clear()
 
     monkeypatch.setattr(
         "argus_skill.manager.config_intent._front_door_classify",
@@ -326,7 +434,9 @@ def test_natural_language_abort_is_control_not_backlog_work(
     assert result["requested"] is True
     assert result["item_id"] == item.id
     assert len(memory.backlog.all()) == 1
-    request = json.loads((life / "running_item_abort.json").read_text())
+    request = json.loads(
+        (life / "running_item_abort.json").read_text(encoding="utf-8")
+    )
     assert "停止现在的所有任务" in request["reason"]
 
 
@@ -339,7 +449,7 @@ def test_web_process_restart_seeds_one_startup_handoff(
 
     append_turn(life, "operator", "old question")
     append_turn(life, "argus", "old answer")
-    manager_bridge._STATES.clear()  # model a fresh web process
+    manager_state._STATES.clear()  # model a fresh web process
     seen: list[str] = []
     classified: list[str] = []
 
@@ -365,7 +475,7 @@ def test_web_process_restart_seeds_one_startup_handoff(
     assert "old question" in seen[0] and "old answer" in seen[0]
     assert seen[0].count("new question") == 1
     assert classified == ["new question"]
-    assert manager_bridge._STATES["s-restart01"]["startup_handoffs"] == 1
+    assert manager_state._STATES["s-restart01"]["startup_handoffs"] == 1
 
     manager_bridge.manager_message(
         "s-restart01",
@@ -376,26 +486,37 @@ def test_web_process_restart_seeds_one_startup_handoff(
     assert classified == ["new question", "next question"]
 
 
-def test_status_snapshot_preserves_warm_session_and_pending_handoff(
+def test_status_question_uses_model_path_and_consumes_pending_handoff(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     _make_project(tmp_path, "s-status001")
-    manager_bridge._STATES.clear()
-    state = manager_bridge._chat_state_for("s-status001")
+    manager_state._STATES.clear()
+    state = manager_state._chat_state_for("s-status001")
     state.update({
         "turns": 4,
         "last_thread_id": "warm-thread",
         "needs_startup_handoff": True,
     })
     model_calls: list[str] = []
+
+    def _classify(_mem, _text, chat_state, **_kwargs):
+        model_calls.append("classify")
+        chat_state["_frontdoor_self_mode"] = "inspect"
+        return None, None, "simple"
+
+    def _triage(_mem, body, _chat_state, **_kwargs):
+        model_calls.append("triage")
+        assert body == "What is the current status?"
+        return "model status reply"
+
     monkeypatch.setattr(
         "argus_skill.manager.config_intent._front_door_classify",
-        lambda *_args, **_kwargs: model_calls.append("classify"),
+        _classify,
     )
     monkeypatch.setattr(
         "argus_skill.manager.front_door.manager_triage",
-        lambda *_args, **_kwargs: model_calls.append("triage"),
+        _triage,
     )
 
     result = manager_bridge.manager_message(
@@ -405,12 +526,11 @@ def test_status_snapshot_preserves_warm_session_and_pending_handoff(
     )
 
     assert result["kind"] == "chat"
-    assert "Current live status:" in result["reply"]
-    assert model_calls == []
-    assert state["turns"] == 4
-    assert state["last_thread_id"] == "warm-thread"
-    assert state["needs_startup_handoff"] is True
-    assert int(state.get("rotations", 0)) == 0
+    assert result["reply"] == "model status reply"
+    assert model_calls == ["classify", "triage"]
+    assert state["turns"] == 5
+    assert "needs_startup_handoff" not in state
+    assert int(state.get("startup_handoffs", 0)) == 0
 
 
 def test_natural_language_config_change_is_applied_inline(tmp_path: Path, monkeypatch) -> None:
@@ -420,7 +540,7 @@ def test_natural_language_config_change_is_applied_inline(tmp_path: Path, monkey
     front-door classify (``_front_door_classify`` → intent + route) + explicit
     ``_apply_config_intent``."""
     _make_project(tmp_path, "s-cfg00001")
-    manager_bridge._STATES.clear()
+    manager_state._STATES.clear()
 
     triaged: list[str] = []
 
@@ -448,11 +568,11 @@ def test_natural_language_config_change_is_applied_inline(tmp_path: Path, monkey
     assert "xhigh" in r["reply"]
     assert triaged == []  # config short-circuits BEFORE triage — not enqueued
 
-    # A pure status read bypasses both config classification and model triage.
+    # A status-looking read now uses the same model-selected SELF path.
     r2 = manager_bridge.manager_message("s-cfg00001", "how's it going?", global_root=tmp_path)
     assert r2["kind"] == "chat"
-    assert "Current live status:" in r2["reply"]
-    assert triaged == []
+    assert r2["reply"] == "chatted"
+    assert triaged == ["how's it going?"]
 
 
 def test_active_mission_config_change_is_still_applied_inline(
@@ -465,7 +585,7 @@ def test_active_mission_config_change_is_still_applied_inline(
         BacklogItem.new(title="active", objective="work")
     )
     memory.backlog.mark_running(item.id)
-    manager_bridge._STATES.clear()
+    manager_state._STATES.clear()
     applied: list[object] = []
 
     intent = object()

@@ -3,7 +3,35 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from argus_skill.daemon import health as daemon_health
 from argus_skill.daemon.health import DaemonHealthTracker, read_daemon_health
+
+
+def test_atomic_health_write_retries_transient_windows_permission_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "daemon.health.json"
+    real_replace = daemon_health.os.replace
+    attempts = 0
+    sleeps: list[float] = []
+
+    def flaky_replace(source, destination):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError(13, "simulated Windows sharing conflict", destination)
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(daemon_health, "_running_on_windows", lambda: True, raising=False)
+    monkeypatch.setattr(daemon_health.os, "replace", flaky_replace)
+    monkeypatch.setattr(daemon_health.time, "sleep", sleeps.append)
+
+    daemon_health._atomic_write(path, {"schema_version": 1, "phase": "idle"})
+
+    assert attempts == 2
+    assert sleeps and sleeps[0] > 0
+    assert path.exists()
 
 
 def test_active_daemon_without_progress_is_reported_stalled(

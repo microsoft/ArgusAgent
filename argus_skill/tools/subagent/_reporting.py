@@ -11,16 +11,16 @@ from typing import Any
 from ._discussion_log import (
     _discussion_path,
 )
-from ._llm import _run_codex_with_usage
+from ._llm import _run_supervisor_with_usage, resolve_supervisor_model
 from ._registry import (
     REGISTRY_DIR,
-    SUPERVISOR_MODEL,
     _add_usage_totals,
     _apply_supervisor_usage_fields,
     _effective_run_dir,
     _progress_summary,
     _read_task,
     _registry_path,
+    _task_log_dir,
     _write_task_if_run_id,
 )
 from ._text import (
@@ -98,7 +98,7 @@ def _supervisor_summarize_report(task_id: str, event: str, task_data: dict[str, 
     if stderr_tail and event != "COMPLETED":
         prompt += f"\n=== stderr (last 1000 chars) ===\n{stderr_tail}\n"
 
-    log_dir = REGISTRY_DIR / f"{task_id}_logs"
+    log_dir = _task_log_dir(task_id)
     prompt += (
         f"\nArtifact paths:\n"
         f"- stdout: {task_data.get('stdout_log', str(log_dir / 'stdout.log'))}\n"
@@ -131,7 +131,7 @@ def _supervisor_summarize_report(task_id: str, event: str, task_data: dict[str, 
         "5. Final health verdict (YOU are the authority on run health): end with a\n"
         "   line `Final health verdict: usable | unusable | inconclusive` plus a\n"
         "   short reason from the metric TREND. A mechanical health-gate or\n"
-        "   `*_NO_GO.md` / `status.json state=failed` that fired on a single\n"
+        "   `*_REJECTED.md` / `status.json state=failed` that fired on a single\n"
         "   metric-threshold breach (e.g. one tail step's clipped_ratio, a brief\n"
         "   reward dip) is ADVISORY ONLY — it does NOT override your judgement. If\n"
         "   the trend is actually healthy and the run produced usable signal,\n"
@@ -148,13 +148,13 @@ def _supervisor_summarize_report(task_id: str, event: str, task_data: dict[str, 
         and str(persisted_before.get("run_id") or "") != expected_run_id
     ):
         return ""
-    model = str(task_data.get("supervisor_usage_model") or SUPERVISOR_MODEL)
+    model = str(task_data.get("supervisor_usage_model") or resolve_supervisor_model())
     cwd = str(
         task_data.get("cwd")
         or (persisted_before or {}).get("cwd")
         or Path.cwd()
     )
-    messages, _thread_id, usage = _run_codex_with_usage(
+    messages, _thread_id, usage = _run_supervisor_with_usage(
         prompt,
         model,
         cwd,
@@ -303,7 +303,7 @@ def _build_report(task_id: str, event: str, task_data: dict[str, Any]) -> str:
     # Paths for engineer to inspect
     lines.append("")
     lines.append("**Artifact paths**:")
-    log_dir = REGISTRY_DIR / f"{task_id}_logs"
+    log_dir = _task_log_dir(task_id)
     stdout_log = task_data.get("stdout_log", str(log_dir / "stdout.log"))
     stderr_log = task_data.get("stderr_log", str(log_dir / "stderr.log"))
     lines.append(f"- stdout: `{stdout_log}`")
@@ -356,7 +356,7 @@ def _queue_to_inbox(report: str, task_id: str = "subagent") -> None:
     except Exception:
         alert_path = REGISTRY_DIR / f"{task_id}_ALERT.md"
         alert_path.parent.mkdir(parents=True, exist_ok=True)
-        alert_path.write_text(report + "\n")
+        alert_path.write_text(report + "\n", encoding="utf-8")
 
 
 def _alert_engineer(task_id: str, event: str, task_data: dict[str, Any]) -> str:

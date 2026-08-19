@@ -37,7 +37,7 @@ substantive decision basis, remaining uncertainty, negative evidence, and next
 discriminating test. `falsified` requires an inspectable negative or failed
 artifact; `blocked` requires the concrete blocker and why the bounded work cannot
 continue. References must use `- [reference] path-or-URL - purpose`. Do not edit
-`research/PIPELINE_STATE.json`. Rerun:
+`.argus/PIPELINE_STATE.json`. Rerun:
 
 ```text
 python -m argus_skill.domains.chemistry.playground validate \

@@ -3,8 +3,8 @@
 Seen while testing on 2026-07-26: launching a second daemon in a directory that
 already had one printed
 
-    argus-skill: workdir /tmp/argus-night/wd-10 is already leased:
-    {"life_dir": "...", "pid": 713014, "sid": "b1978edf2ccb", "workdir": "..."}
+    argus-skill: workdir /tmp/argus-test/workdir is already leased:
+    {"life_dir": "...", "pid": 4242, "sid": "s-holder", "workdir": "..."}
 
 Everything the operator needed was in that line and none of it was actionable —
 a raw lease record with a pid buried in it and no next step.
@@ -18,18 +18,20 @@ from pathlib import Path
 from argus_skill.core.workspace_lease import _busy_message
 
 _OWNER = {
-    "life_dir": "/tmp/argus-night/home/projects/b1978edf2ccb",
-    "pid": 713014,
-    "sid": "b1978edf2ccb",
-    "workdir": "/tmp/argus-night/wd-10",
+    "life_dir": "/tmp/argus-test/home/projects/s-holder",
+    "pid": 4242,
+    "sid": "s-holder",
+    "workdir": "/tmp/argus-test/workdir",
 }
 
 
 def test_the_message_names_the_holder_and_the_ways_out() -> None:
-    text = _busy_message(Path("/tmp/argus-night/wd-10"), json.dumps(_OWNER))
+    text = _busy_message(Path("/tmp/argus-test/workdir"), json.dumps(_OWNER))
 
-    assert "pid 713014" in text
-    assert "kill 713014" in text, "an operator told a pid holds it must be told how to stop it"
+    assert "pid 4242" in text
+    assert "argus --daemon-stop --resume s-holder" in text
+    assert "Stop-Process" not in text
+    assert "kill 4242" not in text
     assert "--status" in text
     assert "different directory" in text
     assert _OWNER["life_dir"] in text
@@ -50,4 +52,4 @@ def test_an_unparseable_lease_record_still_says_everything_it_knows() -> None:
 def test_an_empty_lease_record_still_reports_the_conflict() -> None:
     text = _busy_message(Path("/tmp/wd"), "")
 
-    assert "/tmp/wd is already leased" in text
+    assert f"{Path('/tmp/wd')} is already leased" in text

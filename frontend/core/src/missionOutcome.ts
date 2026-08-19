@@ -15,7 +15,7 @@ export interface MissionOutcomePresentation {
   label: string;
   glyph: string;
   tone: MissionOutcomeTone;
-  missionStatus: 'complete' | 'incomplete' | 'stalled' | 'blocked' | 'failed' | 'ended';
+  missionStatus: 'complete' | 'continued' | 'incomplete' | 'stalled' | 'blocked' | 'failed' | 'ended';
 }
 
 type MissionOutcomeEvent = EventMsg;
@@ -119,6 +119,15 @@ export function outcomeDimensionSummary(
 export function missionOutcomePresentation(
   event: MissionOutcomeEvent,
 ): MissionOutcomePresentation {
+  if (event.success === true && event.campaign_continues === true) {
+    return {
+      outcomeClass: 'completed',
+      label: 'Task continued',
+      glyph: '↻',
+      tone: 'info',
+      missionStatus: 'continued',
+    };
+  }
   const outcomeClass = normalizedOutcomeClass(event.outcome_class) ?? derivedOutcomeClass(event);
   const status = String(event.status ?? '').trim();
   const base = PRESENTATION[outcomeClass];

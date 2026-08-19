@@ -138,6 +138,9 @@ _HIGH_CONFIDENCE_ARTIFACT_RECORD_KEYS = {
     "set_cookie",
     "slack_token",
     "telegram_token",
+    "app_secret",
+    "appsecret",
+    "feishu_app_secret",
     "x_api_key",
 }
 _IGNORE_DIRS = {
@@ -512,7 +515,12 @@ def _write_redacted(
         f".{path.name}.secret-redact-{os.getpid()}-{time.time_ns()}"
     )
     try:
-        tmp.write_text(text, encoding="utf-8")
+        # ``text`` may already contain CRLF from a Windows artifact.  The
+        # default text writer translates every ``\n`` again on Windows, which
+        # turns an existing ``\r\n`` into ``\r\r\n`` and grows a blank line on
+        # every scrub pass.  The scrubber must preserve the source newline
+        # bytes while changing only the secret value.
+        tmp.write_text(text, encoding="utf-8", newline="")
         os.chmod(tmp, stat.S_IMODE(mode))
         if path.read_bytes() != expected_raw:
             raise ArtifactChangedDuringScrubError(
@@ -592,12 +600,12 @@ def scrub_recent_text_artifacts(
                     or path.suffix.casefold() in _SOURCE_SUFFIXES
                 ):
                     errors.append(
-                        f"{path.relative_to(root)}: UnicodeDecodeError"
+                        f"{path.relative_to(root).as_posix()}: UnicodeDecodeError"
                     )
                 continue
             except OSError as exc:
                 try:
-                    relative = str(relative_path)
+                    relative = relative_path.as_posix()
                 except ValueError:
                     relative = path.name
                 errors.append(f"{relative}: {type(exc).__name__}")
@@ -619,7 +627,7 @@ def scrub_recent_text_artifacts(
             )
             if not count or redacted == text:
                 continue
-            relative = str(path.relative_to(root))
+            relative = path.relative_to(root).as_posix()
             try:
                 _write_redacted(
                     path,

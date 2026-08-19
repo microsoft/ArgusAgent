@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from argus_skill.skills.stage_machine import current_stage, rollback_stage
+from argus_skill.skills.stage_machine import current_stage
 
 
 def _write_state(root: Path, stage: str) -> Path:
-    path = root / "research" / "PIPELINE_STATE.json"
+    path = root / ".argus" / "PIPELINE_STATE.json"
     path.parent.mkdir(parents=True)
     path.write_text(
         json.dumps({
@@ -31,16 +31,9 @@ def test_kernel_profiling_alias_reads_as_optimize(tmp_path: Path) -> None:
     assert current_stage(tmp_path) == "optimize"
 
 
-def test_manager_can_rollback_from_kernel_stage_alias(tmp_path: Path) -> None:
+def test_kernel_stage_alias_read_does_not_rewrite_legacy_state(tmp_path: Path) -> None:
     path = _write_state(tmp_path, "profiling")
 
-    rollback_stage(
-        tmp_path,
-        target_stage="baseline",
-        reason="baseline certification required",
-        rolled_back_by="manager",
-    )
-
+    assert current_stage(tmp_path) == "optimize"
     state = json.loads(path.read_text(encoding="utf-8"))
-    assert state["current_stage"] == "baseline"
-    assert state["stage_history"][-1]["from_stage"] == "optimize"
+    assert state["current_stage"] == "profiling"

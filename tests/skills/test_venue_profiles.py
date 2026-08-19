@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from argus_skill.skills.venue_profiles import (
+from argus_skill.verticals.research.venue_profiles import (
     AAAI_PROFILE,
     EMNLP_PROFILE,
     get_venue_profile,
@@ -73,8 +73,8 @@ def test_get_venue_profile_is_case_and_alias_insensitive() -> None:
 
 
 def _write_state(root: Path, payload: dict) -> None:
-    (root / "research").mkdir(parents=True, exist_ok=True)
-    (root / "research" / "PIPELINE_STATE.json").write_text(
+    (root / ".argus").mkdir(parents=True, exist_ok=True)
+    (root / ".argus" / "PIPELINE_STATE.json").write_text(
         json.dumps(payload), encoding="utf-8"
     )
 

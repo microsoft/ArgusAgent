@@ -21,12 +21,29 @@ export interface OperatorDecisionCard {
   question: string;
   evidence: DecisionEvidence[];
   options: DecisionOption[];
+  options_source?: 'agent' | 'none';
   selected_option: string;
   note: string;
   legacy?: boolean;
 }
 
 const text = (value: unknown): string => String(value ?? '').trim();
+const genericOperatorDecisionReason = /^[a-z][a-z -]+ requires an operator-owned decision before continuing\.?$/i;
+
+const decisionReason = (value: unknown): string => {
+  const reason = text(value);
+  return genericOperatorDecisionReason.test(reason) ? '' : reason;
+};
+
+const customDecisionOption = (title: string, question: string): DecisionOption => {
+  const chinese = /[\u3400-\u9fff]/.test(`${title}\n${question}`);
+  return {
+    id: 'custom',
+    label: chinese ? '自己输入' : 'Write my own answer',
+    description: chinese ? '直接告诉 Argus 你的决定。' : 'Tell Argus your decision directly.',
+    requires_note: true,
+  };
+};
 
 export function operatorDecisionCards(
   pending: Array<Record<string, unknown>>,
@@ -43,16 +60,30 @@ export function operatorDecisionCards(
       const id = text(card.id);
       if (!id || seen.has(id) || text(card.status) !== 'pending') continue;
       seen.add(id);
+      const optionsSource = text(card.options_source);
+      const options = optionsSource === 'agent' && Array.isArray(card.options)
+        ? (card.options as DecisionOption[])
+            .filter((option) => (
+              Boolean(text(option?.id)) && Boolean(text(option?.label))
+            ))
+            .map((option) => ({ ...option, requires_note: false }))
+        : [];
+      options.push(customDecisionOption(text(card.title), text(card.question)));
       cards.push({
         id,
         item_id: text(card.item_id) || itemId,
         revision: Number(card.revision ?? 1),
         status: 'pending',
         title: text(card.title) || text(row.title) || 'Decision required',
-        reason: text(card.reason),
+        reason: decisionReason(card.reason),
         question: text(card.question) || text(row.pending_question),
-        evidence: Array.isArray(card.evidence) ? card.evidence as DecisionEvidence[] : [],
-        options: Array.isArray(card.options) ? card.options as DecisionOption[] : [],
+        evidence: Array.isArray(card.evidence)
+          ? (card.evidence as DecisionEvidence[]).filter(
+              (row) => text(row?.label) !== 'Acceptance check',
+            )
+          : [],
+        options,
+        options_source: options.length ? 'agent' : 'none',
         selected_option: '',
         note: '',
       });
@@ -72,12 +103,8 @@ export function operatorDecisionCards(
       reason: '',
       question,
       evidence: [],
-      options: [{
-        id: 'custom',
-        label: 'Give guidance',
-        description: question,
-        requires_note: true,
-      }],
+      options: [customDecisionOption(text(row.title ?? row.objective), question)],
+      options_source: 'none',
       selected_option: '',
       note: '',
       legacy: true,

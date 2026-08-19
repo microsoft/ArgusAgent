@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from ..apps._life_actions import append_note
 from .front_door import (
-    _accepts_keyword,
+    _accepts_parameter,
     _ensure_manager_runner,
     _maybe_name_session,
 )
@@ -69,7 +69,7 @@ def _front_door_classify(
     *,
     root_task_id: str | None = None,
     ensure_runner: Callable[[dict[str, Any], Any], Any] | None = None,
-    accepts_keyword: Callable[[Any, str], bool] | None = None,
+    accepts_parameter: Callable[[Any, str], bool] | None = None,
     active_mission: bool = False,
 ) -> "tuple[Any, str | None, str]":
     """ONE merged LLM call for the Manager front-door: returns
@@ -89,6 +89,7 @@ def _front_door_classify(
     greeting_replies: list[str] = []
     steering_directives: list[str] = []
     authorization_decisions: list[tuple[str, ...]] = []
+    classifier_failures: list[str] = []
     chat_state.pop("_frontdoor_lifetime", None)
     chat_state.pop("_frontdoor_self_mode", None)
     chat_state.pop("_frontdoor_fast_reply", None)
@@ -100,9 +101,13 @@ def _front_door_classify(
         runner = (ensure_runner or _ensure_manager_runner)(chat_state, mem)
         mgr = getattr(runner, "manager", None) if runner is not None else None
         if mgr is None or not hasattr(mgr, "classify_front_door"):
-            chat_state["_frontdoor_failure"] = "classifier unavailable"
+            reason = str(chat_state.pop("manager_runner_error", "") or "").strip()
+            chat_state["_frontdoor_failure"] = (
+                f"classifier unavailable: {reason}" if reason
+                else "classifier unavailable"
+            )
             return None, None, "complex"
-        accepts = accepts_keyword or _accepts_keyword
+        accepts = accepts_parameter or _accepts_parameter
         kwargs: dict[str, Any] = {}
         if root_task_id is not None and accepts(
             mgr.classify_front_door,
@@ -125,7 +130,12 @@ def _front_door_classify(
             kwargs["authorization_sink"] = authorization_decisions.append
         if accepts(mgr.classify_front_door, "active_mission"):
             kwargs["active_mission"] = bool(active_mission)
-        decision = mgr.classify_front_door(text, **kwargs)
+        if accepts(mgr.classify_front_door, "failure_sink"):
+            kwargs["failure_sink"] = classifier_failures.append
+        model_text = str(
+            chat_state.get("_frontdoor_contextual_text") or text
+        )
+        decision = mgr.classify_front_door(model_text, **kwargs)
         if isinstance(decision, tuple) and len(decision) == 4:
             intent, control, route, suggested_name = decision
             if suggested_name:
@@ -136,35 +146,45 @@ def _front_door_classify(
             intent, route = decision
             control = None
         normalized_route = route if route in ("simple", "complex") else "complex"
+        if classifier_failures:
+            chat_state["_frontdoor_failure"] = classifier_failures[-1]
         if normalized_route == "simple":
-            self_mode = next(
-                (
-                    str(value).strip().lower()
-                    for value in self_mode_decisions
-                    if str(value).strip().lower() in {"reply", "inspect"}
-                ),
-                "inspect",
+            existing_thread = bool(chat_state.get("last_thread_id"))
+            self_mode = (
+                "inspect"
+                if existing_thread
+                else next(
+                    (
+                        str(value).strip().lower()
+                        for value in self_mode_decisions
+                        if str(value).strip().lower() in {"reply", "inspect"}
+                    ),
+                    "inspect",
+                )
             )
             chat_state["_frontdoor_self_mode"] = self_mode
             fast_reply = next(
                 (str(value).strip() for value in fast_replies if str(value).strip()),
                 "",
             )
-            if self_mode == "reply" and fast_reply:
+            if not existing_thread and self_mode == "reply" and fast_reply:
                 chat_state["_frontdoor_fast_reply"] = fast_reply
+        lifetime = next(
+            (
+                str(value).strip().lower()
+                for value in lifetime_decisions
+                if str(value).strip().lower() in {
+                    "bounded_increment", "bounded", "standing",
+                }
+            ),
+            "",
+        )
         if normalized_route == "complex":
-            lifetime = next(
-                (
-                    str(value).strip().lower()
-                    for value in lifetime_decisions
-                    if str(value).strip().lower() in {
-                        "bounded_increment", "bounded", "standing",
-                    }
-                ),
-                "standing",
-            )
+            lifetime = lifetime or "bounded"
             chat_state["_frontdoor_lifetime"] = lifetime
-        elif intent is None and control not in {"abort", "no_dispatch", "steer"}:
+        elif control == "steer" and lifetime:
+            chat_state["_frontdoor_lifetime"] = lifetime
+        elif intent is None and control not in {"abort", "pause", "no_dispatch", "steer"}:
             greeting_reply = next(
                 (
                     str(value).strip()
@@ -196,21 +216,25 @@ def _front_door_classify(
                 chat_state["_frontdoor_authorization"] = actions
         return (
             intent,
-            control if control in {"abort", "no_dispatch", "steer"} else None,
+            control if control in {"abort", "pause", "no_dispatch", "steer"} else None,
             normalized_route,
         )
     except Exception:  # noqa: BLE001 — a classify hiccup must never break the turn
         chat_state["_frontdoor_failure"] = "classifier failed"
         return None, None, "complex"
     finally:
-        _maybe_name_session(
-            chat_state,
-            text,
-            suggested_name=next(
-                (name for name in suggested_names if str(name).strip()),
-                "",
-            ),
-        )
+        named = ""
+        if not greeting_replies:
+            named = _maybe_name_session(
+                chat_state,
+                text,
+                suggested_name=next(
+                    (name for name in suggested_names if str(name).strip()),
+                    "",
+                ),
+            )
+        if named and locals().get("normalized_route") == "simple":
+            chat_state["_provisional_session_name"] = named
 
 
 def _apply_config_intent(

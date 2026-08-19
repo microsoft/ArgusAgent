@@ -7,6 +7,7 @@ import pytest
 
 from argus_skill.skills import vertical_select
 from argus_skill.skills.builtins import iter_vertical_skill_texts
+from argus_skill.skills.stage_machine import ChecklistItem
 from argus_skill.verticals import _registry
 from argus_skill.verticals._base import load_vertical
 
@@ -35,6 +36,13 @@ def module(tmp_path: Path, *, version: int = 1, purpose: str = "Plugin work") ->
     result.ARGUS_VERTICAL_API_VERSION = version
     result.VERTICAL_PURPOSE = purpose
     result.CHECKLIST_STAGE_ORDER = ("work", "deliver")
+    result.CHECKLIST_ITEMS = {
+        "work": (ChecklistItem("work.output", "Work output exists", "work artifact"),),
+        "deliver": (
+            ChecklistItem("deliver.output", "Delivery is complete", "delivery artifact"),
+        ),
+    }
+    result.completion_gate = "none"
     skills = tmp_path / "skills" / "engineer"
     skills.mkdir(parents=True)
     (skills / "plugin.md").write_text("---\nname: Plugin\ndescription: Plugin\n---\n", encoding="utf-8")

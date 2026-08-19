@@ -6,8 +6,11 @@ from argus_skill.manager import Manager
 from argus_skill.planner import Planner
 from argus_skill.reviewer import Reviewer
 from argus_skill.roles.prompts.engineer import build_mission_prompt
-from argus_skill.skills.missions import PlannerMission
+from argus_skill.skills.layered import LayeredSkillStore
+from argus_skill.skills.missions import PlannerMission, SelfMission
 from argus_skill.skills.role_memory import (
+    profile_role_skill_dir,
+    profile_self_skill_dir,
     project_role_skill_dir,
     role_skill_maintenance_block,
     role_skill_maintenance_enabled,
@@ -34,6 +37,45 @@ def test_role_skill_directories_are_isolated(tmp_path) -> None:
         assert project_role_skill_dir(store, role) == (tmp_path / "skills" / role).resolve()
 
 
+def test_profile_role_skill_directories_are_cross_session(tmp_path) -> None:
+    store = SimpleNamespace(global_=SimpleNamespace(skills_dir=tmp_path / "profile"))
+
+    for role in ("self", "manager", "planner", "engineer", "reviewer"):
+        assert profile_role_skill_dir(store, role) == (
+            tmp_path / "profile" / role
+        ).resolve()
+    assert profile_self_skill_dir(store) == (tmp_path / "profile" / "self").resolve()
+
+
+def test_new_session_discovers_profile_self_skill(tmp_path) -> None:
+    profile = tmp_path / "profile"
+    self_dir = profile / "self"
+    self_dir.mkdir(parents=True)
+    learned = self_dir / "operator-vocabulary.md"
+    learned.write_text(
+        "---\nname: operator vocabulary\ndescription: Interpret recurring terms\n---\n",
+        encoding="utf-8",
+    )
+    first = LayeredSkillStore(
+        project_dir=tmp_path / "session-a",
+        global_dir=profile,
+    )
+    second = LayeredSkillStore(
+        project_dir=tmp_path / "session-b",
+        global_dir=profile,
+    )
+
+    assert self_dir.resolve() in SelfMission(first).libraries().native_paths
+    assert self_dir.resolve() in SelfMission(second).libraries().native_paths
+    manager = Manager(
+        project_root=tmp_path,
+        runner=SimpleNamespace(),
+        skill_store=second,
+    )
+    assert manager._session is not None
+    assert str(self_dir.resolve()) in manager._session.skill_paths
+
+
 def test_role_maintenance_block_has_a_clean_ab_switch(tmp_path) -> None:
     store = SimpleNamespace(project=SimpleNamespace(skills_dir=tmp_path / "skills"))
 
@@ -58,9 +100,13 @@ def test_engineer_learning_targets_engineer_bucket(tmp_path) -> None:
     )
 
     assert f"Engineer Skill directory (project layer only): {skill_dir}" in prompt
+    assert "Do not add unrelated cleanup or hardening" in prompt
+    assert "Keep only reusable procedures and checklists here" in prompt
+    assert "route durable project facts" in prompt
+    assert "never write shared/global layers" in prompt
 
 
-def test_reviewer_learning_ab_switch_targets_reviewer_bucket(tmp_path) -> None:
+def test_main_reviewer_never_edits_skills_directly(tmp_path) -> None:
     store = SkillStore(tmp_path / "skills")
     common = dict(
         objective="review the software patch",
@@ -85,8 +131,31 @@ def test_reviewer_learning_ab_switch_targets_reviewer_bucket(tmp_path) -> None:
     )._build_prompt(**common)
 
     assert "Reviewer self-evolution" not in control
-    assert "Reviewer self-evolution" in treatment
-    assert str((tmp_path / "skills" / "reviewer").resolve()) in treatment
+    assert "Reviewer self-evolution" not in treatment
+    assert str((tmp_path / "skills" / "reviewer").resolve()) not in treatment
+    assert "You do not change the work under review" in treatment
+
+
+def test_reviewer_protected_resource_evidence_requires_a_traceable_mutation(
+    tmp_path,
+) -> None:
+    prompt = Reviewer(
+        runner=None,
+        skill_store=SkillStore(tmp_path / "skills"),
+        memory_maintenance_enabled=False,
+    )._build_prompt(
+        objective="Verify deployment without operating the protected service.",
+        operator_messages=[],
+        planner_review_instruction="",
+        round_index=1,
+        session_id=None,
+        main_summary="The protected service identity changed between observations.",
+        main_error=None,
+        working_dir=tmp_path,
+    )
+
+    assert "External identity drift without a mission mutation" in prompt
+    assert "mutation command attributable to this mission" in prompt
 
 
 def test_planner_learning_ab_switch_targets_planner_bucket(tmp_path, monkeypatch) -> None:

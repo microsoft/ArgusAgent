@@ -53,6 +53,48 @@ _CLAIMS_LOCK = threading.Lock()
 _HELD_CLAIMS: dict[tuple[str, str], Any] = {}
 
 
+def _shell_command_available(executable: str) -> bool:
+    if shutil.which(executable) is not None:
+        return True
+    if os.name == "nt":
+        escaped = executable.replace("'", "''")
+        script = (
+            f"$name = '{escaped}'; "
+            "if (Get-Command -Name $name -ErrorAction SilentlyContinue) "
+            "{ exit 0 } else { exit 1 }"
+        )
+        try:
+            return (
+                subprocess.run(
+                    [
+                        "powershell.exe",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        script,
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                ).returncode
+                == 0
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+    return (
+        subprocess.run(
+            ["bash", "-lc", f"command -v -- {shlex.quote(executable)}"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).returncode
+        == 0
+    )
+
+
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -189,8 +231,12 @@ def _claim_run_dir(
     claim_path = _claim_path(run_dir)
     key = (claim_owner, str(run_dir))
     with _CLAIMS_LOCK:
-        if key in _HELD_CLAIMS:
-            return f"experiment run directory is already claimed by task {task_id}: {run_dir}"
+        for (held_owner, claimed_dir), _handle in _HELD_CLAIMS.items():
+            if claimed_dir == str(run_dir):
+                return (
+                    "experiment run directory is already claimed"
+                    f" by task {held_owner}: {run_dir}"
+                )
         claim_path.parent.mkdir(parents=True, exist_ok=True)
         handle = claim_path.open("a+", encoding="utf-8")
         try:
@@ -198,15 +244,15 @@ def _claim_run_dir(
         except portalocker.exceptions.LockException:
             try:
                 handle.seek(0)
-                owner = json.load(handle)
+                owner_record = json.load(handle)
             except (OSError, ValueError, json.JSONDecodeError):
-                owner = {}
+                owner_record = {}
             handle.close()
             return (
                 "experiment run directory is already claimed"
                 + (
-                    f" by task {owner.get('task_id')}"
-                    if owner.get("task_id")
+                    f" by task {owner_record.get('task_id')}"
+                    if owner_record.get("task_id")
                     else ""
                 )
                 + f": {run_dir}"
@@ -321,16 +367,8 @@ def experiment_launch_preflight(
             candidate = candidate if candidate.is_absolute() else base / candidate
             if not candidate.exists():
                 return True, f"launch executable does not exist: {candidate}"
-        elif shutil.which(executable) is None:
-            available = subprocess.run(
-                ["bash", "-lc", f"command -v -- {shlex.quote(executable)}"],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            ).returncode == 0
-            if not available:
-                return True, f"launch executable is not available on PATH: {executable}"
+        elif not _shell_command_available(executable):
+            return True, f"launch executable is not available on PATH: {executable}"
 
     if _can_resolve_inputs_against_cwd(command):
         for name, value in _flags(command).items():

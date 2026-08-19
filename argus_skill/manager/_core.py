@@ -43,6 +43,7 @@ class Division:
     # committed Division with ``pending_confirmation=False``.
     proposed_domain: Any = None
     pending_confirmation: bool = False
+    learned_vertical_status: str = ""
 
     def headline(self) -> str:
         if self.proposed_domain is not None and self.pending_confirmation:
@@ -72,7 +73,8 @@ class StageTransition:
     target_stage: str
     reason: str
     current_stage: str = ""
-    # manager_llm | no_review_hold | no_runner_hold | failsafe_hold | illegal_target_hold
+    # manager_llm | no_review_hold | no_runner_hold | failsafe_hold |
+    # illegal_target_hold
     source: str = "manager_llm"
     # Non-secret parser/runtime code for log triage (never raw model output).
     diagnostic: str = ""
@@ -93,12 +95,10 @@ class Manager(
 ):
     """User-facing Manager control plane.
 
-    ``project_root`` is the mission's real project workdir, where pipeline,
-    domain, and stage artifacts live. It must not be the daemon's internal
-    ``life_dir``. ``manager_session_root`` is independent: it stores the
-    Manager's persistent model session and lock files and may be life-dir
-    scoped. ``runner`` is required for model-owned decisions such as vertical
-    selection; those decisions fail loudly when no backend is available.
+    ``project_root`` is the session-scoped harness state root for pipeline,
+    domain, and stage authority. ``execution_workdir`` is the user repository
+    inspected by tools and modified by Engineer. They default to the same path
+    for library compatibility, but Web/daemon composition keeps them separate.
     """
 
     def __init__(
@@ -106,18 +106,24 @@ class Manager(
         project_root: Path | str = ".",
         runner: Any = None,
         *,
+        execution_workdir: Path | str | None = None,
         skill_store: Any = None,
         manager_session_root: Path | str | None = None,
+        learned_vertical_root: Path | str | None = None,
         usage_context: Any = None,
         memory_maintenance_enabled: bool | None = None,
     ) -> None:
         self.project_root = Path(project_root)
+        self.execution_workdir = Path(execution_workdir or project_root)
         self.runner = runner
         self._usage_context_factory = usage_context
         self.manager_session_root = (
             Path(manager_session_root)
             if manager_session_root is not None
             else self.project_root
+        )
+        self.learned_vertical_root = Path(
+            learned_vertical_root or self.project_root
         )
         # One persistent, flock-serialized model session shared by stateful
         # Manager calls. Vertical routing deliberately uses the raw runner with
@@ -135,9 +141,21 @@ class Manager(
 
             memory_maintenance_enabled = role_skill_maintenance_enabled()
         self.memory_maintenance_enabled = memory_maintenance_enabled
-        from ..skills.missions import ManagerMission
+        from ..skills.missions import ManagerMission, SelfMission
 
         self.mission = ManagerMission(skill_store)
+        self.self_mission = SelfMission(skill_store)
+        if self._session is not None:
+            paths = (
+                self.mission.libraries().native_paths
+                + self.self_mission.libraries().native_paths
+            )
+            self._session.skill_paths = [str(path) for path in dict.fromkeys(paths)]
+
+    def bind_execution_workdir(self, workdir: Path | str) -> "Manager":
+        """Retarget repository-facing operations without replacing state."""
+        self.execution_workdir = Path(workdir)
+        return self
 
     def _task_usage_scope(self, root_task_id: str | None):
         if not root_task_id or self._usage_context_factory is None:
@@ -146,3 +164,9 @@ class Manager(
 
     def pipeline_lock(self):
         return manager_pipeline_lock(self.manager_session_root)
+
+    def adjudicate_plan_challenge(self, planner_report: Any, **context: Any):
+        """Route a Reviewer challenge through the Manager authority boundary."""
+        from .plan_challenge import adjudicate_plan_challenge
+
+        return adjudicate_plan_challenge(planner_report, **context)

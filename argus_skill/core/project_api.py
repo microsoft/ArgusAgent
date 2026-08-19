@@ -4,7 +4,7 @@ Before this module, "is this project finished?" had four different answers
 depending on which vertical was running and which file you asked:
 
 * ``lifecycle.json`` reaching ``ProjectState.DONE`` — written in exactly one
-  place, and only for verticals whose completion gate is ``full_paper``;
+  place after the active vertical's declared completion strength is met;
 * the versioned final-stage completion certificate in ``PIPELINE_STATE.json``,
   read by the planning cycle but never joined to the lifecycle sidecar;
 * the Planner's ``project_done`` verdict, which stops the run loop;
@@ -46,12 +46,12 @@ from .event_catalog import EventType
 # paper also satisfies a vertical that only asked for a metric.
 SOURCE_PLANNER_VERDICT = "planner_verdict"
 SOURCE_VERTICAL_CERTIFICATE = "vertical_completion_certificate"
-SOURCE_REVIEWER_FULL_PAPER = "reviewer_full_paper_gate"
+SOURCE_INDEPENDENT_CERTIFICATION = "independent_certification"
 
 _SOURCE_RANK: dict[str, int] = {
     SOURCE_PLANNER_VERDICT: 1,
     SOURCE_VERTICAL_CERTIFICATE: 2,
-    SOURCE_REVIEWER_FULL_PAPER: 3,
+    SOURCE_INDEPENDENT_CERTIFICATION: 3,
 }
 
 # What each vertical-declared completion gate demands. Keys are the values
@@ -59,7 +59,7 @@ _SOURCE_RANK: dict[str, int] = {
 _GATE_REQUIRED_RANK: dict[str, int] = {
     "none": 1,
     "metric": 2,
-    "full_paper": 3,
+    "certified": 3,
 }
 
 _UNKNOWN_GATE_RANK = 3
@@ -91,35 +91,18 @@ class CompletionOutcome:
     certificate: dict[str, Any] = field(default_factory=dict)
 
 
-def required_completion_gate(project_root: object, vertical: str) -> str:
-    """The completion strength the *vertical* declares it needs.
-
-    Read from the vertical module, never decided here. An unresolvable vertical
-    returns ``full_paper``, matching ``vertical_completion_gate``'s own default
-    and keeping the failure closed.
-    """
-    try:
-        from ..verticals._base import load_vertical, vertical_completion_gate
-
-        module = load_vertical(vertical, project_root=project_root)
-        return vertical_completion_gate(module)
-    except Exception:  # noqa: BLE001 — an unreadable declaration fails closed
-        return "full_paper"
-
-
 def evaluate_completion(
     *,
-    project_root: object,
     vertical: str,
+    required_gate: str,
     source: CompletionSource,
 ) -> CompletionOutcome:
-    """Whether ``source`` satisfies what ``vertical`` declared, and why not.
+    """Compare a vertical-selected completion strength with offered evidence.
 
-    Pure: reads the vertical declaration and compares ranks. Writes nothing, so
-    a caller can ask before committing and so the refusal path is testable
-    without a project on disk.
+    Core owns the mechanical ranking but never imports or resolves a concrete
+    vertical. The vertical layer passes its validated contract value.
     """
-    gate = required_completion_gate(project_root, vertical)
+    gate = str(required_gate or "").strip().lower()
     required = _GATE_REQUIRED_RANK.get(gate, _UNKNOWN_GATE_RANK)
     offered = _SOURCE_RANK.get(str(source.kind or "").strip(), 0)
     if offered <= 0:
@@ -171,8 +154,8 @@ def evaluate_completion(
 def complete_project(
     *,
     memory_root: Path,
-    project_root: object,
     vertical: str,
+    required_gate: str,
     source: CompletionSource,
     status: Any,
     reason: str = "",
@@ -192,8 +175,8 @@ def complete_project(
     unwind is the step that gets skipped.
     """
     outcome = evaluate_completion(
-        project_root=project_root,
         vertical=vertical,
+        required_gate=required_gate,
         source=source,
     )
     if not outcome.accepted:
@@ -277,12 +260,11 @@ def _emit(
 
 
 __all__ = [
+    "SOURCE_INDEPENDENT_CERTIFICATION",
     "SOURCE_PLANNER_VERDICT",
-    "SOURCE_REVIEWER_FULL_PAPER",
     "SOURCE_VERTICAL_CERTIFICATE",
     "CompletionOutcome",
     "CompletionSource",
     "complete_project",
     "evaluate_completion",
-    "required_completion_gate",
 ]

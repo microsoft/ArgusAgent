@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from argus_skill.life import (
@@ -109,6 +110,20 @@ def test_facets_are_advisory_and_context_denies_hard_blocking(
     assert "not rules" in rendered
     assert "does not prove impossibility" in rendered
     assert "block a changed approach" in rendered
+
+
+def test_render_context_does_not_repeat_outcome_as_lesson(tmp_path: Path) -> None:
+    store = FailureExperienceStore(tmp_path / "failure_experiences.jsonl")
+    experience = replace(
+        _experience("Same text", objective="retry"),
+        factual_outcome="one concrete failure",
+        lessons=["one concrete failure"],
+    )
+    store.append(experience)
+
+    rendered = store.render_context("retry")
+
+    assert rendered.count("one concrete failure") == 1
 
 
 def test_retrieval_never_opens_lazy_artifact_references(

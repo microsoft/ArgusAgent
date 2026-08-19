@@ -6,7 +6,7 @@ Domain-agnostic plumbing: decides whether a codex-spawning role runs sandboxed
 the ``--add-dir`` writable allowlist.
 
 OFF by default. Opt in with ``ARGUS_SKILL_ENGINEER_SANDBOX=workspace-write`` once
-the sandbox is verified on the box (network, ~/.cache, kube/B200 access all
+the sandbox is verified on the box (network, caches, and remote accelerator access all
 working). The default keeps existing 7x24 daemons byte-for-byte unchanged.
 
 Containment invariant: a sandboxed builder may write ONLY its project workdir
@@ -139,7 +139,7 @@ def writable_roots(*, life_root: str | os.PathLike[str] | None = None) -> list[s
         str(home / ".cache"),    # pip / HuggingFace / torch / conda caches
         str(home / ".triton"),   # Triton JIT / autotune cache (kernel work)
         str(home / ".nv"),       # NVIDIA compute cache (ptxas / nvrtc)
-        str(home / ".kube"),     # kubectl / oidc token cache (B200 access)
+        str(home / ".kube"),     # kubectl / OIDC token cache
         "/tmp",
     ]
     # NOTE: ``sys.prefix`` (the active venv) is deliberately NOT writable — its
@@ -222,7 +222,7 @@ def _backend_support_executables(executable: Path) -> list[Path]:
         node = shutil.which("node")
         return [Path(node).resolve()] if node else []
     if executable.name == "copilot":
-        found: list[Path] = []
+        copilot_executables: list[Path] = []
         root = Path.home() / ".nvm" / "versions" / "node"
         for candidate in root.glob(
             "*/lib/node_modules/@github/copilot/node_modules/"
@@ -234,10 +234,10 @@ def _backend_support_executables(executable: Path) -> list[Path]:
                     and os.access(candidate, os.X_OK)
                     and os.path.realpath(candidate) != executable_real
                 ):
-                    found.append(candidate.resolve())
+                    copilot_executables.append(candidate.resolve())
             except OSError:
                 continue
-        return sorted(set(found), key=str)
+        return sorted(set(copilot_executables), key=str)
     if executable.name != "codex":
         return []
     roots = (
@@ -245,7 +245,7 @@ def _backend_support_executables(executable: Path) -> list[Path]:
         Path.home() / ".vscode-server-insiders" / "extensions",
         Path.home() / ".vscode" / "extensions",
     )
-    found: list[Path] = []
+    codex_executables: list[Path] = []
     for root in roots:
         for candidate in root.glob("openai.chatgpt-*/bin/*/codex"):
             try:
@@ -254,10 +254,10 @@ def _backend_support_executables(executable: Path) -> list[Path]:
                     and os.access(candidate, os.X_OK)
                     and os.path.realpath(candidate) != executable_real
                 ):
-                    found.append(candidate.resolve())
+                    codex_executables.append(candidate.resolve())
             except OSError:
                 continue
-    return sorted(set(found), key=str)
+    return sorted(set(codex_executables), key=str)
 
 
 def isolated_workdir_command(
@@ -269,8 +269,15 @@ def isolated_workdir_command(
     if os.name != "posix" or not working_dir:
         raise RuntimeError("worktree isolation requires POSIX and an explicit workdir")
     bwrap = shutil.which("bwrap")
-    if not bwrap:
-        raise RuntimeError("worktree isolation requires bubblewrap")
+    sandbox_exec = (
+        shutil.which("sandbox-exec")
+        if sys.platform == "darwin" and not bwrap
+        else None
+    )
+    if not bwrap and not sandbox_exec:
+        raise RuntimeError(
+            "worktree isolation requires bubblewrap or macOS sandbox-exec"
+        )
     if not command:
         raise RuntimeError("worktree isolation requires a command")
     executable = Path(command[0]).expanduser()
@@ -301,6 +308,51 @@ def isolated_workdir_command(
         target = private_copilot / name
         if source.is_file():
             shutil.copy2(source, target)
+
+    if sandbox_exec:
+        private_home = runtime_root / "seatbelt-home"
+        private_tmp = runtime_root / "tmp"
+        private_home.mkdir(parents=True, exist_ok=True)
+        private_tmp.mkdir(parents=True, exist_ok=True)
+        private_home_copilot = private_home / ".copilot"
+        private_home_copilot.mkdir(parents=True, exist_ok=True)
+        for name in ("config.json", "settings.json", "permissions-config.json"):
+            source = private_copilot / name
+            if source.is_file():
+                shutil.copy2(source, private_home_copilot / name)
+
+        def seatbelt_path(path: str | os.PathLike[str]) -> str:
+            return '"' + os.fspath(path).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+        writable = (root, str(private_tmp), "/dev")
+        write_filters = "".join(
+            f"(require-not (subpath {seatbelt_path(path)}))"
+            for path in writable
+        )
+        profile = (
+            "(version 1)(allow default)"
+            f"(deny file-write* {write_filters})"
+        )
+        for sensitive in (
+            Path.home() / ".ssh",
+            Path.home() / ".aws",
+            Path.home() / ".gnupg",
+            Path.home() / ".kube",
+            Path.home() / ".docker",
+            Path.home() / ".config" / "gh",
+        ):
+            profile += (
+                f"(deny file-read* (subpath {seatbelt_path(sensitive)}))"
+            )
+        return [
+            sandbox_exec,
+            "-p",
+            profile,
+            "/usr/bin/env",
+            f"HOME={private_home}",
+            f"TMPDIR={private_tmp}",
+            *command,
+        ]
 
     wrapped = [
         bwrap,

@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Modal } from './Modal';
+import { useI18n } from '../i18n';
 
 export function DaemonManageModal({
   open,
@@ -26,6 +27,7 @@ export function DaemonManageModal({
   onPause: () => Promise<boolean>;
   onDelete: () => Promise<boolean>;
 }) {
+  const { t } = useI18n();
   const [draftName, setDraftName] = useState(name);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -42,15 +44,15 @@ export function DaemonManageModal({
   };
 
   return (
-    <Modal open={open} onClose={() => !busy && onClose()} label="Manage daemon" width="max-w-lg">
+    <Modal open={open} onClose={() => !busy && onClose()} label={t('manage.daemon')} width="max-w-lg">
       <div className="border-b border-line px-5 py-4">
-        <h2 className="text-base font-semibold text-ink">Manage session</h2>
+        <h2 className="text-base font-semibold text-ink">{t('topbar.manageSession')}</h2>
         <p className="mt-0.5 font-mono text-[10px] text-ink-faint">{sid}</p>
       </div>
 
       <form onSubmit={(event) => void save(event)} className="border-b border-line p-5">
         <label className="block">
-          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-ink-faint">Display name</span>
+          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-ink-faint">{t('manage.displayName')}</span>
           <div className="flex gap-2">
             <input
               value={draftName}
@@ -64,23 +66,23 @@ export function DaemonManageModal({
               disabled={busy || draftName.trim() === name}
               className="rounded border border-line px-3 text-xs text-ink-dim hover:bg-surface disabled:opacity-40"
             >
-              Save
+              {t('common.save')}
             </button>
           </div>
         </label>
       </form>
 
       <div className="border-b border-line p-5">
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint">Executor</div>
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint">{t('manage.executor')}</div>
         <div className="mt-2 flex items-center justify-between rounded border border-line bg-bg/30 p-3">
           <div>
-            <div className="text-sm text-ink">{alive ? (controlAvailable ? 'Running' : 'Running externally') : 'Paused'}</div>
+            <div className="text-sm text-ink">{alive ? (controlAvailable ? t('manage.running') : t('manage.runningExternally')) : t('manage.paused')}</div>
             <p className="mt-0.5 text-[11px] text-ink-faint">
               {alive
                 ? controlAvailable
-                  ? 'Pause safely after the current operation.'
-                  : 'This daemon is supervised outside the Web host PID namespace.'
-                : 'Resume queued research work.'}
+                  ? t('manage.pauseHint')
+                  : t('manage.externalHint')
+                : t('manage.resumeHint')}
             </p>
           </div>
           <button
@@ -91,15 +93,15 @@ export function DaemonManageModal({
               alive ? 'border-warn/50 text-warn hover:bg-warn/10' : 'border-blue-deep bg-blue-deep text-white hover:bg-blue-deep/80'
             }`}
           >
-            {busy ? 'Working…' : !controlAvailable ? 'External' : alive ? 'Pause' : 'Resume'}
+            {busy ? t('manage.working') : !controlAvailable ? t('common.external') : alive ? t('common.pause') : t('manage.resume')}
           </button>
         </div>
       </div>
 
       <div className="p-5">
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-err">Delete session</div>
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-err">{t('manage.deleteSession')}</div>
         <p className="mt-1 text-[11px] leading-relaxed text-ink-faint">
-          Deleted sessions move to projects_trash and remain recoverable. Pause the executor first.
+          {t('manage.deleteHint')}
         </p>
         {!confirmDelete ? (
           <button
@@ -108,20 +110,20 @@ export function DaemonManageModal({
             onClick={() => setConfirmDelete(true)}
             className="mt-3 rounded border border-err/40 px-3 py-1.5 text-xs text-err hover:bg-err/10 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            Delete…
+            {t('manage.delete')}
           </button>
         ) : (
           <div className="mt-3 flex items-center justify-between gap-3 rounded border border-err/40 bg-err/5 p-3">
-            <span className="text-xs text-ink-dim">Move this session to trash?</span>
+            <span className="text-xs text-ink-dim">{t('manage.confirmQuestion')}</span>
             <div className="flex gap-2">
-              <button type="button" onClick={() => setConfirmDelete(false)} className="rounded px-2 py-1 text-xs text-ink-faint hover:bg-surface">Cancel</button>
+              <button type="button" onClick={() => setConfirmDelete(false)} className="rounded px-2 py-1 text-xs text-ink-faint hover:bg-surface">{t('common.cancel')}</button>
               <button
                 type="button"
                 disabled={busy}
                 onClick={() => void onDelete()}
                 className="rounded bg-err px-3 py-1 text-xs font-medium text-bg disabled:opacity-50"
               >
-                Confirm delete
+                {t('manage.confirmDelete')}
               </button>
             </div>
           </div>

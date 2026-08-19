@@ -24,6 +24,14 @@ export interface Role {
   age_s: number | null;
 }
 
+export interface DaemonHealth {
+  state?: string;
+  stalled?: boolean;
+  last_progress_at?: number | null;
+  last_progress_event?: string;
+  seconds_since_progress?: number | null;
+}
+
 export interface Daemon {
   alive: boolean;
   pid: number | null;
@@ -31,9 +39,12 @@ export interface Daemon {
   liveness_source?: 'pid_lock' | 'namespace_heartbeat' | 'none' | string;
   heartbeat_age_seconds?: number | null;
   uptime_seconds: number | null;
+  started_at_iso?: string | null;
+  health?: DaemonHealth;
   backend: string | null;
   backend_label?: string | null;
   global_daily_cap_usd: number | null;
+  mission_width?: number | null;
   read_status?: 'ok' | 'error';
   read_error?: string;
   protocol?: { name: string; major: number | null; minor: number | null };
@@ -65,6 +76,10 @@ export interface BacklogItem {
   orphan_retries?: number;
   deps?: string[];
   acceptance_check?: string;
+  plan_hypothesis?: string;
+  goal_contribution?: string;
+  expected_regressions?: string;
+  decision_rule?: string;
   non_goals?: string[];
   outcome?: MissionOutcomeDimensions;
 }
@@ -77,8 +92,32 @@ export interface MissionOutcomeDimensions {
   resumable: boolean;
 }
 
+/** One safe, workspace-relative file selected for a completed delivery. */
+export interface DeliveryTarget {
+  path: string;
+  label: string;
+  source: string;
+  why: string;
+}
+
+/** Durable receipt shared by the completion event, chat card, and preview. */
+export interface DeliveryReceipt {
+  schema_version: number;
+  delivery_id: string;
+  kind: 'task_completed' | 'submission_certified' | string;
+  item_id: string;
+  title: string;
+  summary: string;
+  status: string;
+  review_status: string;
+  delivered_at: number;
+  primary_target: DeliveryTarget | null;
+  targets: DeliveryTarget[];
+}
+
 export interface ContinuousState {
   enabled: boolean;
+  open_ended?: boolean;
   objective: string;
   done_reason?: string;
   done_at?: string;
@@ -197,6 +236,10 @@ export interface MissionDagNode {
   branch_id: string;
   parent_branch_id: string | null;
   acceptance_check?: string;
+  plan_hypothesis?: string;
+  goal_contribution?: string;
+  expected_regressions?: string;
+  decision_rule?: string;
   non_goals?: string[];
 }
 
@@ -270,12 +313,13 @@ export interface MissionStorageView {
 }
 
 export interface MissionView {
-  schema_version: 2;
+  schema_version: 6;
   bootstrapped?: boolean;
   mission: {
     id: string;
     title: string;
     objective: string;
+    summary: string;
     status: string;
     started_at: number | null;
     completed_at: number | null;
@@ -284,6 +328,14 @@ export interface MissionView {
     campaign_elapsed_seconds: number;
   };
   stage: { id: string; label: string };
+  routing: {
+    route: string;
+    vertical: string;
+    workflow_mode: string;
+    lifetime: string;
+    continuous: boolean;
+    open_ended: boolean;
+  };
   round: { current: number; max: number };
   active_role: string;
   roles: MissionRoleView[];
@@ -296,6 +348,8 @@ export interface MissionView {
   storage: MissionStorageView;
   achievement: MissionAchievement | null;
   review: { status: string; reason: string; rejected_attempts: number };
+  frontier: { change: string; summary: string; updated_at: number };
+  delivery: DeliveryReceipt | null;
   outcome: Partial<MissionOutcomeDimensions>;
   last_event_ts: number;
   updated_at: number;
@@ -406,7 +460,7 @@ export interface ArtifactInfo {
   mime: string;
   size: number;
   mtime: number | null;
-  source?: 'manager_live' | 'reviewer_evidence' | 'research_registered';
+  source?: 'manager_live' | 'reviewer_evidence' | 'research_registered' | 'delivery';
   group_title?: string;
   /** Included by the single-artifact endpoint for text/HTML files only. */
   preview?: string;

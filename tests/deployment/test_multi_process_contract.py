@@ -72,7 +72,7 @@ def _get_json(url: str) -> tuple[dict, object]:
 
 
 def test_processes_have_no_fixed_per_call_budget_hold(tmp_path: Path) -> None:
-    context = mp.get_context("fork")
+    context = mp.get_context("spawn")
     project = tmp_path / "projects" / "p1"
     project.mkdir(parents=True)
     start = context.Event()
@@ -98,7 +98,7 @@ def test_processes_have_no_fixed_per_call_budget_hold(tmp_path: Path) -> None:
 
 
 def test_processes_claim_duplicate_daemon_command_once(tmp_path: Path) -> None:
-    context = mp.get_context("fork")
+    context = mp.get_context("spawn")
     start = context.Event()
     queue = context.Queue()
     marker = tmp_path / "handler.log"

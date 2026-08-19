@@ -26,7 +26,7 @@ performance-profiling
 1. Read the required operating context first:
    - `<repo_guidance_file>` such as `AGENTS.md`
    - `<project_config>` such as `pyproject.toml`
-   - `<pipeline_state_file>` such as `research/PIPELINE_STATE.json`
+   - `<pipeline_state_file>` such as `.argus/PIPELINE_STATE.json`
    - `<domain_or_task_file>` such as `research/DOMAINS/<domain>.json`
    Record constraints, intended goal, test commands, and any stage-state mismatch. Do not edit the pipeline state file.
 

@@ -11,6 +11,12 @@ from ...core.model_visible_text import (
     MODEL_INTEGRITY_BOUNDARY,
     sanitize_model_visible_text,
 )
+from ...core.role_decision import decision_event_instruction
+from ..task_contract import (
+    EFFECTIVE_TASK_CONTRACT,
+    format_native_shell_command,
+    native_shell_summary,
+)
 from .types import ChecklistMode, RoleName, RolePromptRequest
 
 EVALUATE = "evaluate"
@@ -107,30 +113,43 @@ def _direct_memory_edit_block(
     )
 
 
-def _format_academic_paper_review_skill_block(*, include: bool) -> str:
-    if not include:
-        return ""
-    return (
-        "## Near-complete paper review\n"
-        "Be a skeptical program-committee reviewer: require a clear contribution, "
-        "credible comparisons, sufficient evidence/statistics, accurate citations, "
-        "readable writing, and clean figures/layout. `done` requires the applicable "
-        "final checklist with no critical blocker; do not reward polish without "
-        "substantive evidence. Rebuild the manuscript and inspect the generated "
-        "artifact: reject undefined citations, bibliography warnings, significant "
-        "overfull boxes or clipped pages, and missing PDF title/author metadata. "
-        "Render the relevant pages when layout matters.\n\n"
-    )
-
-
 def _verification_directive() -> str:
     """Compact trust-first verification stance."""
     return (
-        "Trust consistent shown results. Re-open raw material only for a missing, "
-        "stale, contradictory, or implausible material fact; otherwise judge the "
-        "work and its next step. An empty git diff proves nothing for an untracked "
-        "or outside-repository artifact: check tracking first, then use direct "
-        "content, schema, command output, or another scoped observation.\n\n"
+        "Trust clear, consistent evidence. Recheck only what is missing, stale, "
+        "contradictory, or implausible. Judge artifacts by content, not git diff alone. "
+        "External identity drift without a mission mutation proves neither failure nor "
+        "causation; require a mutation command attributable to this mission.\n\n"
+    )
+
+
+def _audit_integrity_directive(context: str) -> str:
+    lowered = str(context or "").lower()
+    if not any(
+        marker in lowered
+        for marker in (
+            "audit",
+            "ledger",
+            "append-only",
+            "command_log",
+            "process_trace",
+            "审计",
+            "账本",
+            "只追加",
+            "命令日志",
+        )
+    ):
+        return ""
+    return (
+        "## Audit integrity\n"
+        "Treat an operator mutation freeze or append-only requirement as a hard temporal "
+        "boundary. When audit continuity matters, compare directive order with file-write, "
+        "install, and command events. A later archive, correction, or successful rerun "
+        "cannot make an overwritten or reconstructed ledger contemporaneous. Reject any "
+        "fact attributed to the objective unless the cited objective text states it, and "
+        "do not accept a summarized command log as the missing byte-faithful command. "
+        "Preserve useful corrections, but return `continue`, `replan_requested`, or "
+        "`blocked` when the required historical integrity is irrecoverable.\n\n"
     )
 
 
@@ -171,14 +190,17 @@ def _engineer_log_audit_block(
             "the result and next research decision.\n\n"
         )
     if call_id:
-
-        def shell_quote(value: str) -> str:
-            return "'" + value.replace("'", "'\"'\"'") + "'"
-
-        current_call_rows = (
-            f"{shell_quote(sys.executable)} -I -m "
-            "argus_skill.tools.event_log_query "
-            f"--log {shell_quote(path)} --call-id {shell_quote(call_id)}"
+        current_call_rows = format_native_shell_command(
+            [
+                sys.executable,
+                "-I",
+                "-m",
+                "argus_skill.tools.event_log_query",
+                "--log",
+                path,
+                "--call-id",
+                call_id,
+            ]
         )
         query_block = (
             f"Current engineer call id: `{call_id}`. Scope every audit command "
@@ -284,32 +306,68 @@ def render_reviewer_prompt(
     engineer_call_id: str = "",
     preselected_skill_block: str | None = None,
     working_dir: str | Path | None = None,
+    vertical_state_root: str | Path | None = None,
+    vertical: str = "",
 ) -> tuple[str, str]:
     """Render the complete Reviewer prompt as ``(static_preamble, round_delta)``."""
     from ...core.project import resolve_project_root
-    from ...core.research_contract import resolve_research_target_level
-    from ...engineer.checkpoint import shared_checkpoint_instructions
+    from ...core.research_contract import (
+        RESULT_FIELD_CHOICES,
+        resolve_research_target_level,
+    )
     from ...skills.vertical_select import _persisted_vertical
-    from ...verticals.research.stages import CANONICAL_STAGE_ORDER
-    from ..task_contract import EFFECTIVE_TASK_CONTRACT
     from .registry import resolve_role_prompt
 
     error_text = main_error or "none"
     # Reviewer receives Skill-library paths and searches independently; no
     # Skill body is selected or injected by the runtime.
-    _proot = resolve_project_root(working_dir)
+    _proot = resolve_project_root(vertical_state_root or working_dir)
     scope_normalized = (scope or "").strip().lower().replace("-", "_")
-    prompt_context = resolve_role_prompt(evaluate_request(_proot, scope=scope_normalized))
     _persisted = _persisted_vertical(_proot)
+    explicit_vertical = str(vertical or "").strip()
+    routed_vertical = explicit_vertical or _persisted
+    prompt_context = resolve_role_prompt(
+        evaluate_request(
+            _proot,
+            scope=scope_normalized,
+            vertical=routed_vertical,
+            # Suppressed only when this project has no pipeline state to read a
+            # stage from — not merely because the caller named the vertical.
+            #
+            # The two used to be the same condition, on the reasoning that a
+            # caller passing ``vertical`` explicitly is one running outside a
+            # project (``argus_maintenance`` in a bare directory), where asking
+            # for a stage checklist is actively harmful: ``current_stage``
+            # returns the vertical's first stage as a FALLBACK rather than
+            # reporting that it found nothing, and an unresolved stage renders
+            # as "Configuration error: this required checklist is not loaded.
+            # Do not mark the stage complete" — a blocker manufactured out of a
+            # missing file.
+            #
+            # But the daemon passes ``vertical_override`` for a real campaign
+            # that does have pipeline state, so the proxy misfires there and the
+            # Reviewer silently loses its stage checklist: for a math project in
+            # ``solve`` that is ~2k characters of the acceptance criteria it is
+            # supposed to be judging against, while the Engineer's own prompt
+            # still carries them. ``_persisted`` is non-None exactly when
+            # ``.argus/PIPELINE_STATE.json`` records a vertical, which is the
+            # condition actually being asked about.
+            checklist_mode=(
+                ChecklistMode.NONE
+                if explicit_vertical and not _persisted
+                else ChecklistMode.AUTO
+            ),
+        )
+    )
     persisted_prompt_context = (
         resolve_role_prompt(
             evaluate_request(
                 _proot,
-                vertical=_persisted,
+                vertical=routed_vertical,
                 checklist_mode=ChecklistMode.NONE,
             )
         )
-        if _persisted is not None
+        if routed_vertical is not None
         else None
     )
     _requires_engineering_audit = bool(
@@ -319,43 +377,57 @@ def render_reviewer_prompt(
     matched_review_skill_block = ""
     if preselected_skill_block is not None:
         if preselected_skill_block.strip():
-            matched_review_skill_block = (
-                "Skill-library paths shared with the mission. Search them "
-                "independently when prior knowledge may help:\n"
-                f"{preselected_skill_block.strip()}\n\n"
-            )
+            matched_review_skill_block = preselected_skill_block.strip() + "\n\n"
     elif owner.skill_store is not None:
         review_libraries = owner.mission.libraries()
         if review_libraries.block:
-            matched_review_skill_block = (
-                "Reviewer-accessible Skill-library paths. Search and read them "
-                "independently as needed:\n"
-                f"{review_libraries.block}\n\n"
-            )
+            matched_review_skill_block = review_libraries.block + "\n\n"
     stage = prompt_context.stage
     _measured = not _requires_engineering_audit and os.environ.get(
         "ARGUS_SKILL_MEASURED_MODE", ""
     ).strip().lower() in ("1", "true", "yes", "on")
-    # Vertical-native prompt framing: resolve the active vertical and let it
-    # supply the top-of-prompt role banner. The rollback / final-submission
-    # framing below applies ONLY to a paper vertical (completion_gate ==
-    # "full_paper"); for any other vertical (e.g. speedrun) those blocks are
-    # suppressed and the vertical's banner is prepended so the reviewer judges
-    # only that vertical's metric instead of paper-pipeline artifacts.
-    _full_paper = prompt_context.full_paper
+    # Vertical-owned policy arrives through the prompt catalog; this module
+    # contributes only role-wide review behavior.
     optimize_banner = prompt_context.role_banner
     if prompt_context.requires_independent_review and not _requires_engineering_audit:
         optimize_banner = ""
     research_target_instruction = ""
     _research_target_level = resolve_research_target_level(_proot)
     if _research_target_level is not None:
+        # Two separate things, previously one sentence: `research_target_level`
+        # says what finishing the PROJECT means, and the verification profile
+        # says what THIS round has to show. Conflating them made every early
+        # probe get judged against publication readiness.
+        from ...core.verification_policy import policy_line, resolve_policy
+        from ...skills.stage_machine import current_stage
+
+        try:
+            _stage = current_stage(_proot)
+        except Exception:  # noqa: BLE001 - stage is advisory here
+            _stage = ""
+        _policy = resolve_policy(
+            _proot,
+            stage=_stage,
+            vertical=_persisted_vertical(_proot),
+            target_level=_research_target_level,
+            stage_profiles=prompt_context.verification_stage_profiles,
+        )
         research_target_instruction = (
-            f"Project target: `{_research_target_level}`. Judge correctness, novelty, "
-            "significance, fidelity, evidence, and limitations directly. Explain the "
-            "judgment in `reason`; do not encode it in extra fields. For project-level "
-            "`publishable` or `doctoral` completion, require a verified original result "
-            "at the requested significance. If the current direction cannot meet that "
-            "bar, return `replan_requested`.\n\n"
+            f"Project target `{_research_target_level}` defines project completion, "
+            f"not this round's bar. This round: {policy_line(_policy)}. The integrity "
+            "floor is identical at every profile. Judge directly and explain in "
+            "`reason`. If the direction cannot reach the target, return "
+            "`replan_requested`.\n"
+            "End with `RESEARCH_RESULT=<JSON>` over evidence you inspected. "
+            "`evidence` and `limitations` are JSON string arrays; a survey is "
+            "`literature_review` with `novelty_status` `known` or `not_applicable`. "
+            "Every field below takes one listed value verbatim — any other value "
+            "voids the whole result, however well it describes the work:\n"
+            + "".join(
+                f"{_field}: {' '.join(_choices)}\n"
+                for _field, _choices in RESULT_FIELD_CHOICES
+            )
+            + "\n"
         )
     # Live search-altitude facts (NO verdict) so the reviewer can SEE the
     # floor history when judging forward_progress — i.e. distinguish "this
@@ -363,12 +435,6 @@ def render_reviewer_prompt(
     # nibble at a floor that has not moved in N attempts". Empty for
     # verticals that do not surface it.
     search_altitude_block = prompt_context.search_altitude
-    # Structured scope only. The planner threads scope=final_submission as
-    # a backlog tag all the way here; we no longer sniff the objective
-    # prose for "scope: final_submission" markers. Normalize the same way
-    # the planner does (lower + hyphen→underscore) so callers that pass
-    # "final-submission" still match.
-    is_final_submission = scope_normalized == "final_submission"
     if _measured:
         stage_checklist = (
             "## MEASURED-BENCHMARK MODE — TRUST the scorer, judge the IDEA\n"
@@ -405,26 +471,8 @@ def render_reviewer_prompt(
     else:
         stage_checklist = prompt_context.stage_checklist
 
-    # Academic peer-review benchmark skill: advisory rubric for reviewing
-    # a near-complete manuscript. Gate it on the structured stage/scope
-    # signal — final_submission, or the paper-writing stages (review /
-    # submission) — instead of keyword-sniffing the objective/evidence
-    # for tokens like "main.pdf". `draft` is excluded so mid-production
-    # drafting isn't held to final peer-review standards prematurely.
-    paper_review_skill_block = _format_academic_paper_review_skill_block(
-        include=(is_final_submission or (_full_paper and stage in {"review", "submission"})),
-    )
-    wiki_curator_text = _load_wiki_curator_skill_if_present(working_dir)
-    wiki_curator_skill_block = (
-        f"## Wiki curator (fixed when a wiki exists)\n{wiki_curator_text}\n\n"
-        if wiki_curator_text
-        else ""
-    )
-    direct_memory_edit_block = (
-        _direct_memory_edit_block(owner.skill_store, working_dir)
-        if owner.memory_maintenance_enabled
-        else ""
-    )
+    wiki_curator_skill_block = ""
+    direct_memory_edit_block = ""
 
     venv_skill_block = (
         "## Dependency rule\n"
@@ -438,8 +486,9 @@ def render_reviewer_prompt(
     # the stage back — the reviewer does NOT edit the pipeline state machine
     # itself (stage authority is the Manager's). The instruction lives here
     # (not in the individual checklist items) so it applies uniformly.
-    stage_idx = CANONICAL_STAGE_ORDER.index(stage) if stage in CANONICAL_STAGE_ORDER else 0
-    earlier_stages = ", ".join(CANONICAL_STAGE_ORDER[:stage_idx]) or "(none)"
+    stage_order = prompt_context.stage_order
+    stage_idx = stage_order.index(stage) if stage in stage_order else 0
+    earlier_stages = ", ".join(stage_order[:stage_idx]) or "(none)"
     rollback_block = (
         "## Upstream defects\n"
         f"Current stage: `{stage}`. Earlier stages: {earlier_stages}.\n"
@@ -447,7 +496,7 @@ def render_reviewer_prompt(
         "within its own scope, return `replan_requested` (never `continue`) and "
         "name the earliest broken stage and concrete evidence in `reason`; the "
         "Manager owns rollback. "
-        "Never edit `research/PIPELINE_STATE.json`."
+        "Never edit `.argus/PIPELINE_STATE.json`."
     )
     operator_text = (
         "\n".join(f"- {line}" for line in operator_messages) if operator_messages else "- none"
@@ -477,12 +526,23 @@ def render_reviewer_prompt(
         skill_used=active_skill_id,
         prev_review_summary=prev_review_summary,
     )
-    # v12 phase-4: when callers (e.g. harbor_adapter) collect richer
-    # post-round evidence (engineer self-report verbatim, runtime probe,
-    # official verifier output with "ground truth, trust this" framing),
-    # they pass it as ``raw_evidence`` so the reviewer has the strongest
-    # signal grounded in actual container state, not just the engineer's
-    # prose. Empty string → legacy v3 behaviour.
+    incremental_review_block = ""
+    if round_index > 1 and prev_review_summary.strip():
+        incremental_review_block = (
+            "## Incremental re-review boundary\n"
+            "The previous Reviewer verdict below is settled context for this "
+            "mission. Inspect the prior `next_action`, the current Engineer "
+            "summary, the artifacts changed to satisfy that action, and the "
+            "implicated acceptance checks. Do not restart repository research, "
+            "reopen accepted findings, or repeat unchanged online/source checks. "
+            "Repeat a broader check only when the current delta changed its input, "
+            "the previous verdict explicitly left it unresolved, or a named "
+            "contradiction/security/authority issue requires it. If the requested "
+            "delta now passes and no such contradiction exists, return `done`; do "
+            "not invent a new unrelated repair round.\n\n"
+        )
+    # Prefer direct runtime and verifier evidence over the Engineer's summary
+    # when callers provide it. Omit the block when no such evidence exists.
     evidence_block = (
         f"\nRaw verification evidence:\n{raw_evidence.rstrip()}\n" if raw_evidence.strip() else ""
     )
@@ -504,16 +564,11 @@ def render_reviewer_prompt(
             "it. If nothing else can proceed, return `continue` and state what "
             "evidence the next round should wait for.\n"
         )
-    # ``prior_checkpoint`` is accepted only for source compatibility with
-    # older callers. The live handoff is the ordinary Markdown file that the
-    # Engineer already edited and the Reviewer must now edit directly.
+    # The shared Markdown checkpoint is the live handoff. ``prior_checkpoint``
+    # remains accepted for callers that have not migrated to the file path.
     _ = prior_checkpoint
-    checkpoint_block = shared_checkpoint_instructions(
-        Path(checkpoint_path) if checkpoint_path else None,
-        role="reviewer",
-    )
-    if checkpoint_block:
-        checkpoint_block += "\n\n"
+    _ = checkpoint_path
+    checkpoint_block = ""
     # Anti-livelock escalation directive (supplied by the round loop once a
     # mission passes the soft round limit): tell the reviewer to escalate an
     # unresolvable EXTERNAL blocker to `blocked` instead of looping `continue`.
@@ -538,115 +593,81 @@ def render_reviewer_prompt(
         measured=_measured,
         compact=not bool((main_error or "").strip()),
     )
-    # Final-submission completion contract. This block replaces the
-    # retired hardcoded EMNLP validators: instead of the supervisor
-    # running ``validate_full_paper_readiness`` and friends, the reviewer
-    # is the single source of truth for whether the *whole project* is
-    # ready to submit. It only fires for final_submission missions.
-    final_submission_block = ""
-    if is_final_submission:
-        final_submission_block = (
-            "## Final paper review\n"
-            "Read the current manuscript, rendered PDF, and claim-critical sources "
-            "as an independent venue reviewer. Use `done` only when the research "
-            "objective and selected venue bar are genuinely met; otherwise return "
-            "`continue` with the few highest-leverage scientific or writing changes. "
-            "Do not require or manufacture an assurance memo, reviewer-question "
-            "bundle, or other certification packet.\n\n"
-        )
-    if not _full_paper:
-        # non-paper vertical: no paper stages to roll back to, and no
-        # final-submission certification — judge only the vertical's metric.
+    if prompt_context.workflow_mode == "direct":
         rollback_block = ""
-        final_submission_block = ""
     # Byte-stable static policy; every fresh Reviewer receives it in full.
+    shell_contract = native_shell_summary()
+    audit_integrity_block = _audit_integrity_directive(
+        "\n".join(
+            (
+                objective,
+                original_objective,
+                planner_review_instruction,
+                *operator_messages,
+            )
+        )
+    )
     static = (
         optimize_banner
         + research_target_instruction
         + EFFECTIVE_TASK_CONTRACT
         + "\n\n"
+        + (shell_contract + "\n\n" if shell_contract else "")
         + MODEL_INTEGRITY_BOUNDARY
         + "\n\n## Reviewer role\n"
-        "Judge the objective against real evidence and its checklist. Bounded "
-        "work may finish before the project; final-submission work may not. Use "
-        "`done` for verified completion, `continue` for agent-fixable gaps, and "
-        "`blocked` only for operator/external dependencies.\n\n"
+        "Check whether the task is actually done and useful. Inspect evidence when needed; "
+        "use tools only in proportion to unresolved uncertainty. You do not change the "
+        "work under review: not its sources, not its artifacts, not its build. Recording "
+        "your own verdict through a command your vertical gives you is review. Use `done` "
+        "when it passes, `continue` for an agent-fixable "
+        "in-scope gap, `replan_requested` for a new mission, replacement route, or boundary "
+        "change, and `blocked` only for an external blocker. External claims need "
+        "primary-source grounding when semantics affect the result; Community "
+        "implementations alone are insufficient. Do not demand research for local-only "
+        "or already-grounded work; do not demand new research for local-only work. "
+        "Do not require extra abstractions, defensive machinery, or future-proofing "
+        "without a demonstrated need. "
+        "Return `replan_requested` when missing grounding could change the mechanism.\n\n"
         + ("" if _requires_engineering_audit else _verification_directive())
-        + "## Output protocol\n"
-        "Reason and use tools normally, and write your review however is "
-        "clearest. End the final message with these lines; only they are read, "
-        "and REASON/NEXT_ACTION may run over several lines:\n"
-        "STATUS=done|continue|blocked|replan_requested\n"
-        "REASON=<the verdict rationale>\n"
-        "NEXT_ACTION=<the Engineer instruction; empty for done>\n"
-        "OPERATOR_QUESTION=<operator-only blocker, or none>\n"
-        "CHECKPOINT_RECOMMENDED=true|false\n"
-        "FORWARD_PROGRESS=true|false\n"
-        "PLAN_SIGNAL=continue|reconsider\n"
-        "Judge FORWARD_PROGRESS against the operator objective, separately from "
-        "whether this bounded implementation is correctly done.\n"
-        "Edit CHECKPOINT.md first as instructed.\n\n"
-        + paper_review_skill_block
+        + audit_integrity_block
+        + "## Decision\n"
+        "The payload uses `status`, `reason`, `next_action`, `forward_progress`, "
+        "`plan_signal`, and only when relevant `operator_question`, "
+        "`operator_options`, `plan_challenge`, `plan_alternative`, and "
+        "`authority_impact`."
+        + (
+            " Include the inspected `research_result` contract."
+            if _research_target_level is not None
+            else ""
+        )
+        + "\n"
+        + decision_event_instruction(
+            "reviewer",
+            '{"status":"continue","reason":"why","next_action":"one Engineer '
+            'instruction","forward_progress":true,"plan_signal":"continue"}',
+        )
+        + "\nUse plan fields only when the result changes the plan. Judge "
+        "forward_progress against the operator goal, not activity. Put the next Engineer "
+        "instruction only in next_action. Do not inspect or edit "
+        "checkpoint/context-packet/handoff bookkeeping.\n\n"
         + wiki_curator_skill_block
         + direct_memory_edit_block
         + matched_review_skill_block
         + stage_checklist
         + "\n\n"
-        + final_submission_block
         + rollback_block
         + "\n\n"
         + venv_skill_block
-        + "\n\n## Final handoff fields\n"
-        "Return exactly STATUS, REASON, NEXT_ACTION, OPERATOR_QUESTION, "
-        "CHECKPOINT_RECOMMENDED, FORWARD_PROGRESS and PLAN_SIGNAL. `reason` is the only verdict "
-        "rationale; `next_action` is the only Engineer instruction and is empty "
-        "for `done`. CHECKPOINT_RECOMMENDED is true only when the current worktree "
-        "is worth preserving as a private local restore point. FORWARD_PROGRESS "
-        "must be an explicit true/false judgment; "
-        "the round loop never infers it from prose or activity.\n"
-        "- Put measured surprises, open questions, and alternative directions "
-        "in CHECKPOINT.md once, not in extra fields.\n"
-        "- Every valid measured result must identify the strongest supported "
-        "finding in `reason`. Preserve clean negative, null, "
-        "boundary, and diagnostic evidence, but integrity is a hard constraint, "
-        "not scientific value by itself. Do not automatically turn an honest result "
-        "into a paper or project completion. First audit implementation adequacy, "
-        "construct fidelity, and plausible repairs. An agent-designed weak proxy is "
-        "not evidence about the claimed online agent or system. "
-        "Recommend publication work only when the result supports a standalone, "
-        "venue-relevant thesis beyond 'we tried and it failed'; otherwise return "
-        "`replan_requested`. "
-        "There is no fixed retry count: judge further engineering by the diagnosed "
-        "cause, expected information gain, and remaining resources.\n"
-        "- When failure experience is preserved, verify that factual outcome, "
-        "claim boundaries, and retry conditions stay distinct. Reject any inference "
-        "that turns timeout, incomplete coverage, or one failed mechanism into a "
-        "general impossibility claim. Artifact references may remain lazy unless a "
-        "material contradiction requires opening them.\n"
-        "- `operator_question` is only for an operator-only blocker.\n\n"
-        "Decision rules:\n"
-        "- `done` requires concrete evidence and exact adherence to material "
-        "operator constraints. A generic acknowledgment is never enough.\n"
-        "- Default to `continue` whenever the agent's claims are not backed by "
-        "shown/checkable evidence; once sufficient evidence is present, do not "
-        "burn another round re-running it.\n"
-        "- On `continue`, name the missing outcome/evidence and the specific "
-        "NEXT work or unexplored direction; leave implementation freedom unless "
-        "a deterministic failure identifies the repair.\n"
-        "- `continue` is ONLY for a repair that remains inside the current "
-        "mission objective, acceptance check, non-goals, stage, and resource "
-        "contract. If the next work needs a new/separate/scoped mission, a "
-        "replacement plan, or any change to those boundaries, return "
-        "`replan_requested` instead and cite the relevant files. Reviewer reports the "
-        "defect but never authorizes scope expansion.\n"
-        "- `blocked` is only for credentials, inaccessible resources, or a "
-        "decision/specification only the operator can provide.\n"
-        "- New measured evidence or a measured failed mechanism can be forward "
-        "progress; setup, bookkeeping, repeated re-scoring, and near-identical "
-        "unproductive tweaks are not. A smoke run proves wiring, not final "
-        "evidence. Do not declare a method dead from a misconfigured run.\n"
-        "- Final-submission `done` means you independently judge the whole project "
-        "ready; bounded scope uses only its objective and relevant stage evidence.\n\n"
+        + "\n\n## Handoff policy\n"
+        "`done` needs concrete evidence. Missing evidence means `continue`; a weak proxy "
+        "for the claimed system means `replan_requested`. One timeout or failed attempt "
+        "does not prove impossibility. A threshold miss only shows that this run missed "
+        "its target; a root-cause, dominant/bottleneck-stage, or replacement-architecture "
+        "claim needs code-path evidence plus profiling, timing, or a controlled comparison. "
+        "Integrity is mandatory but is not scientific value by itself. "
+        "Technical problems get a concrete NEXT_ACTION, not an operator question. Ask the "
+        "operator one question only for authority or information only they can provide. "
+        "Bounded `done` closes this task; final-submission `done` may certify the project.\n\n"
         + objective_block
         + "Operator messages:\n"
         f"{operator_text}\n\n"
@@ -664,6 +685,7 @@ def render_reviewer_prompt(
         + (f"Round: {round_index}/{round_max}\n" if round_max > 0 else f"Round: {round_index}\n")
         + f"Session ID: {session_id or 'none'}\n"
         + f"{shared_context_block}"
+        + f"{incremental_review_block}"
         + f"{background_block}"
         + f"Main agent fatal error: {error_text}\n\n"
         + "Main agent last summary:\n"
@@ -681,14 +703,12 @@ def render_reviewer_prompt(
             "matched_skill": matched_review_skill_block,
             "direct_memory": direct_memory_edit_block,
             "wiki_curator": wiki_curator_skill_block,
-            "paper_review": paper_review_skill_block,
             "research_target": research_target_instruction,
-            "final_submission": final_submission_block,
             "objective_context": objective_context,
             "checkpoint": checkpoint_block,
             "execution_log_audit": engineer_log_audit_block,
             "background": background_block,
-            "shared_context": shared_context_block,
+            "shared_context": shared_context_block + incremental_review_block,
             "main_summary": main_summary,
             "raw_evidence": evidence_block,
         }

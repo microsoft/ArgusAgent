@@ -165,6 +165,30 @@ def test_current_abort_targets_existing_running_item(tmp_path: Path) -> None:
     assert consume_running_item_abort(tmp_path) == "operator stop"
 
 
+def test_only_targeted_parallel_mission_consumes_abort(tmp_path: Path) -> None:
+    backlog = LifeMemory.open(tmp_path).backlog
+    first = backlog.add(BacklogItem.new(title="first", objective="work"))
+    second = backlog.add(BacklogItem.new(title="second", objective="work"))
+    backlog.mark_running(first.id)
+    backlog.mark_running(second.id)
+    requested, item_id = request_running_item_abort(
+        tmp_path,
+        reason="stop latest",
+    )
+
+    assert requested is True
+    assert item_id == second.id
+    assert consume_running_item_abort(
+        tmp_path,
+        target_item_id=first.id,
+    ) is None
+    assert (tmp_path / "running_item_abort.json").exists()
+    assert consume_running_item_abort(
+        tmp_path,
+        target_item_id=second.id,
+    ) == "stop latest"
+
+
 def test_current_abort_reports_persistence_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

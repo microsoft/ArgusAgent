@@ -11,7 +11,7 @@ Contract — ``paper/REVIEWER_QUESTIONS.json``:
 
     {
       "schema_version": 1,
-      "generated_at": "2026-06-03T12:00:00Z",
+      "generated_at": "<ISO-8601 timestamp>",
       "questions": [
         {
           "id": "Q1",
@@ -50,7 +50,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ...skills.venue_profiles import resolve_venue_profile
+from .venue_profiles import resolve_venue_profile
 
 MIN_QUESTIONS = 10
 ALLOWED_SEVERITIES = frozenset({"critical", "major", "minor"})

@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import time
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from argus_skill.core.daemon_lock import (
     DaemonAlreadyRunning,
@@ -69,7 +72,9 @@ def test_second_acquire_fails_while_first_held(tmp_path: Path) -> None:
     pid_path = tmp_path / "daemon.pid"
     lock = acquire_global_daemon_lock(pid_path=pid_path)
     try:
-        ctx = multiprocessing.get_context("fork")
+        # Use the host default so this also verifies the Windows msvcrt lock
+        # from a real spawned process instead of requiring POSIX ``fork``.
+        ctx = multiprocessing.get_context()
         started: Any = ctx.Event()
         q: Any = ctx.Queue()
         proc = ctx.Process(
@@ -128,9 +133,29 @@ def test_is_pid_running_self() -> None:
     assert is_pid_running(os.getpid()) is True
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "fork") or not Path("/proc/self/stat").is_file(),
+    reason="requires Linux procfs and os.fork",
+)
+def test_is_pid_running_excludes_unreaped_linux_zombie() -> None:
+    pid = os.fork()
+    if pid == 0:  # pragma: no cover - child exits immediately
+        os._exit(0)
+    try:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            stat = Path(f"/proc/{pid}/stat")
+            if stat.is_file() and ") Z " in stat.read_text(errors="replace"):
+                break
+            time.sleep(0.01)
+        assert is_pid_running(pid) is False
+    finally:
+        os.waitpid(pid, 0)
+
+
 def test_is_pid_running_dead_pid() -> None:
-    # PIDs above ~4M aren't allocated by default Linux configs.
-    assert is_pid_running(4_000_001) is False
+    # Above Linux's maximum configurable pid_max and invalid on other platforms.
+    assert is_pid_running(2_147_483_647) is False
 
 
 def test_is_pid_running_invalid() -> None:

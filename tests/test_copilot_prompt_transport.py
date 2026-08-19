@@ -35,12 +35,15 @@ def test_copilot_delivers_plain_named_protocol_prompt_on_stdin() -> None:
     )
     prompt = "Review normally.\nSTATUS=done|continue|blocked|replan_requested"
 
-    prepared, stdin_prompt = _runner()._prepare_prompt_delivery(command, prompt)
+    prepared, stdin_prompt, cleanup_path = _runner()._prepare_prompt_delivery(
+        command, prompt
+    )
 
     assert prepared == command
     assert stdin_prompt == prompt
     assert "OUTPUT CONTRACT (STRICT)" not in stdin_prompt
     assert "JSON Schema" not in stdin_prompt
+    assert cleanup_path is None
 
 
 def test_copilot_resume_still_receives_current_prompt_over_stdin() -> None:
@@ -49,7 +52,10 @@ def test_copilot_resume_still_receives_current_prompt_over_stdin() -> None:
         options=RunnerOptions(),
     )
 
-    prepared, stdin_prompt = _runner()._prepare_prompt_delivery(command, "next round")
+    prepared, stdin_prompt, cleanup_path = _runner()._prepare_prompt_delivery(
+        command, "next round"
+    )
 
     assert prepared == command
     assert stdin_prompt == "next round"
+    assert cleanup_path is None

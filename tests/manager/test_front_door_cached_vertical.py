@@ -26,6 +26,7 @@ def test_manager_handoff_always_calls_manager_vertical_classifier(tmp_path) -> N
 
     manager = SimpleNamespace(project_root=tmp_path, decide_vertical=decide_vertical)
     state = {
+        "_frontdoor_lifetime": "standing",
         "_frontdoor_vertical": {
             "vertical": "math",
             "target": "publishable",
@@ -42,4 +43,5 @@ def test_manager_handoff_always_calls_manager_vertical_classifier(tmp_path) -> N
     assert prepared.decision.vertical == "math"
     assert prepared.decision.research_target_level == "publishable"
     assert prepared.execution_task == "持续证明一个未解决的 Erdős 问题"
+    assert prepared.lifetime == "standing"
     assert calls == ["持续证明一个未解决的 Erdős 问题"]

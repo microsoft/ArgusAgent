@@ -20,6 +20,9 @@ _BACKEND_LABEL = {
     "copilot": "Copilot",
     "opencode": "OpenCode",
     "pi": "Pi",
+    "grok": "Grok Build",
+    "qoder": "Qoder",
+    "dsh": "DeepSeek Harness",
     "memory": "memory",
 }
 
@@ -45,6 +48,13 @@ _ROLE_EFFORT_ENV = {
     "reviewer": "ARGUS_SKILL_REVIEWER_REASONING_EFFORT",
     "curator": "ARGUS_SKILL_CURATOR_REASONING_EFFORT",
 }
+_ROLE_EFFORT_DEFAULT = {
+    "manager": "high",
+    "planner": "high",
+    "engineer": "xhigh",
+    "reviewer": "high",
+    "curator": "high",
+}
 
 _ROLE_DESC = {
     "manager": "front door · triages chat/tasks, approves skills",
@@ -61,8 +71,8 @@ _ROLE_DESC = {
 @dataclass(frozen=True)
 class RoleConfig:
     role: str
-    backend: str  # normalized: codex / claude / copilot / opencode / pi / memory
-    backend_label: str  # display: Codex / Claude Code / Copilot / OpenCode / Pi
+    backend: str  # codex / claude / copilot / opencode / pi / grok / qoder / dsh / memory
+    backend_label: str  # Codex / Claude Code / Copilot / OpenCode / Pi / Grok
     model: str
     effort: str | None  # None → not a reasoning model (effort N/A)
     desc: str
@@ -153,9 +163,10 @@ def _resolve_effort(role: str, model: str, env: Mapping[str, str]) -> str | None
     from .knobs import resolve_role_reasoning_effort
 
     role_env = _ROLE_EFFORT_ENV.get(role, "")
+    default_effort = _ROLE_EFFORT_DEFAULT.get(role, "xhigh")
     if role == "manager":
         # Manager triage reuses the engineer effort; Manager._core also
-        # defaults to xhigh. Check manager's own knob (env, then a persisted
+        # checks its own knob first. Check manager's own knob (env, then a persisted
         # switch) before falling back to engineer's (same two layers), so an
         # explicit manager-specific switch on EITHER layer still wins.
         val = resolve_role_reasoning_effort(role_env, env=env, default="")
@@ -164,9 +175,9 @@ def _resolve_effort(role: str, model: str, env: Mapping[str, str]) -> str | None
         return resolve_role_reasoning_effort(
             "ARGUS_SKILL_ENGINEER_REASONING_EFFORT",
             env=env,
-            default="xhigh",
+            default=default_effort,
         )
-    return resolve_role_reasoning_effort(role_env, env=env, default="xhigh")
+    return resolve_role_reasoning_effort(role_env, env=env, default=default_effort)
 
 
 def resolve_role_config(role: str, *, env: Mapping[str, str] | None = None) -> RoleConfig:

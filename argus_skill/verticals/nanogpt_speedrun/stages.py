@@ -18,19 +18,24 @@ reviewer's objective framing are TIME-to-target, not val_bpb.
 """
 from __future__ import annotations
 
-from ..speedrun.stages import (  # shared speedrun checklist + pipeline check
-    _PIPELINE_CHECK,
-    CHECKLIST_ITEMS,
-    CHECKLIST_STAGE_ORDER,
-)
+from pathlib import Path
 
-STAGE_ORDER = ["setup", "optimize", "measure", "report"]
+from ..optimization_base import PIPELINE_CHECK, speedrun_base_contract
+
+_BASE = speedrun_base_contract()
+STAGE_ORDER = list(_BASE.stage_order)
+CHECKLIST_STAGE_ORDER = _BASE.stage_order
+CHECKLIST_ITEMS = _BASE.checklist_items
+_PIPELINE_CHECK = PIPELINE_CHECK
 
 # Metric-agnostic, flat-workspace-tolerant structural checks (no BPB hardcoding:
 # the metric here is seconds-to-target-loss, not bits-per-byte).
 STAGE_CHECKS: dict[str, list[tuple[str, str]]] = {
     "setup": [
         _PIPELINE_CHECK,
+        ("Frozen protocol validates",
+         "{python} -m argus_skill.verticals.nanogpt_speedrun.capstone "
+         "check --project-root . --stage setup"),
         ("Mission file present",
          "test -f MISSION.md || test -f TASK.md"),
         ("Target training script present",
@@ -44,6 +49,9 @@ STAGE_CHECKS: dict[str, list[tuple[str, str]]] = {
     ],
     "optimize": [
         _PIPELINE_CHECK,
+        ("Frozen protocol remains unchanged",
+         "{python} -m argus_skill.verticals.nanogpt_speedrun.capstone "
+         "check --project-root . --stage optimize"),
         ("At least one attempt scaffolded",
          "{python} -m argus_skill.verticals.path_evidence --project-root . "
          "--glob 'attempts/*/*.py' --glob 'experiments/*/*.py'"),
@@ -52,11 +60,17 @@ STAGE_CHECKS: dict[str, list[tuple[str, str]]] = {
         _PIPELINE_CHECK,
         ("At least one timed-to-target run recorded",
          "{python} -m argus_skill.verticals.metric_evidence nanogpt --project-root ."),
+        ("Timed result satisfies frozen capstone",
+         "{python} -m argus_skill.verticals.nanogpt_speedrun.capstone "
+         "check --project-root . --stage measure"),
     ],
     "report": [
         _PIPELINE_CHECK,
         ("RESULTS present",
          "test -f RESULTS.md || test -s research/GROUND_TRUTH.md"),
+        ("Final capstone validates",
+         "{python} -m argus_skill.verticals.nanogpt_speedrun.capstone "
+         "check --project-root . --stage report"),
     ],
 }
 
@@ -109,6 +123,13 @@ REVIEWER_CHECKLISTS: dict[str, tuple[str, str, list[str]]] = {
 }
 
 completion_gate = "metric"
+MISSION_KIND = "optimize"
+
+
+def stage_completion_issues(stage: str, project_root: Path) -> tuple[str, ...]:
+    from .capstone import validate_capstone
+
+    return tuple(validate_capstone(project_root, stage))
 
 
 def role_banner(_role: str) -> str:
@@ -125,5 +146,5 @@ def role_banner(_role: str) -> str:
 __all__ = [
     "STAGE_ORDER", "STAGE_CHECKS", "REVIEWER_CHECKLISTS",
     "CHECKLIST_STAGE_ORDER", "CHECKLIST_ITEMS",
-    "completion_gate", "role_banner",
+    "completion_gate", "role_banner", "stage_completion_issues",
 ]

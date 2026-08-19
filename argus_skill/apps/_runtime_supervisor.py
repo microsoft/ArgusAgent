@@ -44,7 +44,7 @@ def _paper_mission_for_project_root(project_root: Path | str) -> bool:
     """
     try:
         from ..skills.vertical_select import _persisted_vertical, resolve_workflow_mode
-        from ..verticals._base import load_vertical, vertical_completion_gate
+        from ..verticals._base import load_vertical, vertical_is_paper_mission
 
         root = Path(project_root).expanduser()
         persisted = _persisted_vertical(root)
@@ -57,7 +57,29 @@ def _paper_mission_for_project_root(project_root: Path | str) -> bool:
         if resolve_workflow_mode(root) == "direct":
             return False
         vertical = persisted
-        return vertical_completion_gate(load_vertical(vertical, project_root=root)) == "full_paper"
+        return vertical_is_paper_mission(
+            load_vertical(vertical, project_root=root)
+        )
+    except Exception:  # noqa: BLE001 — mission typing must fail safe
+        return False
+
+
+def _final_certification_for_project_root(project_root: Path | str) -> bool:
+    """Return whether the persisted non-direct vertical has a certified gate."""
+    try:
+        from ..skills.vertical_select import _persisted_vertical, resolve_workflow_mode
+        from ..verticals._base import load_vertical, vertical_completion_gate
+
+        root = Path(project_root).expanduser()
+        persisted = _persisted_vertical(root)
+        if persisted is None or resolve_workflow_mode(root) == "direct":
+            return False
+        return (
+            vertical_completion_gate(
+                load_vertical(persisted, project_root=root)
+            )
+            == "certified"
+        )
     except Exception:  # noqa: BLE001 — mission typing must fail safe
         return False
 
@@ -65,21 +87,40 @@ def _paper_mission_for_project_root(project_root: Path | str) -> bool:
 def _independent_review_required_for_project_root(
     project_root: Path | str,
 ) -> bool:
-    """Return the persisted vertical's mandatory independent-review policy."""
+    """Return the persisted vertical's mandatory independent-review policy.
+
+    Fails CLOSED once a vertical is resolved. An unresolved project keeps the
+    legacy False — there is no policy to honour yet — but a project that *has*
+    chosen a vertical and then cannot have that vertical's policy read is a
+    broken install, not an opt-out, and the safe reading of "I cannot tell
+    whether review is mandatory" is that it is.
+
+    Bug #42: the old blanket ``return False`` made a vertical whose module
+    lacked ``REQUIRE_INDEPENDENT_REVIEW`` indistinguishable from one that
+    declined review. A daemon that had rolled back to an older framework copy
+    resolved 'math' correctly, found no attribute, and dropped the Reviewer for
+    14 consecutive missions with no event and no log line.
+    """
+    root = Path(project_root).expanduser()
     try:
         from ..skills.vertical_select import _persisted_vertical
+
+        persisted = _persisted_vertical(root)
+    except Exception:  # noqa: BLE001 — unresolved projects keep legacy behavior
+        return False
+    if persisted is None:
+        return False
+    try:
         from ..verticals._base import (
             load_vertical,
             vertical_requires_independent_review,
         )
 
-        root = Path(project_root).expanduser()
-        persisted = _persisted_vertical(root)
-        if persisted is None:
-            return False
-        return vertical_requires_independent_review(load_vertical(persisted, project_root=root))
-    except Exception:  # noqa: BLE001 — unresolved projects keep legacy behavior
-        return False
+        return vertical_requires_independent_review(
+            load_vertical(persisted, project_root=root)
+        )
+    except Exception:  # noqa: BLE001 — a resolved vertical fails closed
+        return True
 
 
 def _workflow_mode_for_project_root(project_root: Path | str) -> str:
@@ -109,7 +150,9 @@ def _build_supervisor_config(
     # Mission type follows a positive Manager-authored vertical decision.  An
     # undecided or malformed project is bounded/non-paper, never implicitly an
     # EMNLP campaign.
-    paper_mission = _paper_mission_for_project_root(artifact_root or project_root)
+    runtime_root = artifact_root or project_root
+    paper_mission = _paper_mission_for_project_root(runtime_root)
+    final_certification = _final_certification_for_project_root(runtime_root)
     from ..skills.role_memory import role_skill_maintenance_enabled
 
     return LifeSupervisorConfig(
@@ -132,7 +175,7 @@ def _build_supervisor_config(
         continuous=continuous,
         continuous_objective=continuous_objective,
         open_ended=open_ended,
-        full_paper_gate=paper_mission and open_ended,
+        final_certification_gate=final_certification and open_ended,
         paper_mission=paper_mission,
         project_state_dir=project_root,
         artifact_root=artifact_root or project_root,
@@ -185,19 +228,9 @@ def run_life_supervisor(
         # routing/presentation instructions never reach Planner/Engineer.
         if continuous and str(continuous_objective).strip():
             try:
-                # Prefer the runner's single Manager instance (manager backend);
-                # fall back to an ad-hoc Manager only when the runner has none
-                # (e.g. the memory runner used in tests).
-                mgr = getattr(runner, "manager", None)
+                mgr = runner.manager
                 if mgr is None:
-                    from ..manager import Manager
-
-                    mgr = Manager(
-                        project_root=artifact_root or project_root,
-                        runner=getattr(runner, "manager_backend", None)
-                        or getattr(runner, "backend", None),
-                        skill_store=getattr(runner, "_manager_skill_store", None),
-                    )
+                    raise RuntimeError("runner was constructed without a Manager")
                 division = mgr.divide(
                     continuous_objective,
                     ask_on_new_domain=_env_flag("ARGUS_SKILL_DOMAIN_ASK", False),
@@ -282,15 +315,21 @@ def _invoke_supervisor(
     open_ended: bool = True,
     allow_chat_fast_path: bool = False,
 ) -> tuple[dict[str, Any], str | None]:
+    from ._runtime_construction import _resolve_role_runner_backend_name
+
     ns = argparse.Namespace()
     ns.backend = backend
+    engineer_backend = _resolve_role_runner_backend_name("engineer", backend)
+    reviewer_backend = _resolve_role_runner_backend_name("reviewer", backend)
     ns.engineer_model = resolve_role_model(
         "engineer",
         role_env="ARGUS_SKILL_ENGINEER_MODEL",
+        backend=engineer_backend,
     )
     ns.reviewer_model = resolve_role_model(
         "reviewer",
         role_env="ARGUS_SKILL_REVIEWER_MODEL",
+        backend=reviewer_backend,
     )
     ns.engineer_reasoning_effort = resolve_role_reasoning_effort(
         "ARGUS_SKILL_ENGINEER_REASONING_EFFORT",
@@ -302,6 +341,7 @@ def _invoke_supervisor(
         "ARGUS_SKILL_SKILLS_DIR",
         str(_memory_global_root(mem) / "skills"),
     )
+    ns.global_root = str(_memory_global_root(mem))
     ns.workdir = os.environ.get("ARGUS_SKILL_WORKDIR")
     os.environ["ARGUS_SKILL_AGENT_IO_LOG"] = str(_memory_project_root(mem) / "events.jsonl")
     try:
@@ -310,10 +350,10 @@ def _invoke_supervisor(
     except Exception:  # noqa: BLE001
         ns.manager_session_root = None
         ns.project_state_dir = None
-    # Life-mode default: 500 engineer rounds. The earlier low cap was
-    # too small for "implement + test + polish" tasks that need many
-    # tool calls. Override via ARGUS_SKILL_MAX_ROUNDS.
-    ns.max_rounds = int(os.environ.get("ARGUS_SKILL_MAX_ROUNDS", "500"))
+    # Keep enough room for multi-round implementation and review without
+    # allowing one mission to consume an effectively unbounded campaign.
+    # Override via ARGUS_SKILL_MAX_ROUNDS for exceptional long-horizon work.
+    ns.max_rounds = int(os.environ.get("ARGUS_SKILL_MAX_ROUNDS", "32"))
 
     # Runtime context injected into every mission prelude so the agent
     # knows its own backend, models, and budget constraints at runtime.

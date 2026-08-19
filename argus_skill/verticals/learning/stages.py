@@ -6,16 +6,23 @@ automatic promotion, or generated metadata.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from ...skills.stage_machine import ChecklistItem
 
 STAGE_ORDER = ["ingest", "study", "curate", "review"]
 completion_gate = "none"
 PROTECTED_SKILL_TAGS: frozenset[str] = frozenset()
-_PIPELINE_CHECK = ("Pipeline state present", "test -f research/PIPELINE_STATE.json")
+_PIPELINE_CHECK = ("Pipeline state present", "test -f .argus/PIPELINE_STATE.json")
+_CURATION_CHECK = (
+    "Learning curation contract validates",
+    "{python} -m argus_skill.verticals.learning.curation check --project-root .",
+)
 
 STAGE_CHECKS: dict[str, list[tuple[str, str]]] = {
     "ingest": [
         _PIPELINE_CHECK,
+        (_CURATION_CHECK[0], f"{_CURATION_CHECK[1]} --stage ingest"),
         (
             "Material staged as a minimal semantic Wiki page",
             "{python} -m argus_skill.verticals.path_evidence --project-root . "
@@ -24,10 +31,12 @@ STAGE_CHECKS: dict[str, list[tuple[str, str]]] = {
     ],
     "study": [
         _PIPELINE_CHECK,
+        (_CURATION_CHECK[0], f"{_CURATION_CHECK[1]} --stage study"),
         ("Study notes present", "test -s learning/STUDY.md || test -s learning/CHANGE_PLAN.md"),
     ],
     "curate": [
         _PIPELINE_CHECK,
+        (_CURATION_CHECK[0], f"{_CURATION_CHECK[1]} --stage curate"),
         (
             "Semantic library edits or a justified no-op recorded",
             "test -s learning/LIBRARY_DELTA.md || test -s learning/CHANGE_PLAN.md",
@@ -35,6 +44,7 @@ STAGE_CHECKS: dict[str, list[tuple[str, str]]] = {
     ],
     "review": [
         _PIPELINE_CHECK,
+        (_CURATION_CHECK[0], f"{_CURATION_CHECK[1]} --stage review"),
         (
             "Wiki INDEX is present",
             "{python} -m argus_skill.verticals.path_evidence --project-root . "
@@ -42,6 +52,12 @@ STAGE_CHECKS: dict[str, list[tuple[str, str]]] = {
         ),
     ],
 }
+
+
+def stage_completion_issues(stage: str, project_root: Path) -> tuple[str, ...]:
+    from .curation import validate_curation
+
+    return tuple(validate_curation(project_root, stage))
 
 _GATE_SKILL = "reviewer/curation-review.md"
 REVIEWER_CHECKLISTS: dict[str, tuple[str, str, list[str]]] = {
@@ -92,7 +108,7 @@ CHECKLIST_ITEMS: dict[str, tuple[ChecklistItem, ...]] = {
         ChecklistItem(
             id="semantic-paths",
             statement="New knowledge uses explicit semantic paths without generated IDs or suffixes.",
-            evidence_hint="library delta lists meaningful paths",
+            evidence_hint="learning/CHANGE_PLAN.json lists meaningful project-relative paths",
         ),
     ),
     "review": (
@@ -104,7 +120,7 @@ CHECKLIST_ITEMS: dict[str, tuple[ChecklistItem, ...]] = {
         ChecklistItem(
             id="honest-noop",
             statement="No change was manufactured when the material added nothing durable.",
-            evidence_hint="library delta records an honest no-op when appropriate",
+            evidence_hint="CHANGE_PLAN.json records an explicit no_op reason when appropriate",
         ),
     ),
 }
@@ -130,3 +146,16 @@ def role_banner(role: str) -> str:
             "progressive disclosure. A justified no-op is acceptable."
         )
     return common
+
+
+__all__ = [
+    "CHECKLIST_ITEMS",
+    "CHECKLIST_STAGE_ORDER",
+    "PROTECTED_SKILL_TAGS",
+    "REVIEWER_CHECKLISTS",
+    "STAGE_CHECKS",
+    "STAGE_ORDER",
+    "completion_gate",
+    "role_banner",
+    "stage_completion_issues",
+]

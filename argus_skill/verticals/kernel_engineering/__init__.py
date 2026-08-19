@@ -10,7 +10,10 @@ from .stages import (
     STAGE_ORDER,
     WORKFLOW_MODE,
     completion_gate,
+    planner_task_issues,
     role_banner,
+    search_altitude_context,
+    stage_completion_issues,
 )
 
 __all__ = [
@@ -21,5 +24,8 @@ __all__ = [
     "STAGE_ORDER",
     "WORKFLOW_MODE",
     "completion_gate",
+    "planner_task_issues",
     "role_banner",
+    "search_altitude_context",
+    "stage_completion_issues",
 ]

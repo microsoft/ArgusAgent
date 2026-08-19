@@ -6,6 +6,13 @@ interface TranscriptTurn {
   ts: number;
   role: string;
   text: string;
+  message_id?: string;
+  mission_result?: boolean;
+  item_id?: string;
+  success?: boolean;
+  summary?: string;
+  delivery_id?: string;
+  delivery?: unknown;
 }
 
 const LOCAL_REQUEST_FIELD = 'local_request_id';
@@ -111,7 +118,13 @@ export function mergeConversationEvents(
     agent_layer: turn.role === 'operator' ? 'operator' : 'manager',
     text: turn.text,
     ts: turn.ts,
-    message_id: `transcript-${turn.ts}-${turn.role}`,
+    message_id: turn.message_id || `transcript-${turn.ts}-${turn.role}`,
+    ...(turn.mission_result === true ? { mission_result: true } : {}),
+    ...(typeof turn.item_id === 'string' ? { item_id: turn.item_id } : {}),
+    ...(typeof turn.success === 'boolean' ? { success: turn.success } : {}),
+    ...(typeof turn.summary === 'string' ? { summary: turn.summary } : {}),
+    ...(typeof turn.delivery_id === 'string' ? { delivery_id: turn.delivery_id } : {}),
+    ...(turn.delivery && typeof turn.delivery === 'object' ? { delivery: turn.delivery } : {}),
   }));
   const keepHistory = new Array(history.length).fill(true);
   for (let index = history.length - 1; index >= 0; index -= 1) {

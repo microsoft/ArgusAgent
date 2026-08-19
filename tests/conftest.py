@@ -25,6 +25,32 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture
+def require_symlink_support(tmp_path: Path) -> None:
+    """Skip only when this host cannot create the symlinks a test requires.
+
+    Windows supports symlinks when Developer Mode or the corresponding account
+    privilege is enabled.  Treat that as a runtime capability instead of
+    skipping every Windows host: capable Windows CI still exercises the real
+    security boundary, while restricted developer machines do not report a
+    fixture-permission error as a product regression.
+    """
+    probe = tmp_path / "symlink-capability"
+    probe.mkdir()
+    file_target = probe / "file-target"
+    file_target.write_text("probe\n", encoding="utf-8")
+    directory_target = probe / "directory-target"
+    directory_target.mkdir()
+    try:
+        (probe / "file-link").symlink_to(file_target)
+        (probe / "directory-link").symlink_to(
+            directory_target,
+            target_is_directory=True,
+        )
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"host cannot create test symlinks: {exc}")
+
+
 @pytest.fixture(autouse=True)
 def _isolate_argus_state_roots(
     tmp_path_factory: pytest.TempPathFactory,
@@ -119,7 +145,7 @@ def _forbid_project_state_in_the_checkout() -> Iterator[None]:
     which test left them.
     """
     root = _repo_root()
-    markers = ("research/PIPELINE_STATE.json", "research/CHECKLISTS.json", ".autors")
+    markers = (".argus/PIPELINE_STATE.json", "research/CHECKLISTS.json", ".autors")
     before = {name for name in markers if (root / name).exists()}
     yield
     leaked = sorted(

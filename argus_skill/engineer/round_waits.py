@@ -1,8 +1,8 @@
 """Round-loop phase: agent-driven background/external-work cadence waits.
 
 The Engineer requests a wait through an exact JSON object on the final non-empty
-response line. The harness validates the registry id, then sleeps on that
-owner's cadence.
+response line. The harness validates the registry id, then monitors that owner
+until its state changes.
 """
 
 from __future__ import annotations
@@ -48,17 +48,20 @@ class RoundWaitsMixin:
             )
         )
         if source_matches and external_work is not None and external_work.waitable:
-            # Route through the ``runner`` module attribute so monkeypatching
-            # ``runner._run_external_work_wait`` keeps taking effect.
             from . import runner as _runner_module
 
-            _, waited_s = _runner_module._run_external_work_wait(
-                workdir=workdir,
-                work_id=external_work.work_id,
-                round_index=round_index,
-                round_max=supervised_config.max_rounds,
-                on_event=on_event,
-            )
+            waited_s = 0.0
+            while True:
+                wait_reason, cadence_waited_s = _runner_module._run_external_work_wait(
+                    workdir=workdir,
+                    work_id=external_work.work_id,
+                    round_index=round_index,
+                    round_max=supervised_config.max_rounds,
+                    on_event=on_event,
+                )
+                waited_s += cadence_waited_s
+                if wait_reason != "cadence_elapsed":
+                    break
             state.last_decision_progress_at = _pause_decision_clock(
                 state.last_decision_progress_at,
                 waited_s,

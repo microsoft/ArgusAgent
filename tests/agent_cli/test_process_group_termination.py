@@ -3,7 +3,7 @@ from __future__ import annotations
 import signal
 from types import SimpleNamespace
 
-from argus_skill.agent_cli import agent_cli_runner
+from argus_skill.agent_cli import _process_control, agent_cli_runner
 from argus_skill.agent_cli.agent_cli_runner import AgentCliRunner
 
 
@@ -24,14 +24,22 @@ class _FakeProcess:
 
 
 def test_terminate_process_escalates_the_whole_posix_group(monkeypatch) -> None:
-    signals: list[tuple[int, signal.Signals]] = []
+    signals: list[tuple[int, int | signal.Signals]] = []
     waits = iter([False, True])
+    sigkill = getattr(signal, "SIGKILL", 9)
 
-    monkeypatch.setattr(agent_cli_runner.os, "name", "posix")
     monkeypatch.setattr(
-        agent_cli_runner.os,
-        "killpg",
-        lambda pgid, sig: signals.append((pgid, sig)),
+        _process_control,
+        "os",
+        SimpleNamespace(
+            name="posix",
+            killpg=lambda pgid, sig: signals.append((pgid, sig)),
+        ),
+    )
+    monkeypatch.setattr(
+        _process_control,
+        "signal",
+        SimpleNamespace(SIGTERM=signal.SIGTERM, SIGKILL=sigkill),
     )
     monkeypatch.setattr(
         AgentCliRunner,
@@ -43,7 +51,7 @@ def test_terminate_process_escalates_the_whole_posix_group(monkeypatch) -> None:
 
     assert signals == [
         (4242, signal.SIGTERM),
-        (4242, signal.SIGKILL),
+        (4242, sigkill),
     ]
 
 

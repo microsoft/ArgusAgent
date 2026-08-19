@@ -32,7 +32,6 @@ from ..core.secret_guard import known_secret_values, redact_secrets_text
 # payload is still recoverable from the raw ``stream`` lines in the
 # outbox.
 _PROGRESS_TEXT_LIMIT = 600
-_FINAL_PROGRESS_TEXT_LIMIT = 16_000
 _DEFAULT_DELTA_INTERVAL_S = 0.5
 _DEFAULT_DELTA_CHARS = 256
 
@@ -143,9 +142,13 @@ def _truncate(s: str, n: int = _PROGRESS_TEXT_LIMIT) -> str:
     return s[: n - 1].rstrip() + "…"
 
 
-def _safe_progress_text(text: str, *, limit: int = _PROGRESS_TEXT_LIMIT) -> str:
+def _safe_progress_text(
+    text: str,
+    *,
+    limit: int | None = _PROGRESS_TEXT_LIMIT,
+) -> str:
     redacted = redact_secrets_text(text, known_values=known_secret_values())
-    return _truncate(redacted, limit)
+    return redacted.strip() if limit is None else _truncate(redacted, limit)
 
 
 def _is_final_delivery_message(text: str) -> bool:
@@ -326,16 +329,13 @@ def make_stream_progress_callback(
             kind in {"assistant_message", "agent_message", "message"}
             and _is_final_delivery_message(text)
         )
+        agent_speech = kind in {"assistant_message", "agent_message", "message"}
         payload: dict[str, Any] = {
             "type": "engineer.progress",
             "kind": kind,
             "text": _safe_progress_text(
                 text,
-                limit=(
-                    _FINAL_PROGRESS_TEXT_LIMIT
-                    if final_delivery
-                    else _PROGRESS_TEXT_LIMIT
-                ),
+                limit=None if final_delivery or agent_speech else _PROGRESS_TEXT_LIMIT,
             ),
             "actor": actor,
             "agent_layer": _agent_layer_for_actor(actor),

@@ -4,6 +4,7 @@ import { theme } from '../lib/theme';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faPause, faPlay } from '@fortawesome/free-solid-svg-icons';
 import { DaemonSpendBadge } from './DaemonSpendBadge';
+import { useI18n } from '../i18n';
 
 export type ThemeMode = 'light' | 'dark';
 
@@ -40,34 +41,35 @@ export function TopBar({
   readOnly?: boolean;
   missionView?: MissionView | null;
 }) {
+  const { t } = useI18n();
   const role = currentRole(snap.roles);
   const missionRole = missionView?.roles.find((candidate) => candidate.role === missionView.active_role);
   const roleName = missionRole?.role || role?.role || 'manager';
   const roleActive = missionRole ? missionRole.status === 'active' : Boolean(role?.active);
   const activeItem = snap.backlog.find((item) => ACTIVE_STATUSES.has(item.status));
-  const focus = missionRole?.label || activeItem?.title || activeItem?.objective || snap.session.objective || 'Ready';
+  const focus = missionRole?.label || activeItem?.title || activeItem?.objective || snap.session.objective || t('common.ready');
   const degraded = Boolean(snap.partial || snap.observability?.slo.status === 'degraded');
   const externalDaemon = snap.daemon.alive && snap.daemon.control_available === false;
   const daemonActionLabel = externalDaemon
-    ? 'Externally managed'
+    ? t('topbar.externallyManaged')
     : snap.daemon.alive
-    ? 'Pause daemon'
-    : 'Run daemon';
+    ? t('topbar.pauseDaemon')
+    : t('topbar.runDaemon');
   const healthTitle = degraded
     ? [
         ...(snap.diagnostics ?? []).map((item) => `${item.section}: ${item.message}`),
         ...(snap.observability?.slo.violations ?? []),
-      ].join('\n') || 'Snapshot degraded'
+      ].join('\n') || t('common.degraded')
     : snapshotStale
-    ? 'Snapshot stale'
+    ? t('common.stale')
     : streamOk
-    ? 'Live'
-    : 'Reconnecting';
+    ? t('common.live')
+    : t('common.reconnecting');
 
   return (
     <header className="glass-panel glass-panel--raised flex h-12 min-w-0 shrink-0 items-center gap-2 border-b px-3 sm:gap-3 sm:px-4">
       {onOpenSessions ? (
-        <button type="button" onClick={onOpenSessions} aria-label="Open sessions" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-faint hover:bg-bg hover:text-ink lg:hidden">
+        <button type="button" onClick={onOpenSessions} aria-label={t('topbar.openSessions')} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-faint hover:bg-bg hover:text-ink lg:hidden">
           <svg viewBox="0 0 16 16" aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.25">
             <path d="M2.5 4h11M2.5 8h11M2.5 12h11" />
           </svg>
@@ -108,8 +110,8 @@ export function TopBar({
         <button
           type="button"
           onClick={onToggleMobileView}
-          aria-label={mobileView === 'activity' ? 'Show preview' : 'Show activity'}
-          title={mobileView === 'activity' ? 'Show preview' : 'Show activity'}
+          aria-label={mobileView === 'activity' ? t('topbar.showPreview') : t('topbar.showActivity')}
+          title={mobileView === 'activity' ? t('topbar.showPreview') : t('topbar.showActivity')}
           className="icon-control flex h-8 w-8 shrink-0 items-center justify-center lg:hidden"
         >
           <svg viewBox="0 0 16 16" aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.25">
@@ -126,16 +128,16 @@ export function TopBar({
             disabled={busy || externalDaemon}
             onClick={snap.daemon.alive ? onStop : onStart}
             aria-label={daemonActionLabel}
-            title={externalDaemon ? 'Daemon is live in an external PID namespace; use its supervisor to control it.' : daemonActionLabel}
+            title={externalDaemon ? t('topbar.externalDaemonHint') : daemonActionLabel}
             className="compact-control flex h-8 shrink-0 items-center gap-1 px-2 disabled:opacity-40"
           >
             <FontAwesomeIcon icon={snap.daemon.alive ? faPause : faPlay} className="h-3 w-3" />
-            <span className="hidden sm:inline">{externalDaemon ? 'External' : snap.daemon.alive ? 'Pause' : 'Run'}</span>
+            <span className="hidden sm:inline">{externalDaemon ? t('common.external') : snap.daemon.alive ? t('common.pause') : t('common.run')}</span>
           </button>
           <button
             type="button"
-            aria-label="Manage session"
-            title="Manage session"
+            aria-label={t('topbar.manageSession')}
+            title={t('topbar.manageSession')}
             onClick={onManage}
             className="icon-control flex h-8 w-8 shrink-0 items-center justify-center text-sm tracking-widest"
           >

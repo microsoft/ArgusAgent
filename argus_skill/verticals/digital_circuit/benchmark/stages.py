@@ -27,7 +27,7 @@ REQUIRE_INDEPENDENT_REVIEW = True
 
 _PIPELINE_CHECK = (
     "Pipeline state present",
-    "test -f research/PIPELINE_STATE.json",
+    "test -f .argus/PIPELINE_STATE.json",
 )
 
 STAGE_CHECKS = {

@@ -38,8 +38,7 @@ def test_engineer_and_reviewer_edit_one_shared_checkpoint_in_sequence(
     backend.queue("distiller", CannedResponse(message=SKILL_MD))
 
     def engineer_one(_prompt, _options) -> str:
-        assert checkpoint.exists()
-        assert "# Goal" in checkpoint.read_text(encoding="utf-8")
+        assert not checkpoint.exists()
         checkpoint.write_text("# Current State\n\nEngineer round 1\n", encoding="utf-8")
         return "round 1 work"
 
@@ -99,10 +98,18 @@ def test_engineer_and_reviewer_edit_one_shared_checkpoint_in_sequence(
     ]
 
     prompts = {label: prompt for label, prompt, _ in backend.history}
+    # Round 1 is told the path too. It has to be: round 1 is the round that
+    # WRITES the baton round 2 reads, and its sealed handoff record already
+    # advertises `checkpoint.path`. Withholding it here meant round 2 opened
+    # that advertised path to a missing file and restarted from nothing.
+    # `test_reviewer_output_does_not_need_checkpoint_json` below pins the other
+    # side of this: a one-round mission still writes no checkpoint, because the
+    # instruction carries its own "only when another round needs it" trigger.
     assert str(checkpoint.resolve()) in prompts["engineer-r1"]
+    assert str(checkpoint.resolve()) in prompts["engineer-r2"]
     reviewer_prompts = [p for label, p, _ in backend.history if label == "reviewer"]
-    assert all(str(checkpoint.resolve()) in prompt for prompt in reviewer_prompts)
-    assert all("do not emit checkpoint JSON" in prompt for prompt in reviewer_prompts)
+    assert all(str(checkpoint.resolve()) not in prompt for prompt in reviewer_prompts)
+    assert all("NEXT_ACTION" in prompt for prompt in reviewer_prompts)
 
 
 def test_reviewer_output_does_not_need_checkpoint_json(tmp_path: Path) -> None:
@@ -121,4 +128,4 @@ def test_reviewer_output_does_not_need_checkpoint_json(tmp_path: Path) -> None:
     ).run("demo task", workdir=tmp_path)
 
     assert outcome.successful
-    assert checkpoint.exists()
+    assert not checkpoint.exists()

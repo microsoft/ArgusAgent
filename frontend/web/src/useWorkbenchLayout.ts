@@ -14,8 +14,11 @@ export function useWorkbenchLayout() {
   const [showReasoning, setShowReasoning] = useState(
     () => storedBoolean('argus.reasoning.visible.v1', false),
   );
-  const [workspaceView, setWorkspaceView] = useState<'mission' | 'activity'>(
-    () => localStorage.getItem('argus.workspace.view') === 'mission' ? 'mission' : 'activity',
+  const [workspaceView, setWorkspaceView] = useState<'mission' | 'activity' | 'workbench'>(
+    () => {
+      const stored = localStorage.getItem('argus.workspace.view');
+      return stored === 'mission' || stored === 'workbench' ? stored : 'activity';
+    },
   );
   const [mobileView, setMobileView] = useState<'activity' | 'preview'>('activity');
   const [rightPanelOpen, setRightPanelOpen] = useState(() => storedBoolean('argus.preview.expanded.v5', true));

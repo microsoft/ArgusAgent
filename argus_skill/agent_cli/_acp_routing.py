@@ -53,6 +53,7 @@ class AcpRoutingMixin:
     def prewarm_acp_client(
         self,
         *,
+        run_label: str,
         model: str | None,
         reasoning_effort: str | None,
         lean: bool,
@@ -61,6 +62,8 @@ class AcpRoutingMixin:
         read_only: bool = False,
         add_dirs: list[str] | None = None,
     ) -> None:
+        if not self._acp_enabled(run_label):
+            return
         from .copilot_acp import get_client
 
         get_client(

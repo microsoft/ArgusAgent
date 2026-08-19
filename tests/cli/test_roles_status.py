@@ -6,6 +6,7 @@ Deterministic: every test passes an explicit ``env`` and writes a synthetic
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -71,8 +72,9 @@ def test_backend_display_falls_back_when_codex_binary_is_missing(
     tmp_path,
     monkeypatch,
 ):
-    copilot = tmp_path / "copilot"
-    copilot.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    copilot = tmp_path / ("copilot.cmd" if os.name == "nt" else "copilot")
+    script = "@echo off\r\nexit /b 0\r\n" if os.name == "nt" else "#!/bin/sh\nexit 0\n"
+    copilot.write_text(script, encoding="utf-8")
     copilot.chmod(0o755)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PATH", str(tmp_path))
@@ -115,6 +117,20 @@ def test_opencode_backend_has_display_label():
     assert config.backend_label == "OpenCode"
 
 
+def test_grok_backend_has_display_label():
+    env = {"ARGUS_SKILL_LIFE_BACKEND": "grok"}
+    config = resolve_role_config("manager", env=env)
+    assert config.backend == "grok"
+    assert config.backend_label == "Grok Build"
+
+
+def test_qoder_backend_has_display_label():
+    env = {"ARGUS_SKILL_LIFE_BACKEND": "qoder"}
+    config = resolve_role_config("manager", env=env)
+    assert config.backend == "qoder"
+    assert config.backend_label == "Qoder"
+
+
 def test_memory_backend_preserved():
     env = {"ARGUS_SKILL_LIFE_BACKEND": "memory"}
     assert resolve_role_config("engineer", env=env).backend == "memory"
@@ -152,6 +168,11 @@ def test_model_defaults_to_gpt55():
 def test_effort_shown_for_reasoning_model_defaults_xhigh():
     c = resolve_role_config("engineer", env={"ARGUS_SKILL_ENGINEER_MODEL": "gpt-5.5"})
     assert c.effort == "xhigh"
+
+
+def test_manager_and_planner_effort_default_to_high() -> None:
+    assert resolve_role_config("manager", env={}).effort == "high"
+    assert resolve_role_config("planner", env={}).effort == "high"
 
 
 def test_effort_none_for_non_reasoning_model():
@@ -274,6 +295,30 @@ def test_completed_venue_call_is_not_active(tmp_path):
     assert engineer.active is False
     assert engineer.status == "done"
     assert engineer.label == "researching target venue done"
+
+
+def test_mission_completion_closes_orphaned_inflight_role_call(tmp_path):
+    now = time.time()
+    _write_events(
+        tmp_path,
+        [
+            {
+                "type": "agent.io.start",
+                "call_id": "orphaned-manager-call",
+                "run_label": "manager-classify-grounded",
+                "ts": now - 220,
+            },
+            {
+                "type": "life.mission.completed",
+                "item_id": "mission-1",
+                "status": "done",
+                "success": True,
+                "ts": now - 1,
+            },
+        ],
+    )
+
+    assert role_activity(tmp_path, now=now)["manager"].active is False
 
 
 def test_activity_has_only_one_fresh_active_role(tmp_path):
@@ -477,7 +522,62 @@ def test_activity_does_not_put_assistant_prose_in_role_bar(tmp_path):
         "agent_layer": "reviewer", "text": "a very long private review paragraph",
         "ts": now - 1,
     }])
-    assert role_activity(tmp_path, now=now)["reviewer"].label == "reporting progress"
+    # Every role streams under the one ``engineer.progress`` type, so the label
+    # comes from ``agent_layer``: a Reviewer turn reads "reviewing", not the
+    # Engineer's generic "reporting progress". The property this test exists for
+    # is the second assertion — the prose itself never reaches the role bar.
+    label = role_activity(tmp_path, now=now)["reviewer"].label
+    assert label == "reviewing"
+    assert "private review paragraph" not in label
+
+
+def test_activity_labels_progress_by_agent_layer(tmp_path):
+    now = time.time()
+    _write_events(tmp_path, [
+        {"type": "engineer.progress", "kind": "tool_call",
+         "agent_layer": "planner", "text": "/bin/bash -lc 'pytest -q'",
+         "ts": now - 3},
+        {"type": "engineer.progress", "kind": "tool_call",
+         "agent_layer": "engineer", "text": "/bin/bash -lc 'pytest -q'",
+         "ts": now - 2},
+    ])
+
+    acts = role_activity(tmp_path, now=now)
+    # Same event type, same text: only the layer differs. A planning turn must
+    # not be described as an Engineer shell step.
+    assert acts["planner"].label == "planning"
+    assert acts["engineer"].label == "run · pytest -q"
+
+
+def test_activity_keeps_action_summary_for_non_engineer_layers(tmp_path):
+    now = time.time()
+    _write_events(tmp_path, [{
+        "type": "engineer.progress", "kind": "reasoning",
+        "agent_layer": "planner", "action_summary": "ranking three candidate routes",
+        "ts": now - 1,
+    }])
+
+    assert role_activity(tmp_path, now=now)["planner"].label == (
+        "ranking three candidate routes"
+    )
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    ["life.planner.waiting", "life.team.waiting"],
+)
+def test_planner_waiting_event_projects_waiting_label(tmp_path, event_type):
+    now = time.time()
+    _write_events(tmp_path, [{
+        "type": event_type,
+        "reason": "await remote job completion",
+        "ts": now - 1,
+    }])
+
+    planner = role_activity(tmp_path, now=now)["planner"]
+    assert planner.label == "waiting on external work"
+    assert planner.status == "waiting"
+    assert planner.active is False
 
 
 def test_completed_manager_reply_is_idle_immediately(tmp_path):

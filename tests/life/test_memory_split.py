@@ -227,6 +227,10 @@ def test_memory_bundle_render_prelude_excludes_cross_project_journal(
     other = MemoryBundle.for_cwd(tmp_path / "other")
     bundle.init()
     other.init()
+    bundle.identity.path.write_text(
+        "# Operator identity\n\nVoice: concise.\n",
+        encoding="utf-8",
+    )
     _write_project_event(
         other.project.memory,
         JournalEntry.new(
@@ -245,7 +249,7 @@ def test_memory_bundle_render_prelude_excludes_cross_project_journal(
             tags=["postgres", "migration"],
         )
     )
-    rendered = bundle.render_prelude()
+    rendered = bundle.render_prelude(max_project_entries=2)
     assert "Memory context (non-authoritative)" in rendered
     assert "Identity" in rendered
     assert "local postgres migration" in rendered
@@ -335,8 +339,8 @@ def test_cli_status_and_prelude_are_project_scoped(
     assert bundle_a.project.memory.path != bundle_b.project.memory.path
     assert bundle_a.backlog.path != bundle_b.backlog.path
 
-    prelude_a = bundle_a.render_prelude()
-    prelude_b = bundle_b.render_prelude()
+    prelude_a = bundle_a.render_prelude(max_project_entries=1)
+    prelude_b = bundle_b.render_prelude(max_project_entries=1)
     assert "alpha memory" in prelude_a
     assert "beta memory" not in prelude_a
     assert "beta memory" in prelude_b

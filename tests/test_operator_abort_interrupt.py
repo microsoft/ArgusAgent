@@ -40,6 +40,9 @@ def test_operator_abort_pattern_is_recognized() -> None:
     assert fatal_error_looks_like_operator_abort_request(
         "EXTERNAL INTERRUPT: OPERATOR ABORT REQUESTED: whatever"
     )
+    assert fatal_error_looks_like_operator_abort_request(
+        "refused before start: operator abort requested: pause session"
+    )
 
 
 def test_operator_abort_pattern_rejects_unrelated_or_empty_text() -> None:
@@ -81,6 +84,8 @@ def test_operator_abort_review_decision_is_honest_daemon_keeps_running() -> None
     )
     assert decision.status == "blocked"
     assert decision.backend_stop_kind == "operator_abort"
+    assert decision.reason == "The operator requested this mission be aborted."
+    assert "Manager decided" not in decision.reason
     # Must NOT claim the daemon itself is restarting/shutting down — only
     # this one mission was interrupted (regression guard against copy-pasting
     # daemon_stop_review_decision's "restart the daemon" wording verbatim,
@@ -177,7 +182,6 @@ def test_loop_stops_clean_on_operator_abort_without_calling_reviewer(
         max_rounds=10,
         backend_failure_threshold=2,
         backend_failure_backoff_seconds=0.0,
-        effective_progress_timeout_seconds=0,
         background_subagent_advisory=False,
     )
     status, rounds, _final_msg, reason, _tid = engine.run(
@@ -221,7 +225,6 @@ def test_loop_stops_without_backend_retry_when_reviewer_is_operator_aborted(
         max_rounds=10,
         backend_failure_threshold=2,
         backend_failure_backoff_seconds=0.0,
-        effective_progress_timeout_seconds=0,
         background_subagent_advisory=False,
     )
 

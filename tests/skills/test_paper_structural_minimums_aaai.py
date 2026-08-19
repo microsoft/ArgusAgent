@@ -24,9 +24,9 @@ _AAAI_PREAMBLE = (
 
 
 def _mk(tmp_path: Path, venue: str, body: str) -> set[str]:
-    (tmp_path / "research").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".argus").mkdir(parents=True, exist_ok=True)
     (tmp_path / "paper").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "research" / "PIPELINE_STATE.json").write_text(
+    (tmp_path / ".argus" / "PIPELINE_STATE.json").write_text(
         json.dumps({"target_venue": venue}), encoding="utf-8"
     )
     (tmp_path / "paper" / "main.tex").write_text(body, encoding="utf-8")

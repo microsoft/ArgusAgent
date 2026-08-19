@@ -17,6 +17,7 @@ from ...core.event_catalog import EventType
 from ...core.planner_verdict import PlannerVerdictStatus
 from ._constants import (
     MANAGER_FEEDBACK_REPLAN_LIMIT,
+    PLAN_AWAITING,
     PLAN_ERROR,
     PLAN_RETRY,
     PLAN_TERMINAL_IDLE,
@@ -30,6 +31,33 @@ from ._planning_cycle_helpers import (
 
 class PlanningCycleIntakeMixin:
     """Gate checks + preflight short-circuits run before planner invocation."""
+
+    def _bounded_completion_reason(self) -> str:
+        """Return a deterministic completion reason for a finite campaign."""
+        artifact_root = self._artifact_root()
+        if (
+            getattr(self.config, "open_ended", False)
+            or self._effective_final_certification_gate(artifact_root)
+        ):
+            return ""
+
+        from ...core.external_completion_gate import external_completion_gate_issue
+        from ...skills.vertical_select import (
+            resolve_vertical,
+            vertical_has_current_completion_certificate,
+        )
+
+        vertical = resolve_vertical(artifact_root)
+        if not vertical_has_current_completion_certificate(artifact_root, vertical):
+            return ""
+        if external_completion_gate_issue(artifact_root):
+            return ""
+        if _research_project_done_issue(
+            artifact_root,
+            self.memory.journal.all(),
+        ):
+            return ""
+        return f"bounded {vertical} vertical reached terminal stage"
 
     def _pc_intake_gate(self, state: _PlanCycleState) -> Any | None:
         """Drain operator input and reject/idle before touching the planner.
@@ -46,10 +74,11 @@ class PlanningCycleIntakeMixin:
             if revision_request is None
             else []
         )
+        state.fresh_operator_messages = list(dict.fromkeys(transient_messages))
         state.operator_messages = list(
             dict.fromkeys(
                 ([active_directive] if active_directive else [])
-                + transient_messages
+                + state.fresh_operator_messages
             )
         )
         if transient_messages:
@@ -186,6 +215,11 @@ class PlanningCycleIntakeMixin:
         """Wiki-maintenance / no-runner / external-blocker / bounded-terminal."""
         revision_request = state.revision_request
 
+        runtime_block = self._runtime_failure_circuit_block()
+        if runtime_block is not None:
+            self._enter_pause_backoff()
+            return PLAN_AWAITING
+
         wiki_collect_task = (
             None
             if revision_request is not None
@@ -213,7 +247,7 @@ class PlanningCycleIntakeMixin:
 
         # Only skip the planner on an operator-only external blocker when the
         # full EMNLP gate is active. A ``--bounded`` mission
-        # (``full_paper_gate=False``) does not require the external benchmark
+        # (``final_certification_gate=False``) does not require the external benchmark
         # targets, so it must fall through to the planner and reach its own
         # ``project_done`` instead of waiting forever on artifacts it never
         # needs. Mirrors the gating in
@@ -221,7 +255,7 @@ class PlanningCycleIntakeMixin:
         short_circuit = None
         if (
             revision_request is None
-            and self._effective_full_paper_gate(self._artifact_root())
+            and self._effective_final_certification_gate(self._artifact_root())
         ):
             short_circuit = self._operator_external_blocker_short_circuit_decision(
                 project_root=self._project_workdir(),
@@ -235,29 +269,16 @@ class PlanningCycleIntakeMixin:
         # downstream gate reads see a stable vertical. Placing it AFTER the
         # short-circuits means a blocked/idle cycle never triggers a Manager
         # decision (nor a wasted planner-runner call).
-        self._resolve_vertical_once()
+        if str((state.manager_intent or {}).get("vertical") or "").strip():
+            self._vertical_resolved = True
+            manager_intent = {}
+        else:
+            manager_intent = self._resolve_vertical_once()
+        if manager_intent:
+            state.manager_intent = manager_intent
 
-        artifact_root = self._artifact_root()
-        from ...core.external_completion_gate import external_completion_gate_issue
-        from ...skills.vertical_select import (
-            resolve_vertical,
-            vertical_has_current_completion_certificate,
-        )
-
-        vertical = resolve_vertical(artifact_root)
-        if (
-            revision_request is None
-            and
-            not getattr(self.config, "open_ended", False)
-            and not self._effective_full_paper_gate(artifact_root)
-            and vertical_has_current_completion_certificate(artifact_root, vertical)
-            and not external_completion_gate_issue(artifact_root)
-            and not _research_project_done_issue(
-                artifact_root,
-                self.memory.journal.all(),
-            )
-        ):
-            reason = f"bounded {vertical} vertical reached terminal stage"
+        reason = "" if revision_request is not None else self._bounded_completion_reason()
+        if reason:
             delivered = self._emit_planner_verdict(
                 status=PlannerVerdictStatus.COMPLETED,
                 completion_kind="project_completed",

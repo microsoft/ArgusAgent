@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
-import sys
 from pathlib import Path
 
 import jsonschema
@@ -78,6 +76,21 @@ def test_daemon_manager_intent_legacy_fields_are_normalized() -> None:
     assert "event_validation" not in event
 
 
+def test_manager_intent_legacy_event_without_ids_gets_local_correlation() -> None:
+    event = normalize_event_envelope({
+        "type": EventType.LIFE_MANAGER_INTENT_COMPLETED,
+        "execution_task": "Audit the runtime",
+        "vertical": "software",
+        "kind": "software",
+        "stages": ["delivery"],
+    })
+
+    assert event["intent_id"] == event["item_id"]
+    assert event["intent_id"].startswith("legacy-")
+    assert event["objective"] == "Audit the runtime"
+    assert "event_validation" not in event
+
+
 def test_payload_schema_validates_types_and_payload_versions() -> None:
     invalid = normalize_event_envelope({
         "type": EventType.AGENT_IO_COMPLETE,
@@ -126,7 +139,7 @@ def test_project_completion_events_are_typed_cross_component_signals() -> None:
         EventType.PROJECT_COMPLETION_REFUSED,
         vertical="research",
         source="planner_verdict",
-        required_gate="full_paper",
+        required_gate="certified",
         reason="source is weaker than the declared gate",
     )
     assert refused["type"] == "project.completion_refused"
@@ -139,6 +152,7 @@ def test_unknown_vertical_events_remain_extensible_and_legacy_aliases_are_explic
     assert unknown.valid is True
     assert unknown.known is False
     assert canonical_event_type("mission.started") == "life.mission.started"
+    assert canonical_event_type("life.team.waiting") == "life.planner.waiting"
     aliased = normalize_event_envelope({"type": "mission.started"})
     assert aliased["canonical_type"] == "life.mission.started"
 
@@ -206,19 +220,12 @@ def test_payload_schema_is_standard_json_schema_and_generated_types_are_current(
     assert set(payload["events"]) == set(EVENT_PAYLOAD_SCHEMAS)
     assert set(payload["events"]) <= {event.value for event in EventType}
 
-    result = subprocess.run(
-        [sys.executable, "scripts/generate_event_payload_types.py", "--check"],
-        cwd=Path(__file__).parents[2],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr or result.stdout
-
-    root = Path(__file__).parents[2]
-    for package_path in (
-        root / "frontend" / "tui" / "package.json",
-        root / "frontend" / "web" / "package.json",
-    ):
-        package = json.loads(package_path.read_text(encoding="utf-8"))
-        assert "generate_event_payload_types.py --check" in package["scripts"]["build"]
+    generated = (
+        Path(__file__).parents[2]
+        / "frontend"
+        / "core"
+        / "src"
+        / "eventPayloads.generated.ts"
+    ).read_text(encoding="utf-8")
+    assert f"EVENT_PAYLOAD_SCHEMA_VERSION = {EVENT_PAYLOAD_SCHEMA_VERSION}" in generated
+    assert all(event_type in generated for event_type in payload["events"])

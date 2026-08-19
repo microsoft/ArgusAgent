@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Modal } from './Modal';
 import { commandNeedsArgument, type SlashCommand } from '../../../core/src/commands';
+import { isImeComposing } from '../lib/ime';
+import { useI18n, type Locale } from '../i18n';
+import { commandDescription, commandGroup } from '../lib/commandI18n';
 
 export interface PaletteItem {
   id: string;
@@ -18,12 +21,13 @@ export function commandPaletteRows(
   commands: readonly SlashCommand[],
   execute: (name: string) => void,
   prefill: (text: string) => void,
+  locale: Locale = 'en',
 ): PaletteItem[] {
   return commands.map((command) => ({
     id: `command-${command.id}`,
-    label: command.desc,
+    label: commandDescription(command, locale),
     hint: `${command.name}${command.arg ? ` ${command.arg}` : ''}`,
-    group: command.group,
+    group: commandGroup(command, locale),
     keywords: [command.name, ...(command.aliases ?? [])].join(' '),
     run: () => commandNeedsArgument(command)
       ? prefill(`${command.name} `)
@@ -51,6 +55,7 @@ export function CommandPalette({
   onClose: () => void;
   items: PaletteItem[];
 }) {
+  const { t } = useI18n();
   const [q, setQ] = useState('');
   const [sel, setSel] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -83,6 +88,7 @@ export function CommandPalette({
   };
 
   const onKey = (e: React.KeyboardEvent) => {
+    if (isImeComposing(e)) return;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       if (filtered.length) setSel((s) => Math.min(filtered.length - 1, s + 1));
@@ -108,14 +114,14 @@ export function CommandPalette({
   let flatIndex = -1;
 
   return (
-    <Modal open={open} onClose={onClose} label="Command palette" width="max-w-xl" align="top">
+    <Modal open={open} onClose={onClose} label={t('help.palette')} width="max-w-xl" align="top">
       <div className="border-b border-line px-4 py-3">
         <input
           ref={inputRef}
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={onKey}
-          placeholder="Type a command or search…"
+          placeholder={t('palette.placeholder')}
           role="combobox"
           aria-expanded={open}
           aria-autocomplete="list"
@@ -126,7 +132,7 @@ export function CommandPalette({
       </div>
       <div id="command-palette-results" role="listbox" className="max-h-[52vh] overflow-y-auto scroll-thin py-1.5">
         {filtered.length === 0 && (
-          <div className="px-4 py-6 text-center text-xs text-ink-faint">no matching commands</div>
+          <div className="px-4 py-6 text-center text-xs text-ink-faint">{t('palette.noMatches')}</div>
         )}
         {groups.map((g) => (
           <div key={g.name} className="mb-1">
@@ -158,9 +164,9 @@ export function CommandPalette({
         ))}
       </div>
       <div className="flex items-center gap-3 border-t border-line px-4 py-1.5 text-[10px] text-ink-faint">
-        <span>↑↓ navigate</span>
-        <span>↵ run</span>
-        <span>esc close</span>
+        <span>{t('palette.navigate')}</span>
+        <span>{t('palette.run')}</span>
+        <span>{t('palette.close')}</span>
       </div>
     </Modal>
   );

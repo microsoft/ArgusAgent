@@ -352,7 +352,10 @@ def test_canonical_image2_metadata_is_not_a_structural_gate(
     assert matched.ok, matched.to_text()
 
 
-def test_legacy_manifest_symlink_is_not_a_structural_blocker(tmp_path: Path) -> None:
+def test_legacy_manifest_symlink_is_not_a_structural_blocker(
+    tmp_path: Path,
+    require_symlink_support,
+) -> None:
     _seed_minimal_passing_paper(tmp_path)
     manifest = tmp_path / "paper" / "figures" / "IMAGE2_FIGURES.json"
     manifest.unlink()
@@ -379,6 +382,7 @@ def test_legacy_manifest_symlink_is_not_a_structural_blocker(tmp_path: Path) -> 
 
 def test_canonical_manifest_symlink_is_not_a_structural_blocker(
     tmp_path: Path,
+    require_symlink_support,
 ) -> None:
     _seed_minimal_passing_paper(tmp_path)
     figures = tmp_path / "paper" / "figures"

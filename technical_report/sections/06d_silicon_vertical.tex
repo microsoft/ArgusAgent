@@ -1,0 +1,44 @@
+\subsection{A Chip the Runtime Designed: ACE-2}
+\label{sec:silicon-vertical}
+
+The campaigns above produce software, proofs, and manuscripts. ACE-2 asks whether
+the same runtime holds when the artifact is hardware, where an unverified claim
+survives exactly as long as it takes someone to run the tool that contradicts it.
+\systemname specified ACE-2, wrote its RTL, built its verification environment,
+and drove it through mapped synthesis and static timing without a human author of
+record for any of those artifacts. The result is an inference accelerator that
+executes Qwen2.5-0.5B end to end in W4A8, certified against a fixed scope.
+
+\paragraph{Functional closure.} The accepted design runs the full 24-layer
+Qwen2.5-0.5B W4A8 command integration. Layer 0 matches the reference on all 18
+ordered operators exactly, and the two-token runtime completes
+13{,}914/13{,}914 commands over 1{,}240{,}410{,}384 simulator cycles with
+generated token identifiers $[0,0]$ and no first failure recorded. The runtime
+package, command log, and progress journal are each bound by content hash, so the
+functional claim resolves to specific bytes rather than to a summary.
+
+\paragraph{Physical closure.} Canonical SKY130 HD mapped synthesis and OpenSTA at
+TT 25\,\textdegree C / 1.80\,V report 62{,}283 cells and 0.614\,mm$^2$ of
+non-SRAM area against an operator-set cap of 2.0\,mm$^2$, with $+0.6966$\,ns
+detailed setup slack, 0.00\,ns worst negative slack, 0.00\,ns total negative
+slack, and a 10.000\,ns clock period. Both operator-owned targets---the area cap
+and the 100\,MHz floor---pass without relaxation, and the passing packet is the
+sole exactly-once canonical run rather than the best of several attempts.
+
+\paragraph{What the gate produced.} The certification is dated 2026-08-04 and was
+issued by a Reviewer that did not perform the work, bound to one RTL tree hash.
+Each accepted RTL repair carries its own reviewer binding together with the
+originating and resulting tree hashes, so the certified design is reachable from
+the audit trail rather than asserted alongside it. The more informative artifact,
+for the argument of this report, is what the certificate refuses to say. It
+enumerates its own exclusions: no routed timing, no power signoff, no DRC/LVS, no
+GDS or tapeout, no silicon validation, no generation beyond two tokens, no
+external deployment interfaces, and no FPGA prototype. That list was produced by
+the same gate that admitted the positive claims. An unbounded runtime would have
+reported a chip; this one reported a chip and the exact perimeter of the evidence
+supporting it.
+
+ACE-2 therefore extends the pattern of Sections~\ref{sec:vertical-trace}
+and~\ref{sec:paper-case-study} into a domain with an unusually unforgiving
+verifier. The functional and physical claims are narrow by construction, and the
+scope conditions are part of the output rather than a caveat added afterward.

@@ -1,6 +1,6 @@
 ---
 name: "B200 KernelBench Runtime"
-description: "{'Operational playbook for B200 KernelBench/SOL runs': 'verify the B200 SSH endpoint, scorer port-forward, frozen official scorer, artifact capture, and the common infrastructure/correctness traps before optimizing kernels.'}"
+description: "{'Operational playbook for B200 KernelBench/SOL runs': 'verify the configured B200 remote, scorer endpoint, frozen official scorer, artifact capture, and the common infrastructure/correctness traps before optimizing kernels.'}"
 ---
 
 # B200 KernelBench Runtime
@@ -8,7 +8,7 @@ description: "{'Operational playbook for B200 KernelBench/SOL runs': 'verify the
 ## When to use
 
 Use this skill when a task mentions B200, KernelBench, SOL, SOL-ExecBench,
-`eval_solution.sh solutions`, `36_RMSNorm_`, `argus-kbench-evalsrv`, a B200
+`eval_solution.sh solutions`, `36_RMSNorm_`, a B200
 scorer, or a GPU-kernel benchmark whose score comes from a frozen service.
 
 Pair it with `SOL Kernel SOTA Optimization` for mechanism search and with
@@ -23,10 +23,14 @@ This skill owns the **runtime and evidence gate**, not the kernel idea.
 2. Prove the B200 and scorer are reachable before editing a kernel:
 
    ```bash
-   ssh -p 2231 -i ~/.ssh/id_ed25519 -o BatchMode=yes root@127.0.0.1 \
+   export KERNELBENCH_REMOTE='<remote from mission manifest>'
+   export KERNELBENCH_SCORER_URL='<scorer base URL from mission manifest>'
+   test -n "$KERNELBENCH_REMOTE" -a -n "$KERNELBENCH_SCORER_URL"
+
+   ssh "$KERNELBENCH_REMOTE" \
      'hostname; nvidia-smi --query-gpu=index,name,memory.used,utilization.gpu --format=csv,noheader'
 
-   curl -fsS --max-time 5 http://127.0.0.1:2232/health
+   curl -fsS --max-time 5 "$KERNELBENCH_SCORER_URL/health"
    ```
 
 3. If the scorer is down, restore the port-forward or write an infrastructure
@@ -46,13 +50,13 @@ This skill owns the **runtime and evidence gate**, not the kernel idea.
 
 ## Known B200 facts to re-verify
 
-These facts were true in the recorded Argus workspace but must be checked in the
-current session:
+These facts must be checked in the current mission rather than copied from a
+historical deployment:
 
-- B200 SSH often appears as `root@127.0.0.1 -p 2231`.
-- KernelBench scorer health has been exposed at `127.0.0.1:2232/health`.
-- The scorer backend has reported `gpu: "NVIDIA B200"` and 8 benchmark
-  problems including `36_RMSNorm_`.
+- The remote command and scorer URL come from the mission manifest or
+  environment.
+- The scorer backend must report `gpu: "NVIDIA B200"` and the expected
+  benchmark problem set.
 - A working scorer may still exit nonzero after printing a `RESULT` line if the
   local artifact directory is missing; create output directories and preserve
   exit codes.
@@ -133,4 +137,3 @@ Every accepted B200 benchmark mission must leave:
 
 If any rung fails, stop optimizing and record a blocker with the exact command
 output. Waiting is acceptable; fabricated scores are not.
-

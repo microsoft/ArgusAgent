@@ -17,6 +17,7 @@ from .stages import (
     STAGE_ORDER,
     completion_gate,
     role_banner,
+    stage_completion_issues,
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "STAGE_ORDER",
     "completion_gate",
     "role_banner",
+    "stage_completion_issues",
 ]

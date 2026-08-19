@@ -1,0 +1,176 @@
+{
+  "benchmark": "MLE-Bench Lite (official MLE-Bench Low split)",
+  "case_id": "mle_bench_lite_reviewer_approved_medal_campaign",
+  "competitions": {
+    "aerial-cactus-identification": {
+      "above_median": true,
+      "best_score": 1.0,
+      "graded_submissions": 8,
+      "is_lower_better": false,
+      "medal": "gold",
+      "provenance": "campaign_snapshot_20260729T095000Z",
+      "thresholds": {
+        "bronze": 1.0,
+        "gold": 1.0,
+        "median": 0.9991,
+        "silver": 1.0
+      }
+    },
+    "denoising-dirty-documents": {
+      "above_median": true,
+      "best_score": 0.02618,
+      "graded_submissions": 2,
+      "is_lower_better": true,
+      "medal": "bronze",
+      "provenance": "campaign_snapshot_20260729T095000Z",
+      "thresholds": {
+        "bronze": 0.04517,
+        "gold": 0.01794,
+        "median": 0.07325,
+        "silver": 0.02609
+      }
+    },
+    "detecting-insults-in-social-commentary": {
+      "above_median": true,
+      "best_score": 0.91386,
+      "graded_submissions": null,
+      "is_lower_better": false,
+      "medal": "gold",
+      "provenance": "operator-run competition outside the 19-competition accessible set of the 2026-07-29 campaign snapshot; medal awarded by the external MLE-Bench grader",
+      "thresholds": null
+    },
+    "dog-breed-identification": {
+      "above_median": true,
+      "best_score": 0.14874,
+      "graded_submissions": 12,
+      "is_lower_better": true,
+      "medal": null,
+      "provenance": "campaign_snapshot_20260729T095000Z",
+      "thresholds": {
+        "bronze": 0.04598,
+        "gold": 0.0005,
+        "median": 0.47205,
+        "silver": 0.00539
+      }
+    },
+    "dogs-vs-cats-redux-kernels-edition": {
+      "above_median": true,
+      "best_score": 0.02168,
+      "graded_submissions": 1,
+      "is_lower_better": true,
+      "medal": "gold",
+      "provenance": "campaign_snapshot_20260729T095000Z",
+      "thresholds": {
+        "bronze": 0.06127,
+        "gold": 0.03882,
+        "median": 0.12216,
+        "silver": 0.05038
+      }
+    },
+    "histopathologic-cancer-detection": {
+      "above_median": true,
+      "best_score": 0.98312,
+      "graded_submissions": 1,
+      "is_lower_better": false,
+      "medal": "silver",
+      "provenance": "campaign_snapshot_20260729T095000Z",
+      "thresholds": {
+        "bronze": 0.9738,
+        "gold": 0.9835,
+        "median": 0.9477,
+        "silver": 0.9798
+      }
+    },
+    "jigsaw-toxic-comment-classification-challenge": {
+      "above_median": true,
+      "best_score": 0.98657,
+      "graded_submissions": 6,
+      "is_lower_better": false,
+      "medal": "bronze",
+      "provenance": "campaign_snapshot_20260729T095000Z",
+      "thresholds": {
+        "bronze": 0.98639,
+        "gold": 0.9874,
+        "median": 0.98079,
+        "silver": 0.98668
+      }
+    },
+    "leaf-classification": {
+      "above_median": true,
+      "best_score": 0.00196,
+      "graded_submissions": 4,
+      "is_lower_better": true,
+      "medal": "silver",
+      "provenance": "campaign_snapshot_20260729T095000Z",
+      "thresholds": {
+        "bronze": 0.01526,
+        "gold": 0.0,
+        "median": 0.108345,
+        "silver": 0.00791
+      }
+    },
+    "mlsp-2013-birds": {
+      "above_median": true,
+      "best_score": 0.91479,
+      "graded_submissions": 2,
+      "is_lower_better": false,
+      "medal": "silver",
+      "provenance": "campaign_snapshot_20260729T095000Z",
+      "thresholds": {
+        "bronze": 0.87372,
+        "gold": 0.93527,
+        "median": 0.86572,
+        "silver": 0.90038
+      }
+    },
+    "new-york-city-taxi-fare-prediction": {
+      "above_median": false,
+      "best_score": 4.07404,
+      "graded_submissions": 4,
+      "is_lower_better": true,
+      "medal": null,
+      "provenance": "campaign_snapshot_20260729T095000Z",
+      "thresholds": {
+        "bronze": 2.92371,
+        "gold": 2.83377,
+        "median": 3.59741,
+        "silver": 2.88191
+      }
+    },
+    "nomad2018-predict-transparent-conductors": {
+      "above_median": true,
+      "best_score": 0.06402,
+      "graded_submissions": null,
+      "is_lower_better": true,
+      "medal": "bronze",
+      "provenance": "closed_after_snapshot; listed as pending in campaign-state.json at 20260729",
+      "thresholds": {
+        "bronze": 0.06582,
+        "gold": null,
+        "median": null,
+        "silver": null
+      }
+    }
+  },
+  "completion_gate": "reviewer-approved bronze medal or better",
+  "medal_totals": {
+    "bronze": 3,
+    "gold": 3,
+    "silver": 3,
+    "total": 9
+  },
+  "scope_note": "Medals are awarded by the external MLE-Bench grader against each competition's official Kaggle leaderboard. The campaign is ongoing; this package reports competitions closed to date.",
+  "snapshot": {
+    "campaign_state": {
+      "accessible_total": 19,
+      "completed": 7,
+      "pending": 10,
+      "running": 2
+    },
+    "competitions_graded": 9,
+    "graded_submissions": 40,
+    "host": "GCR Bonete B200 shared PVC pvc-vast-bonete01",
+    "id": "mle-campaign-snapshot-20260729T095000Z",
+    "path": "/data/v-boxiuli/argus-mle-lite-runs/mle-campaign-snapshot-20260729T095000Z"
+  }
+}

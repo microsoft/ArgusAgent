@@ -1,4 +1,5 @@
 import type { ArtifactInfo } from '../api';
+import { useI18n } from '../i18n';
 
 export function LiveViewPanel({
   artifacts,
@@ -11,12 +12,13 @@ export function LiveViewPanel({
   onOpenArtifact: (path: string) => void;
   className?: string;
 }) {
+  const { t } = useI18n();
   const live = artifacts?.filter((item) => item.source === 'manager_live') ?? [];
   if (live.length === 0 && !error) return null;
   const title = live[0]?.group_title || 'Live project view';
 
   return (
-    <section className={`card shrink-0 px-4 py-3 ${className}`} aria-label="Manager live project view">
+    <section className={`card shrink-0 px-4 py-3 ${className}`} aria-label={t('panel.liveView')}>
       <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-blue-sky">
         {title}
       </div>

@@ -76,7 +76,10 @@ def test_verification_rejects_failure_nested_under_outputs(tmp_path):
         validate_verification_results(tmp_path)
 
 
-def test_verification_rejects_result_symlink_outside_project(tmp_path):
+def test_verification_rejects_result_symlink_outside_project(
+    tmp_path,
+    require_symlink_support,
+):
     _verification_source(tmp_path)
     outside = tmp_path.parent / "outside-pass.log"
     outside.write_text("status: pass\n", encoding="utf-8")
@@ -138,7 +141,10 @@ def test_benchmark_interface_allows_port_named_error(tmp_path):
     assert validate_benchmark_interface(tmp_path) == path
 
 
-def test_fixed_evidence_files_cannot_resolve_outside_project(tmp_path):
+def test_fixed_evidence_files_cannot_resolve_outside_project(
+    tmp_path,
+    require_symlink_support,
+):
     outside = tmp_path.parent / "outside-interface.json"
     _json(
         outside,
@@ -199,7 +205,10 @@ def test_preflight_rejects_contradictions_and_validates_references(tmp_path):
     assert validate_preflight(tmp_path) == path
 
 
-def test_preflight_rejects_reference_resolving_outside_project(tmp_path):
+def test_preflight_rejects_reference_resolving_outside_project(
+    tmp_path,
+    require_symlink_support,
+):
     outside = tmp_path.parent / "outside-rtl.sv"
     outside.write_text("module hidden; endmodule\n", encoding="utf-8")
     link = tmp_path / "rtl" / "dut.sv"

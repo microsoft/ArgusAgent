@@ -23,7 +23,7 @@ from argus_skill.verticals._base import load_vertical, vertical_completion_gate
 
 
 def _ale_project(tmp_path: Path) -> Path:
-    state = tmp_path / "research" / "PIPELINE_STATE.json"
+    state = tmp_path / ".argus" / "PIPELINE_STATE.json"
     state.parent.mkdir(parents=True)
     state.write_text(
         json.dumps({"vertical": "ale_last_exam", "current_stage": "execute"}),

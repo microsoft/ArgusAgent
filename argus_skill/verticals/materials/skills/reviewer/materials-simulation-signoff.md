@@ -27,7 +27,7 @@ description: "Audit atomistic, continuum, CAD/CAE, and process simulations from 
    sensitivity to assumptions capable of reversing the conclusion.
 8. Keep scientific integrity separate from Manager lifecycle state. Reject a
    model or execute contract that freezes the whole
-   `research/PIPELINE_STATE.json` hash or spends a repair mission solely because
+   `.argus/PIPELINE_STATE.json` hash or spends a repair mission solely because
    the Manager advanced the stage. Scientific guards should hash immutable data,
    code, model, and protocol artifacts; lifecycle provenance should cite the
    Manager-authored stage-history transition.

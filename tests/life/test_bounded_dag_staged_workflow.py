@@ -74,7 +74,7 @@ def _authorized_repair(tmp_path):  # noqa: ANN001
     )
     evidence = workdir / "research" / "RESULT.json"
     evidence.parent.mkdir()
-    evidence.write_text('{"decision":"NO_GO"}', encoding="utf-8")
+    evidence.write_text('{"decision":"rejected"}', encoding="utf-8")
     validator = workdir / "tests" / "test_terminal_contract.py"
     validator.parent.mkdir()
     validator.write_text("def test_contract(): assert False\n", encoding="utf-8")
@@ -123,7 +123,7 @@ def test_bounded_dag_node_keeps_vertical_stage_workflow(tmp_path) -> None:
             non_goals=["do not implement the benchmark"],
             context_refs=[{
                 "kind": "artifact",
-                "ref": "research/PIPELINE_STATE.json",
+                "ref": ".argus/PIPELINE_STATE.json",
                 "why": "current stage",
                 "content_hash": "",
             }],
@@ -147,19 +147,19 @@ def test_bounded_dag_node_keeps_vertical_stage_workflow(tmp_path) -> None:
     assert "workflow_mode_override" not in runner.kwargs
     assert runner.kwargs["preplanned"] is True
     assert runner.kwargs["require_independent_review"] is False
-    assert runner.kwargs["max_rounds_override"] >= 2
+    assert "max_rounds_override" not in runner.kwargs
     packet_path = runner.kwargs["context_packet_path"]
     packet = json.loads(open(packet_path, encoding="utf-8").read())
     assert packet["mission_id"] == item.id
     assert packet["scope"] == "bounded"
     assert packet["acceptance_check"].endswith("reviewer-ready")
     assert packet["non_goals"] == ["do not implement the benchmark"]
-    assert packet["context_refs"][0]["ref"] == "research/PIPELINE_STATE.json"
+    assert packet["context_refs"][0]["ref"] == ".argus/PIPELINE_STATE.json"
     assert outcome is not None
     assert outcome["context_packet"] == str(Path(packet_path).parent / "latest.json")
 
 
-def test_experiment_matrix_is_not_limited_by_bounded_node_rounds(
+def test_experiment_matrix_uses_the_same_progress_based_round_policy(
     tmp_path,
 ) -> None:
     memory = LifeMemory.open(tmp_path / "life")
@@ -187,7 +187,7 @@ def test_experiment_matrix_is_not_limited_by_bounded_node_rounds(
     supervisor.tick()
 
     assert runner.kwargs is not None
-    assert runner.kwargs["progressive_experiment_matrix"] is True
+    assert "progressive_experiment_matrix" not in runner.kwargs
     assert "max_rounds_override" not in runner.kwargs
 
 
@@ -280,7 +280,7 @@ def test_validator_repair_claims_capability_and_forces_one_direct_round(
     assert runner.kwargs["max_rounds_override"] == 1
     assert store.read_snapshot()["active_capability"] is None
     assert store.authorization_events()[-1]["status"] == "accepted"
-    assert evidence.read_text(encoding="utf-8") == '{"decision":"NO_GO"}'
+    assert evidence.read_text(encoding="utf-8") == '{"decision":"rejected"}'
     stored = next(row for row in memory.backlog.all() if row.id == item.id)
     assert stored.status == "done"
 

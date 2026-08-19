@@ -1,4 +1,5 @@
 import type { JournalEntry } from '../api';
+import { useI18n } from '../i18n';
 import { PanelHeader, EmptyHint } from './primitives';
 import { ago, money } from '../lib/format';
 
@@ -13,10 +14,11 @@ const KIND_COLOR: Record<string, string> = {
 
 /** The research journal — the daemon's distilled memory of wins/insights. */
 export function JournalPanel({ entries }: { entries: JournalEntry[] }) {
+  const { t } = useI18n();
   const newestFirst = [...entries].reverse();
   return (
     <section className="card flex min-h-0 flex-1 flex-col">
-      <PanelHeader title="Journal" right={<span className="text-[10px] text-ink-faint">{entries.length}</span>} />
+      <PanelHeader title={t('panel.journal')} right={<span className="text-[10px] text-ink-faint">{entries.length}</span>} />
       <div className="min-h-0 flex-1 overflow-y-auto scroll-thin">
         {entries.length === 0 && <EmptyHint>no journal entries yet</EmptyHint>}
         {newestFirst.map((e) => {

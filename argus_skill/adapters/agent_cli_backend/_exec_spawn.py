@@ -23,14 +23,17 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from ...core.codex_usage import extract_token_usage
-from ...core.copilot_usage import capture_copilot_usage_cursor, read_copilot_usage_since
 from ...core.event_catalog import EventType
 from ...core.models import RunnerResult
 from ...core.runner_errors import result_has_pre_provider_refusal
 from ...core.secret_guard import redact_secrets_text
+from ...core.token_usage import extract_token_usage
+from ...provider_integrations.copilot_usage import (
+    capture_copilot_usage_cursor,
+    read_copilot_usage_since,
+)
 from ._exec_finalize import finalize_result, finish_quota
-from ._io_log import _command_metadata, _text_sha256
+from ._io_log import _command_metadata
 from ._io_log import raw_transcript_path as _raw_transcript_path
 from ._result import _extract_copilot_premium_requests, looks_like_auth_failure
 
@@ -48,8 +51,8 @@ def log_start_record(backend: Any, ctx: "_ExecContext") -> None:
     journal, mission view and campaign tally are projections of; the prompt is a
     debug artifact with no reader (the Web UI drops this event type, ``usage``
     takes only ``call_id``). Leaving it there made the history three times its
-    own size — measured 63% of one project's 74.9 MB. The compact record keeps
-    the hash, so the verbatim copy stays identifiable.
+    own size — measured 63% of one project's 74.9 MB. ``call_id`` links the
+    compact record to its verbatim copy.
     """
     start_row: dict[str, Any] = {
         "type": EventType.AGENT_IO_START,
@@ -65,28 +68,16 @@ def log_start_record(backend: Any, ctx: "_ExecContext") -> None:
     }
     if ctx.io_mode == "compact":
         start_row["prompt_chars"] = len(ctx.prompt)
-        start_row["prompt_sha256"] = _text_sha256(ctx.prompt)
         backend._log_agent_io(ctx.log_path, start_row)
     else:
-        # The full prompt is a debug artifact, so it belongs in the verbatim
-        # transcript beside the raw stream — not in the authoritative history.
-        # Measured on one project: `agent.io.start` was 63% of events.jsonl's
-        # bytes (47.3 MB of 74.9 MB) purely because it carried the prompt, while
-        # nothing reads that field. The Web UI drops the whole event type,
-        # `usage.py` takes only `call_id` from it, and `event_log.py` only tests
-        # that it exists. The history log paid 3x its own content for a field
-        # with no reader.
-        #
-        # events.jsonl keeps the compact record; the hash still ties it to the
-        # verbatim copy, which lives in agent_io.jsonl where the rest of the raw
-        # transcript is and where the ring rotation bounds it.
+        # Full prompts belong in the bounded raw I/O transcript, not the
+        # authoritative event history. Keep only size in events.jsonl;
+        # agent_io.jsonl retains the verbatim copy under ring rotation.
         compact_row = dict(start_row)
         compact_row["prompt_chars"] = len(ctx.prompt)
-        compact_row["prompt_sha256"] = _text_sha256(ctx.prompt)
         backend._log_agent_io(ctx.log_path, compact_row)
 
         start_row["prompt"] = ctx.prompt
-        start_row["prompt_sha256"] = compact_row["prompt_sha256"]
         backend._log_agent_io(_raw_transcript_path(ctx.log_path), start_row)
 
 
@@ -328,9 +319,6 @@ def spawn_and_finish(ctx: "_ExecContext", cli_options: Any) -> RunnerResult:
     complete_row.update({
         "agent_message_count": len(messages),
         "agent_message_chars": sum(len(str(message)) for message in messages),
-        "last_agent_message_sha256": (
-            _text_sha256(messages[-1]) if messages else None
-        ),
         "stdout_line_count": stdout_count,
         "stderr_line_count": stderr_count,
         "json_event_count": event_count,

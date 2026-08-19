@@ -56,6 +56,30 @@ def test_registry_covers_the_key_operator_knobs() -> None:
     # HAPI's per-role backend knobs are registered too (so they stop being invisible).
     assert "ARGUS_SKILL_REVIEWER_BACKEND" in names
     assert "ARGUS_SKILL_PLANNER_RUNNER_BIN" in names
+    assert "ARGUS_SKILL_SUPERVISOR_BACKEND" in names
+    assert "ARGUS_SKILL_SUPERVISOR_RUNNER_BIN" in names
+    assert "ARGUS_SKILL_SUPERVISOR_MODEL" in names
+
+
+def test_mission_round_default_is_bounded_and_consistent() -> None:
+    from argus_skill.engineer.round_config import SupervisedConfig
+    from argus_skill.loop import SkillLoopConfig
+
+    max_rounds_knob = next(
+        knob for knob in KNOBS if knob.name == "ARGUS_SKILL_MAX_ROUNDS"
+    )
+
+    assert max_rounds_knob.default == "32"
+    assert SkillLoopConfig().max_rounds == 32
+    assert SupervisedConfig().max_rounds == 32
+
+
+def test_manager_planner_and_self_reasoning_defaults_are_high() -> None:
+    defaults = {knob.name: knob.default for knob in KNOBS}
+
+    assert defaults["ARGUS_SKILL_MANAGER_REASONING_EFFORT"] == "high"
+    assert defaults["ARGUS_SKILL_PLANNER_REASONING_EFFORT"] == "high"
+    assert defaults["ARGUS_SKILL_SELF_REASONING_EFFORT"] == "high"
 
 
 def test_config_help_does_not_advertise_formal_vertical_override() -> None:
@@ -75,6 +99,11 @@ def test_registry_covers_the_active_team_knobs() -> None:
         "ARGUS_TEAMMATE_MAX_ROUNDS",
         "ARGUS_TEAMMATE_RESULT_FILE",
         "ARGUS_LEADERBOARD_LOWER_IS_BETTER",
+        "ARGUS_TEAM_MAX_WIDTH",
+        "ARGUS_TEAM_MAX_ACTIVE_CAMPAIGNS",
+        "ARGUS_TEAM_MAX_TASKS_PER_FORMATION",
+        "ARGUS_TEAM_MAX_TOTAL_IN_FLIGHT",
+        "ARGUS_SKILL_ALLOW_NESTED_TEAM",
     ):
         assert must in names, must
     assert "ARGUS_TEAMMATE_FORCE_RESEARCH" not in names
@@ -134,13 +163,24 @@ def test_cockpit_value_normalization_is_typed() -> None:
     assert normalize_cockpit_knob_value("ARGUS_SKILL_CODEX_DAILY_CALL_CAP", "250") == "250"
     assert normalize_cockpit_knob_value("ARGUS_SKILL_COPILOT_DAILY_PREMIUM_CAP", "12.5") == "12.5"
     assert normalize_cockpit_knob_value("ARGUS_SKILL_SAFE_MODE", "enabled") == "1"
+    assert normalize_cockpit_knob_value(
+        "ARGUS_SKILL_AUTONOMY_MODE", "PRAGMATIC"
+    ) == "pragmatic"
     assert normalize_cockpit_knob_value("ARGUS_SKILL_ENGINEER_BACKEND", "COPILOT") == "copilot"
     assert normalize_cockpit_knob_value("ARGUS_SKILL_ENGINEER_BACKEND", "opencod") == "opencode"
     assert normalize_cockpit_knob_value("ARGUS_SKILL_ENGINEER_BACKEND", "PI") == "pi"
-    with pytest.raises(ValueError, match="codex, claude, copilot, opencode, or pi"):
+    assert normalize_cockpit_knob_value("ARGUS_SKILL_ENGINEER_BACKEND", "GROK") == "grok"
+    assert normalize_cockpit_knob_value("ARGUS_SKILL_ENGINEER_BACKEND", "QODER") == "qoder"
+    assert normalize_cockpit_knob_value("ARGUS_SKILL_ENGINEER_BACKEND", "DSH") == "dsh"
+    with pytest.raises(
+        ValueError,
+        match="codex, claude, copilot, opencode, pi, grok, qoder, or dsh",
+    ):
         normalize_cockpit_knob_value("ARGUS_SKILL_ENGINEER_BACKEND", "magic")
     with pytest.raises(ValueError, match="non-negative integer"):
         normalize_cockpit_knob_value("ARGUS_SKILL_MAX_ACTIVE_DAEMONS", "-1")
+    with pytest.raises(ValueError, match="cautious, pragmatic, or autonomous"):
+        normalize_cockpit_knob_value("ARGUS_SKILL_AUTONOMY_MODE", "reckless")
 
 
 def test_shared_model_default_feeds_role_model_resolution() -> None:

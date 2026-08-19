@@ -36,7 +36,7 @@ def _replace_section(path: Path, heading: str, content: str) -> None:
 def test_init_creates_single_project_local_protocol_and_does_not_touch_pipeline(
     tmp_path: Path,
 ) -> None:
-    pipeline = tmp_path / "research" / "PIPELINE_STATE.json"
+    pipeline = tmp_path / ".argus" / "PIPELINE_STATE.json"
     pipeline.parent.mkdir()
     pipeline.write_text('{"current_stage":"research"}', encoding="utf-8")
 

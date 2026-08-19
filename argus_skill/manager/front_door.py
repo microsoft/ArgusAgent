@@ -134,6 +134,10 @@ def _ensure_manager_runner(chat_state: dict[str, Any], mem: Any) -> Any:
     failures are not cached so the next operator turn can recover.
     """
     backend = chat_state.get("backend")
+    # Cleared per call: the reason belongs to this attempt, and a build that
+    # succeeds (or a cache hit, which is a build that already succeeded) must
+    # not leave the previous turn's failure behind for the caller to report.
+    chat_state.pop("manager_runner_error", None)
     # The memory backend has no real LLM runner; never triage — every line is
     # a task (preserves existing memory-backend behaviour and its tests).
     if backend == "memory":
@@ -146,7 +150,7 @@ def _ensure_manager_runner(chat_state: dict[str, Any], mem: Any) -> Any:
         # ``daemon/life_worker.py:_runner_namespace``) — otherwise this
         # front-door Manager (built once per cockpit session, used for
         # SELF/TEAM routing + ``divide()``) reads/writes
-        # ``research/PIPELINE_STATE.json`` and ``research/DOMAINS/*.json``
+        # ``.argus/PIPELINE_STATE.json`` and ``research/DOMAINS/*.json``
         # against a DIFFERENT root than the daemon that actually executes
         # the mission. That mismatch silently drops a Manager-authored
         # custom domain (e.g. an operator task that doesn't match any
@@ -169,15 +173,28 @@ def _ensure_manager_runner(chat_state: dict[str, Any], mem: Any) -> Any:
         if cached is not None:
             chat_state.pop("manager_runner", None)
             chat_state.pop("manager_runner_workdir", None)
+        from ..apps._runtime_construction import _resolve_role_runner_backend_name
+
+        runner_backend = backend or "codex"
+        engineer_backend = _resolve_role_runner_backend_name(
+            "engineer",
+            runner_backend,
+        )
+        reviewer_backend = _resolve_role_runner_backend_name(
+            "reviewer",
+            runner_backend,
+        )
         ns = argparse.Namespace(
-            backend=backend or "codex",
+            backend=runner_backend,
             engineer_model=resolve_role_model(
                 "engineer",
                 role_env="ARGUS_SKILL_ENGINEER_MODEL",
+                backend=engineer_backend,
             ),
             reviewer_model=resolve_role_model(
                 "reviewer",
                 role_env="ARGUS_SKILL_REVIEWER_MODEL",
+                backend=reviewer_backend,
             ),
             engineer_reasoning_effort=os.environ.get(
                 "ARGUS_SKILL_ENGINEER_REASONING_EFFORT", "xhigh"
@@ -195,17 +212,41 @@ def _ensure_manager_runner(chat_state: dict[str, Any], mem: Any) -> Any:
             manager_session_root=str(session_root) if session_root else None,
             project_state_dir=str(session_root) if session_root else None,
             global_root=str(mem.global_root),
+            skills_dir=os.environ.get(
+                "ARGUS_SKILL_SKILLS_DIR",
+                str(Path(mem.global_root) / "skills"),
+            ),
+            manager_memory=mem,
             life_dir=getattr(mem, "root", None),
             stop_event=None,
         )
         from ..apps._runtime import build_life_runner
 
         runner = build_life_runner(ns)
-        manager_backend = getattr(runner, "_backend", None)
-        set_acp_scope = getattr(manager_backend, "set_acp_scope", None)
-        if callable(set_acp_scope):
-            set_acp_scope(f"manager:{chat_state.get('session_id') or workspace_key}")
-    except Exception:  # noqa: BLE001 — retry on the next operator turn
+        acp_scope = f"manager:{chat_state.get('session_id') or workspace_key}"
+        backends: list[Any] = []
+        for backend in (
+            getattr(runner, "_backend", None),
+            getattr(runner, "manager_backend", None),
+        ):
+            if backend is not None and not any(backend is item for item in backends):
+                backends.append(backend)
+        for backend in backends:
+            set_acp_scope = getattr(backend, "set_acp_scope", None)
+            if callable(set_acp_scope):
+                set_acp_scope(acp_scope)
+    except Exception as exc:  # noqa: BLE001 — retry on the next operator turn
+        # Not cached (a transient build failure must not disable triage for the
+        # rest of the session), but not silent either. Everything below this
+        # line — the vertical resolver, the state migration, the backend
+        # construction — reports precisely what is wrong, and returning a bare
+        # ``None`` collapses all of it into "classifier unavailable", which the
+        # operator is shown as "please retry". Some of those faults are
+        # permanent, so retrying is advice that can never work; the reason is
+        # logged with its traceback and handed to the caller so the operator
+        # turn can say what actually broke.
+        log.exception("Manager front-door runner build failed")
+        chat_state["manager_runner_error"] = f"{type(exc).__name__}: {exc}"
         return None
 
     chat_state["manager_runner"] = runner
@@ -234,7 +275,8 @@ def _maybe_name_session(
     *,
     suggested_name: str = "",
     replacing: bool = False,
-) -> None:
+    promote_task_name: bool = False,
+) -> str:
     """Name the current session after its first real task (once, fail-soft).
 
     A resumed session keeps its original name (``session_named`` is already
@@ -251,25 +293,37 @@ def _maybe_name_session(
     renaming when the session's stated purpose is replaced is the same event the
     Manager already resets the pipeline for.
     """
-    if chat_state.get("session_named") and not replacing:
-        return
+    provisional = str(chat_state.get("_provisional_session_name") or "").strip()
+    if (
+        chat_state.get("session_named")
+        and not replacing
+        and not (promote_task_name and provisional)
+    ):
+        return ""
     sid = chat_state.get("session_id")
     gr = chat_state.get("global_root")
     if not sid or gr is None:
-        return
+        return ""
     try:
         from ..core.session import read_session_meta, touch_session
 
         persisted = read_session_meta(gr, sid)
         if persisted is not None and persisted.display_name.strip() and not replacing:
-            chat_state["session_named"] = True
-            return
+            if not (
+                promote_task_name
+                and provisional
+                and persisted.display_name.strip() == provisional
+            ):
+                chat_state["session_named"] = True
+                chat_state.pop("_provisional_session_name", None)
+                return ""
+            replacing = True
         name = (
             _derive_session_name(suggested_name, limit=32)
             or _derive_session_name(task_text)
         )
         if not name:
-            return
+            return ""
         if replacing:
             # touch_session only fills an *empty* name, so it silently cannot
             # rename. A replacement has to go through the update path.
@@ -282,8 +336,10 @@ def _maybe_name_session(
         else:
             touch_session(gr, sid, display_name=name)
         chat_state["session_named"] = True
+        chat_state.pop("_provisional_session_name", None)
+        return name
     except Exception:  # noqa: BLE001 — naming is cosmetic, never block the task
-        pass
+        return ""
 
 
 def _emit_manager_event(mem: Any, event: dict[str, Any]) -> None:
@@ -305,7 +361,7 @@ def _manager_current_stage(manager: Any) -> str:
         return ""
 
 
-def _accepts_keyword(fn: Any, name: str) -> bool:
+def _accepts_parameter(fn: Any, name: str) -> bool:
     try:
         parameters = signature(fn).parameters.values()
     except (TypeError, ValueError):
@@ -448,6 +504,9 @@ class PreparedManagerHandoff:
     decision: Any
     intent_id: str
     root_task_id: str | None
+    lifetime: str = "bounded"
+    continuous: bool | None = None
+    open_ended: bool | None = None
 
     @property
     def execution_task(self) -> str:
@@ -477,6 +536,23 @@ class PreparedManagerHandoff:
         *,
         continuous_generation: int | None = None,
     ) -> None:
+        workflow_mode = str(
+            getattr(division, "workflow_mode", "staged") or "staged"
+        ).strip().lower()
+        lifetime = str(self.lifetime or "bounded").strip().lower()
+        inferred_continuous = lifetime == "standing" or (
+            lifetime == "bounded" and workflow_mode == "staged"
+        )
+        continuous = (
+            self.continuous
+            if self.continuous is not None
+            else inferred_continuous
+        )
+        open_ended = (
+            self.open_ended
+            if self.open_ended is not None
+            else lifetime == "standing"
+        )
         event = {
             "type": "life.manager.intent.completed",
             "agent_layer": "manager",
@@ -487,13 +563,25 @@ class PreparedManagerHandoff:
             "execution_task": self.execution_task,
             "vertical": getattr(division, "vertical", ""),
             "domain": getattr(division, "domain", ""),
-            "workflow_mode": getattr(division, "workflow_mode", "staged"),
+            "route": "team",
+            "workflow_mode": workflow_mode,
+            "lifetime": lifetime,
+            "continuous": continuous,
+            "open_ended": open_ended,
             "kind": getattr(division, "kind", ""),
+            "learned_vertical_status": getattr(
+                division,
+                "learned_vertical_status",
+                "",
+            ),
             "stages": list(getattr(division, "stages", []) or []),
-            "reason": getattr(division, "headline", lambda: "")(),
+            "reason": (
+                str(getattr(self.decision, "adaptation_reason", "") or "").strip()
+                or getattr(division, "headline", lambda: "")()
+            ),
             "text": (
-                f"manager interpreted user task as "
-                f"{getattr(division, 'vertical', '')}"
+                "manager routed TEAM · "
+                f"{getattr(division, 'vertical', '')} · {workflow_mode} · {lifetime}"
             ),
         }
         if continuous_generation is not None:
@@ -535,6 +623,15 @@ def prepare_manager_execution_task(
     ensure_runner: Callable[[dict[str, Any], Any], Any] | None = None,
 ) -> PreparedManagerHandoff:
     intent_id = f"intent-{time.time_ns()}"
+    lifetime = str(
+        chat_state.get("_frontdoor_lifetime", "bounded") or "bounded"
+    ).strip().lower()
+    configured_continuous = bool(
+        chat_state.get("config", {}).get("continuous", False)
+    )
+    configured_open_ended = bool(
+        chat_state.get("_continuous_open_ended", False)
+    )
     _emit_manager_event(mem, {
         "type": "life.manager.intent.started",
         "agent_layer": "manager",
@@ -546,16 +643,13 @@ def prepare_manager_execution_task(
     })
     try:
         runner = (ensure_runner or _ensure_manager_runner)(chat_state, mem)
-        manager = getattr(runner, "manager", None) if runner is not None else None
+        if runner is None:
+            raise ManagerHandoffError("Manager runner unavailable")
+        manager = runner.manager
         if manager is None:
-            from ..manager import Manager
+            raise ManagerHandoffError("runner was constructed without a Manager")
 
-            manager = Manager(
-                project_root=getattr(mem, "project_root", None) or Path.cwd(),
-                runner=None,
-            )
-
-        if root_task_id is None or not _accepts_keyword(
+        if root_task_id is None or not _accepts_parameter(
             manager.decide_vertical,
             "root_task_id",
         ):
@@ -570,6 +664,9 @@ def prepare_manager_execution_task(
             decision=decision,
             intent_id=intent_id,
             root_task_id=root_task_id,
+            lifetime=lifetime,
+            continuous=configured_continuous,
+            open_ended=configured_open_ended,
         )
     except Exception as exc:
         prepared = PreparedManagerHandoff(
@@ -579,6 +676,9 @@ def prepare_manager_execution_task(
             decision=None,
             intent_id=intent_id,
             root_task_id=root_task_id,
+            lifetime=lifetime,
+            continuous=configured_continuous,
+            open_ended=configured_open_ended,
         )
         prepared.failed(exc)
         if isinstance(exc, ManagerHandoffError):
@@ -739,8 +839,9 @@ def manager_continuous_handoff(
     ensure_runner: Callable[[dict[str, Any], Any], Any] | None = None,
     cancelled: Callable[[], bool] | None = None,
     prepared_handoff: PreparedManagerHandoff | None = None,
+    persist: Callable[[str, Any], Any] | None = None,
 ) -> str:
-    """Atomically enable a Manager-authored continuous objective."""
+    """Atomically enable a Manager-authored continuous objective and first task."""
     from ..daemon.state import (
         compare_and_swap_continuous_config,
         read_continuous_state,
@@ -806,6 +907,11 @@ def manager_continuous_handoff(
                 prepared.execution_task or body,
                 replacing=True,
             )
+        if persist is not None:
+            committed["persisted"] = persist(
+                prepared.execution_task,
+                committed["division"],
+            )
 
     from ._session_ops import (
         clear_manager_pipeline_yield,
@@ -817,11 +923,15 @@ def manager_continuous_handoff(
         lock_factory = getattr(prepared.manager, "pipeline_lock", None)
         pipeline_lock = lock_factory() if callable(lock_factory) else nullcontext()
         with pipeline_lock:
+            resolved_open_ended = bool(
+                chat_state.get("_continuous_open_ended", expected.open_ended)
+            )
             swapped = compare_and_swap_continuous_config(
                 life_dir,
                 expected=expected,
                 enabled=True,
                 objective=prepared.execution_task,
+                open_ended=resolved_open_ended,
                 before_write=_commit,
             )
     except Exception as exc:
@@ -841,6 +951,9 @@ def manager_continuous_handoff(
         raise ManagerHandoffSupersededError(
             "newer continuous command superseded Manager handoff"
         )
+    prepared.continuous = True
+    prepared.open_ended = resolved_open_ended
+    prepared.lifetime = "standing" if resolved_open_ended else "bounded"
     prepared.completed(
         committed["division"],
         continuous_generation=expected.generation + 1,
@@ -854,53 +967,6 @@ def manager_continuous_handoff(
             "source": "manager_intent_replacement",
         })
     return prepared.execution_task
-
-
-_DO_NOT_RUN_MARKERS: tuple[str, ...] = (
-    # Chinese (simplified + a few traditional variants)
-    "不要运行", "不要執行", "不要执行", "不要启动", "不要啟動",
-    "别运行", "別運行", "别启动", "別啟動", "不要跑", "不要派发", "不要分派",
-    "不要运行任务", "只做状态检查", "只检查状态", "只看状态", "只查状态",
-    "状态检查", "狀態檢查", "请回复状态正常", "請回復狀態正常",
-    # English
-    "do not run", "don't run", "dont run",
-    "do not execute", "don't execute", "dont execute",
-    "do not start", "don't start", "dont start",
-    "do not launch", "don't launch", "do not dispatch", "do not spawn",
-    "status check only", "status-only", "status only",
-    "just check status", "only check status",
-)
-
-
-def looks_like_do_not_run_request(text: str) -> bool:
-    """True iff ``text`` explicitly forbids running / asks for status only.
-
-    Used ONLY to make the triage-failure fallback safe (see
-    :func:`manager_triage`): when the Manager's classify call ERRORS, the front
-    door normally biases to "task" ("never drop work to a bad classify"), but if
-    the operator explicitly said "do not run / status only" then creating a real
-    mission on a *failed* classify is the wrong default — that is exactly how a
-    Chinese "请只做状态检查，不要运行任务" message got dispatched to the team on
-    2026-07-11 (the Manager's classify call had been blocked by the cost gate, so
-    triage raised and the message was treated as work). This never overrides a
-    SUCCESSFUL classify decision, so it cannot silently drop genuine work.
-    """
-    if not text:
-        return False
-    raw = str(text)
-    low = raw.lower()
-    for marker in _DO_NOT_RUN_MARKERS:
-        if marker in raw or marker.lower() in low:
-            return True
-    return False
-
-
-_DO_NOT_RUN_SAFE_REPLY = (
-    "[not dispatched] The Manager could not classify this request and your "
-    "message asks not to run anything (status-only / do-not-run), so no task was "
-    "queued. Use /status for pipeline state or /doctor to diagnose; rephrase "
-    "without the do-not-run constraint if you actually want to queue work."
-)
 
 
 def _fallback_request_excerpt(body: str) -> str:
@@ -949,6 +1015,20 @@ def manager_triage(mem: Any, body: str, chat_state: dict[str, Any],
         "message. No task was dispatched and the current mission was not changed. "
         f"Request: {_fallback_request_excerpt(body)}"
     )
+
+    def _empty_reply_for_outcome() -> str:
+        outcome = getattr(runner, "last_chat_outcome", None)
+        stop_reason = _redact_live_text(
+            getattr(outcome, "stop_reason", "")
+        ).strip()
+        if not stop_reason:
+            return empty_reply
+        return (
+            "[Manager reply unavailable] The SELF turn stopped before producing an "
+            f"assistant message: {stop_reason}. No task was dispatched and the "
+            "current mission was not changed. "
+            f"Request: {_fallback_request_excerpt(body)}"
+        )
 
     def _redact_live_text(text: Any) -> str:
         return redact_secrets_text(str(text or ""), known_values=known_secret_values())
@@ -1078,9 +1158,9 @@ def manager_triage(mem: Any, body: str, chat_state: dict[str, Any],
             "phase_cb": _runner_phase,
             "route": route,
         }
-        if _accepts_keyword(runner.chat_reply_if_conversational, "self_mode"):
+        if _accepts_parameter(runner.chat_reply_if_conversational, "self_mode"):
             triage_kwargs["self_mode"] = "reply" if quick_reply else "inspect"
-        if root_task_id is not None and _accepts_keyword(
+        if root_task_id is not None and _accepts_parameter(
             runner.chat_reply_if_conversational,
             "root_task_id",
         ):
@@ -1088,7 +1168,7 @@ def manager_triage(mem: Any, body: str, chat_state: dict[str, Any],
         if runner.chat_reply_if_conversational(**triage_kwargs):
             if not quick_reply:
                 chat_state["last_thread_id"] = getattr(runner, "last_thread_id", None)
-            return captured[0] if captured else empty_reply
+            return captured[0] if captured else _empty_reply_for_outcome()
     except TypeError:
         # Older runner without phase_cb / route support — retry without them
         # (fail-soft; the older runner will classify route internally).
@@ -1098,19 +1178,12 @@ def manager_triage(mem: Any, body: str, chat_state: dict[str, Any],
                 seed_thread_id=chat_state.get("last_thread_id"),
             ):
                 chat_state["last_thread_id"] = getattr(runner, "last_thread_id", None)
-                return captured[0] if captured else empty_reply
+                return captured[0] if captured else _empty_reply_for_outcome()
         except Exception as exc:  # noqa: BLE001 — triage failure
-            if looks_like_do_not_run_request(body):
-                return _DO_NOT_RUN_SAFE_REPLY
             if is_pre_provider_refusal_error(exc):
                 return _pre_provider_refusal_reply(exc, body)
             return None
-    except Exception as exc:  # noqa: BLE001 — triage failure: bias to task ("never drop
-        # work to a bad classify") UNLESS the operator explicitly forbade running
-        # (status-only / do-not-run). Dispatching a real mission on a classify we
-        # could not even complete is how a status request reached the Engineer.
-        if looks_like_do_not_run_request(body):
-            return _DO_NOT_RUN_SAFE_REPLY
+    except Exception as exc:  # noqa: BLE001 — triage failure: bias to task
         if is_pre_provider_refusal_error(exc):
             return _pre_provider_refusal_reply(exc, body)
         return None
@@ -1141,8 +1214,7 @@ def _extract_chat_reply_text(msg: str) -> str:
     return msg
 
 __all__ = [
-    "_DO_NOT_RUN_SAFE_REPLY",
-    "_accepts_keyword",
+    "_accepts_parameter",
     "_MANAGER_RUNNER_UNAVAILABLE",
     "ManagerHandoffError",
     "ManagerHandoffSupersededError",
@@ -1154,7 +1226,6 @@ __all__ = [
     "_life_dir_for",
     "_manager_divide_user_task",
     "_maybe_name_session",
-    "looks_like_do_not_run_request",
     "manager_execution_task",
     "manager_bounded_handoff",
     "manager_continuous_handoff",

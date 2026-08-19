@@ -1,24 +1,7 @@
-"""SupervisedEngineer: round-loop wrapper around an engineer call.
-
-This is the heart of the argus-skill v0.1 integration:
-
-  * Each round, run the engineer with the current task prompt
-    (initial task + optional skill block + optional reviewer next_action
-    from prior round).
-  * Call an independent Reviewer after every normal Engineer round.
-  * If ``done``, stop. If ``continue``, capture ``next_action`` and loop.
-    If ``blocked``, stop and surface the reason.
-
-Provenance: the round-loop control flow is adapted from
-``ArgusBot/agent_cli/core/engine.py`` (LoopEngine), simplified to the
-single-agent case — argus-skill does not have ArgusBot's planner /
-explore subagent; the skill block plays a similar "what to do" role for
-the engineer in front of you.
-"""
+"""Reviewer-gated Engineer round orchestration."""
 from __future__ import annotations
 
 import logging
-import time  # noqa: F401 - historical test seam for round timing
 from pathlib import Path
 from typing import Callable
 
@@ -30,17 +13,23 @@ from ..core.models import (
     RunnerResult,
 )
 from ..core.ports import RunnerBackend
+from ..core.role_session import (
+    RoleSessionCapsule,
+    effective_role_session_policy,
+    objective_revision,
+)
 from ..core.run_gateway import run_exec as gateway_run_exec
 from ..core.secret_guard import (
     known_secret_values,
     redact_secrets_record,
 )
 from ..reviewer import Reviewer, ReviewerConfig
-from .checkpoint import ensure_shared_checkpoint
+from .checkpoint import resolve_shared_checkpoint
 
 log = logging.getLogger(__name__)
 # Config dataclasses are re-exported here for historical/test imports.
 from .round_config import (
+    DEFAULT_LIVE_SEARCH_STAGES,
     EngineerConfig,
     SupervisedConfig,
     _engineer_live_search,
@@ -52,11 +41,8 @@ from .round_reviewer import RoundReviewerMixin
 from .round_self_review import RoundSelfReviewMixin
 from .round_settlement import RoundSettlementMixin
 
-# The following ``round_signals`` re-exports are not called internally by
-# this module anymore (their logic now lives in the phase mixins above), but
-# they are kept importable here — as plain module attributes — for
-# historical/test module-attribute access (e.g. ``runner_module._plan_signal_event``,
-# direct ``from argus_skill.engineer.runner import _apply_round_secret_guard``).
+# These round-signal helpers remain module attributes because callers and tests
+# patch them through ``argus_skill.engineer.runner``.
 from .round_signals import (
     _apply_round_secret_guard,  # noqa: F401
     _pause_decision_clock,  # noqa: F401
@@ -127,10 +113,11 @@ class SupervisedEngineer(
         """Run the supervised loop.
 
         ``engineer_prompt_builder(next_action, include_static)`` is called once
-        per round. Round 1 receives the static task/skill contract; continuation
-        rounds default to a compact Reviewer delta plus CHECKPOINT.md. Engineer
-        and Reviewer both start fresh provider sessions every round; raw model
-        threads are never carried across a round or mission boundary.
+        per round. Round 1 receives the static task/Skill contract; continuation
+        rounds default to a compact Reviewer delta plus CHECKPOINT.md. The
+        backend-aware default resumes only supported native CLI roles inside
+        this mission and persists a bounded role capsule; fresh remains the
+        fallback for unsupported or isolated runners.
 
         Returns ``(status, rounds, final_message, reason, last_thread_id)``.
 
@@ -156,11 +143,63 @@ class SupervisedEngineer(
 
             on_event = _redacted_on_event
         state = RoundLoopState()
-        # ``seed_thread_id`` is intentionally ignored: autonomous role calls are
-        # one turn per provider session. The checkpoint file is the baton.
-        _ = seed_thread_id
-        checkpoint_path = ensure_shared_checkpoint(supervised_config.checkpoint_path)
+        checkpoint_path = resolve_shared_checkpoint(supervised_config.checkpoint_path)
+        capsule_dir = supervised_config.role_session_dir
+        revision = objective_revision(objective)
+        engineer_backend = str(
+            getattr(self.engineer_runner, "backend", type(self.engineer_runner).__name__)
+        )
+        engineer_policy = effective_role_session_policy(
+            supervised_config.role_session_policy,
+            engineer_backend,
+            # Pi deliberately uses --no-session in isolated maintenance
+            # worktrees, so no persisted thread may be passed there.
+            allow_resume=not self.engineer_config.isolate_workdir,
+        )
+        state.engineer_session = RoleSessionCapsule.open(
+            role="engineer",
+            policy=engineer_policy,
+            objective_revision=revision,
+            workdir=workdir.resolve(),
+            backend=engineer_backend,
+            model=str(self.engineer_config.model or ""),
+            checkpoint_path=checkpoint_path,
+            path=(
+                capsule_dir / "engineer.json"
+                if capsule_dir and engineer_policy != "fresh"
+                else None
+            ),
+            seed_thread_id=seed_thread_id,
+            mission_context_path=supervised_config.context_packet_path,
+        )
+        reviewer_runner = getattr(self.reviewer, "runner", self.reviewer)
+        reviewer_backend = str(
+            getattr(reviewer_runner, "backend", type(reviewer_runner).__name__)
+        )
+        reviewer_policy = effective_role_session_policy(
+            supervised_config.role_session_policy,
+            reviewer_backend,
+        )
+        state.reviewer_session = RoleSessionCapsule.open(
+            role="reviewer",
+            policy=reviewer_policy,
+            objective_revision=revision,
+            workdir=workdir.resolve(),
+            backend=reviewer_backend,
+            model=str(self.reviewer_config.model or ""),
+            checkpoint_path=checkpoint_path,
+            path=(
+                capsule_dir / "reviewer.json"
+                if capsule_dir and reviewer_policy != "fresh"
+                else None
+            ),
+            mission_context_path=supervised_config.context_packet_path,
+        )
         for round_index in range(1, supervised_config.max_rounds + 1):
+            engineer_resume_id = state.engineer_session.prepare(
+                max_turns=supervised_config.role_session_max_turns,
+                max_input_tokens=supervised_config.role_session_max_input_tokens,
+            )
             engineer_prompt = self._assemble_round_prompt(
                 round_index=round_index,
                 supervised_config=supervised_config,
@@ -168,6 +207,7 @@ class SupervisedEngineer(
                 reviewer_next_action=state.reviewer_next_action,
                 checkpoint_path=checkpoint_path,
                 workdir=workdir,
+                role_session=state.engineer_session,
                 on_event=on_event,
             )
 
@@ -177,6 +217,7 @@ class SupervisedEngineer(
                 workdir=workdir,
                 supervised_config=supervised_config,
                 checkpoint_path=checkpoint_path,
+                resume_thread_id=engineer_resume_id,
                 on_event=on_event,
                 state=state,
             )
@@ -209,9 +250,11 @@ class SupervisedEngineer(
             control = self._handle_progress_and_self_review(
                 round_index=round_index,
                 supervised_config=supervised_config,
+                workdir=workdir,
                 outcome=outcome,
                 state=state,
                 review_completed_hook=review_completed_hook,
+                continue_adaptor=continue_adaptor,
                 on_event=on_event,
             )
             if control.action == "return":
@@ -290,6 +333,7 @@ class SupervisedEngineer(
                         else self.engineer_config.reasoning_effort
                     ),
                     extra_args=self.engineer_config.extra_args,
+                    skill_paths=self.engineer_config.skill_paths,
                     full_auto=self.engineer_config.full_auto,
                     skip_git_repo_check=self.engineer_config.skip_git_repo_check,
                     dangerous_yolo=self.engineer_config.dangerous_yolo,
@@ -321,6 +365,7 @@ class SupervisedEngineer(
 
 
 __all__ = [
+    "DEFAULT_LIVE_SEARCH_STAGES",
     "EngineerConfig",
     "SupervisedConfig",
     "SupervisedEngineer",

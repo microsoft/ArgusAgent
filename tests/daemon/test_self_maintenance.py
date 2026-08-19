@@ -28,6 +28,17 @@ def _init_repo(path: Path, branch: str = "main") -> None:
     )
 
 
+def _commit_repo(path: Path) -> None:
+    subprocess.run(["git", "config", "user.name", "test"], cwd=path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=path, check=True
+    )
+    (path / ".gitignore").write_text("life/\nproject/\n", encoding="utf-8")
+    (path / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=path, check=True)
+
+
 class _Manager:
     def __init__(
         self,
@@ -99,7 +110,11 @@ def test_read_self_maintenance_snapshot_is_typed_and_fail_soft(
 
 def test_copilot_self_maintenance_defers_without_safe_isolated_auth(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    monkeypatch.setenv("ARGUS_SKILL_SAFE_MODE", "1")
+    _init_repo(tmp_path)
+    _commit_repo(tmp_path)
     events: list[dict] = []
     controller = DaemonSelfMaintenance(
         life_dir=tmp_path / "life",
@@ -120,6 +135,92 @@ def test_copilot_self_maintenance_defers_without_safe_isolated_auth(
     assert events[-1]["type"] == "manager.self_maintenance.availability"
 
 
+def test_pi_self_maintenance_defers_without_exposing_provider_auth(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ARGUS_SKILL_SAFE_MODE", "1")
+    _init_repo(tmp_path)
+    _commit_repo(tmp_path)
+    controller = DaemonSelfMaintenance(
+        life_dir=tmp_path / "life",
+        framework_root=tmp_path,
+        project_workdir=tmp_path,
+        manager=_Manager(),
+        memory=SimpleNamespace(),
+        backend="pi",
+    )
+
+    assert controller.preflight_isolation(force=True) is False
+    state = json.loads(controller.state_path.read_text(encoding="utf-8"))
+    assert state["maintenance_available"] is False
+    assert "provider credentials" in state["isolation_error"]
+    assert state["phase"] == "deferred"
+
+
+def test_self_maintenance_full_access_is_available_by_default(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("ARGUS_SKILL_SAFE_MODE", raising=False)
+    _init_repo(tmp_path)
+    _commit_repo(tmp_path)
+    controller = DaemonSelfMaintenance(
+        life_dir=tmp_path / "life",
+        framework_root=tmp_path,
+        project_workdir=tmp_path,
+        manager=_Manager(),
+        memory=SimpleNamespace(),
+        backend="pi",
+    )
+
+    assert controller.preflight_isolation(force=True) is True
+    state = json.loads(controller.state_path.read_text(encoding="utf-8"))
+    assert state["maintenance_available"] is True
+    assert state["access_mode"] == "full"
+    assert state["maintenance_mode"] == "source_worktree"
+
+
+def test_non_git_packaged_runtime_uses_release_update_mode_without_git_probe(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    manager = _Manager()
+    events: list[dict] = []
+
+    def forbidden_run(*_args, **_kwargs):  # pragma: no cover - assertion is the test
+        raise AssertionError("packaged preflight must not invoke git")
+
+    monkeypatch.setattr(self_maintenance_mod, "_run", forbidden_run)
+    controller = DaemonSelfMaintenance(
+        life_dir=tmp_path / "life",
+        framework_root=tmp_path / "frozen" / "_internal",
+        project_workdir=tmp_path / "project",
+        manager=manager,
+        memory=SimpleNamespace(),
+        backend="pi",
+        on_event=events.append,
+    )
+
+    assert controller.preflight_isolation(force=True) is False
+    state = json.loads(controller.state_path.read_text(encoding="utf-8"))
+    assert state["maintenance_available"] is False
+    assert state["maintenance_mode"] == "release_update"
+    assert state["phase"] == "release_update_required"
+    assert "not a Git source checkout" in state["maintenance_error"]
+    assert manager.calls == 0
+    assert events[-1]["type"] == "manager.self_maintenance.availability"
+    assert events[-1]["mode"] == "release_update"
+
+    controller.observe({"type": "life.planner.error", "error": "runtime bug"})
+    assert controller.audit_if_due(daemon_state={"budget_allowed": True}) == ""
+    assert manager.calls == 0
+    assert not any(
+        event.get("type") == "manager.self_maintenance.preparation_failed"
+        for event in events
+    )
+
+
 def test_frontend_dependency_links_are_temporary(tmp_path: Path) -> None:
     source = tmp_path / "source"
     worktree = tmp_path / "worktree"
@@ -137,7 +238,9 @@ def test_frontend_dependency_links_are_temporary(tmp_path: Path) -> None:
             Path("frontend/tui/node_modules"),
         ):
             target = worktree / relative
-            assert target.is_symlink()
+            assert target.is_symlink() or (
+                hasattr(target, "is_junction") and target.is_junction()
+            ) or target.resolve() == (source / relative).resolve()
             assert (target / "marker").read_text(encoding="utf-8") == "installed\n"
 
     assert not (worktree / "frontend/web/node_modules").exists()
@@ -179,8 +282,9 @@ def _publication_repo(tmp_path: Path) -> tuple[Path, str]:
         cwd=repo,
         check=True,
     )
-    (repo / "argus_skill").mkdir()
-    (repo / "scripts").mkdir()
+    (repo / "argus_skill" / "release_tools").mkdir(parents=True)
+    (repo / "argus_skill" / "__init__.py").write_text("", encoding="utf-8")
+    (repo / "argus_skill" / "release_tools" / "__init__.py").write_text("", encoding="utf-8")
     (repo / "frontend" / "core" / "src").mkdir(parents=True)
     (repo / "frontend" / "tui" / "bundle").mkdir(parents=True)
     (repo / "frontend" / "web" / "dist" / "assets").mkdir(parents=True)
@@ -188,10 +292,11 @@ def _publication_repo(tmp_path: Path) -> tuple[Path, str]:
         "node_modules/\n*.pyc\n",
         encoding="utf-8",
     )
+    (repo / ".gitattributes").write_text("* text eol=lf\n", encoding="utf-8")
     (repo / "argus_skill" / "base.py").write_text("BASE = 1\n", encoding="utf-8")
-    (repo / "scripts" / "generate_release_manifest.py").write_text(
+    (repo / "argus_skill" / "release_tools" / "generate_manifest.py").write_text(
         "import pathlib, subprocess, sys\n"
-        "root = pathlib.Path(__file__).resolve().parents[1]\n"
+        "root = pathlib.Path(__file__).resolve().parents[2]\n"
         "tracked = subprocess.check_output(['git', 'ls-files'], cwd=root, text=True)\n"
         "expected = 'new-feature\\n' if 'argus_skill/new_feature.py' in tracked else 'base\\n'\n"
         "manifest = root / 'argus_skill' / 'release_manifest.json'\n"
@@ -205,12 +310,13 @@ def _publication_repo(tmp_path: Path) -> tuple[Path, str]:
         "generated.write_text(expected)\n",
         encoding="utf-8",
     )
-    (repo / "scripts" / "build_release.py").write_text(
+    (repo / "argus_skill" / "release_tools" / "build_release.py").write_text(
         "import pathlib, subprocess, sys\n"
-        "root = pathlib.Path(__file__).resolve().parents[1]\n"
+        "root = pathlib.Path(__file__).resolve().parents[2]\n"
         "subprocess.run([\n"
         "    sys.executable,\n"
-        "    'scripts/generate_release_manifest.py',\n"
+        "    '-m',\n"
+        "    'argus_skill.release_tools.generate_manifest',\n"
         "    '--prepare-build',\n"
         "], cwd=root, check=True)\n"
         "release = (root / 'argus_skill/release_manifest.json').read_text()\n"
@@ -289,6 +395,11 @@ def test_manager_queues_private_reviewed_repair_from_real_event(
     assert item.execution_workdir == str(worktree)
     assert "framework_maintenance" in item.tags
     assert "review:required" in item.tags
+    assert item.manager_decision == {
+        "routed": True,
+        "vertical": "argus_maintenance",
+        "workflow_mode": "direct",
+    }
     assert "Do not perform unrelated cleanup" in item.objective
 
 
@@ -319,6 +430,65 @@ def test_manager_no_action_never_creates_make_work(tmp_path: Path) -> None:
     })
     assert controller.audit_if_due(daemon_state={}) == ""
     assert manager.calls == 2
+
+
+def test_repeated_failed_repair_family_is_suppressed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    manager = _Manager()
+    controller = _controller(tmp_path, manager)
+    events: list[dict[str, object]] = []
+    controller.on_event = events.append
+    from argus_skill.core.runtime_identity import source_revision
+
+    revision = str(source_revision() or controller.framework_root)
+    paths = sorted(manager.affected_paths)
+    controller._write_state(repair_revision=revision, repair_paths=paths)
+    controller._record_repair_failure(
+        controller._state(),
+        phase="review_rejected",
+        error="provider failed before completion",
+    )
+    controller._record_repair_failure(
+        controller._state(),
+        phase="review_rejected",
+        error="provider failed before completion",
+    )
+    controller.observe({
+        "type": "life.planner.error",
+        "ts": 20.0,
+        "error": "same planner schema family failed again",
+    })
+    controller._write_state(
+        phase="",
+        event_audit_pending=True,
+        last_audit_at=0.0,
+        active_item_id="",
+    )
+    monkeypatch.setattr(
+        controller,
+        "_prepare_worktree",
+        lambda _incident_id: (_ for _ in ()).throw(
+            AssertionError("suppressed repair must not create a worktree")
+        ),
+    )
+
+    assert controller.audit_if_due(daemon_state={}) == ""
+
+    state = controller._state()
+    assert manager.calls == 1
+    assert controller.memory.backlog.all() == []
+    assert state["phase"] == "repair_suppressed"
+    assert state["repair_revision"] == revision
+    assert state["repair_paths"] == paths
+    assert state["failed_repair_attempts"] == 2
+    assert events[-1] == {
+        "type": "manager.self_maintenance.repair_suppressed",
+        "failure_count": 2,
+        "affected_paths": paths,
+        "agent_layer": "manager",
+    }
 
 
 def test_unmerged_local_repair_blocks_a_new_maintenance_audit(
@@ -453,6 +623,54 @@ def test_wiki_hook_warning_triggers_manager_audit(tmp_path: Path) -> None:
     [observation] = state["observations"]
     assert observation["type"] == "wiki.hook.warning"
     assert observation["details"]["operation"] == "rebuild_indexes"
+
+
+def test_compact_mission_error_observation_retains_bounded_manager_diagnostics(
+    tmp_path: Path,
+) -> None:
+    controller = _controller(tmp_path, _Manager(action="no_action"))
+
+    controller.observe({
+        "type": "life.mission.completed",
+        "ts": 10.0,
+        "item_id": "mission-123",
+        "title": "Repair mission completion error reporting",
+        "objective": "private full objective must not be captured",
+        "scope": "private scope must not be captured",
+        "status": "error",
+        "terminal_status": "error",
+        "failure_reason": "UnknownVerticalError: multimodal_video_generation",
+        "stop_reason": "unknown vertical",
+        "stop_kind": "permanent_error",
+        "recoverable": False,
+        "resumable": True,
+        "usage_record_count": 2,
+        "usage_records": [{"prompt": "full prompt payload must not leak"}],
+        "planner_report": {"private": "full report must not leak"},
+        "context_packet": "/private/context/latest.json",
+    })
+    controller.observe({
+        "type": "not.observed",
+        "ts": 11.0,
+        "failure_reason": "must not broaden event capture",
+    })
+
+    state = controller._state()
+    [observation] = state["observations"]
+    assert observation["type"] == "life.mission.completed"
+    details = observation["details"]
+    assert details == {
+        "status": "error",
+        "item_id": "mission-123",
+        "title": "Repair mission completion error reporting",
+        "terminal_status": "error",
+        "failure_reason": "UnknownVerticalError: multimodal_video_generation",
+        "stop_reason": "unknown vertical",
+        "stop_kind": "permanent_error",
+        "recoverable": False,
+        "resumable": True,
+        "usage_record_count": 2,
+    }
 
 
 def test_budget_block_prevents_manager_maintenance_call(tmp_path: Path) -> None:
@@ -1083,6 +1301,15 @@ def test_paused_or_failed_result_is_not_positive_canary_health(
         "results": [{"status": "paused_budget", "success": False}],
     }) == ""
     assert controller._state()["phase"] == "canary_running"
+    controller._write_state(canary_started_at=time.time() - 60.0)
+    assert controller.publish_after_canary(summary={
+        "stopped_by": "backlog_empty",
+        "results": [],
+    }) == ""
+    state = controller._state()
+    assert state["phase"] == "canary_running"
+    assert state["canary_mission_observed"] is True
+    assert state["canary_success_observed"] is False
 
 
 def test_stable_idle_canary_is_accepted_locally(
@@ -1202,7 +1429,7 @@ def test_dirty_resume_candidate_is_rejected_before_its_validator_runs(
     controller = _controller(tmp_path, _Manager())
     candidate, commit = _publication_repo(tmp_path)
     marker = tmp_path / "untrusted-validator-ran"
-    validator = candidate / "scripts" / "generate_release_manifest.py"
+    validator = candidate / "argus_skill" / "release_tools" / "generate_manifest.py"
     validator.write_text(
         f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n",
         encoding="utf-8",
@@ -1316,7 +1543,10 @@ def test_manager_directory_path_does_not_authorize_descendants(
     assert "argus_skill/base.py" in controller._state()["error"]
 
 
-def test_generated_output_symlink_is_rejected_before_build(tmp_path: Path) -> None:
+def test_generated_output_symlink_is_rejected_before_build(
+    tmp_path: Path,
+    require_symlink_support,
+) -> None:
     controller = _controller(tmp_path, _Manager())
     repo, base = _publication_repo(tmp_path)
     (repo / "argus_skill" / "new_feature.py").write_text(
@@ -1406,7 +1636,12 @@ def test_publication_stages_new_files_and_preserves_repository_identity(
     ).stdout.strip()
     assert author == "seed <seed@example.com>"
     subprocess.run(
-        [sys.executable, "scripts/generate_release_manifest.py", "--check"],
+        [
+            sys.executable,
+            "-m",
+            "argus_skill.release_tools.generate_manifest",
+            "--check",
+        ],
         cwd=repo,
         check=True,
     )
@@ -1422,7 +1657,7 @@ def test_publication_cleans_ignored_worktree_artifacts(tmp_path: Path) -> None:
     malicious = repo / "frontend" / "web" / "node_modules"
     malicious.mkdir(parents=True)
     (malicious / "vite").write_text("malicious\n", encoding="utf-8")
-    bytecode = repo / "scripts" / "sitecustomize.pyc"
+    bytecode = repo / "sitecustomize.pyc"
     bytecode.write_bytes(b"untrusted bytecode")
     controller._write_state(
         phase="queued",
