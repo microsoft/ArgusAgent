@@ -13,4 +13,5 @@ def test_readmes_document_the_supported_source_install() -> None:
         assert "python3 -m venv .venv" in text
         assert "pip install -e ." in text
         assert "argus --setup --non-interactive" in text
-        assert "--accept-house-rules" in text
+        assert "github.com/microsoft/ArgusAgent" in text
+        assert "argus doctor --advisor none --verify" in text
