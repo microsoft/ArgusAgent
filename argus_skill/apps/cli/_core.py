@@ -709,21 +709,6 @@ def _cmd_daemon_start(args: argparse.Namespace, *, foreground: bool) -> int:
     return int(receipt.result.get("rc", 3 if receipt.status != "applied" else 0))
 
 
-def _doctor_checks(args: argparse.Namespace):
-    from ...webapi.diagnostics import run_diagnostics
-
-    bundle = _resolve_project_bundle(args)
-    legacy = bool(getattr(args, "doctor", False))
-    return bundle, run_diagnostics(
-        bundle.project.root,
-        global_root=bundle.global_root,
-        backend=getattr(args, "backend", None),
-        auth_mode=getattr(args, "auth_mode", None),
-        probe_auth=legacy or bool(getattr(args, "deep", False)),
-        allow_prerelease=bool(getattr(args, "allow_prerelease", False)),
-    )
-
-
 def _doctor_payload(checks, *, verification: bool = False) -> dict[str, Any]:
     codes = {
         "backend preflight": "ARGUS-BACKEND-001",
@@ -1376,12 +1361,6 @@ def _cmd_config_snapshot(args: argparse.Namespace) -> int:
     path = write_config_snapshot(out, env=os.environ)
     print(f"argus-skill: config snapshot written to {path}")
     return 0
-
-
-def _resolve_skills_dir(args: argparse.Namespace) -> Path:
-    if getattr(args, "skills_dir", None):
-        return core_paths.resolve_runtime_path(args.skills_dir, context="--skills-dir")
-    return _resolve_global_root(args) / "skills"
 
 
 def _run_with_path_resolution_errors(action) -> int:

@@ -98,38 +98,6 @@ def _load_wiki_curator_skill_if_present(
     )
 
 
-def _direct_memory_edit_block(
-    skill_store: Any,
-    working_dir: str | Path | None,
-) -> str:
-    from ...skills.role_memory import role_skill_maintenance_block
-
-    skill_block = role_skill_maintenance_block(
-        skill_store,
-        "reviewer",
-        enabled=True,
-    )
-    project_root = (
-        Path(working_dir).expanduser().resolve()
-        if working_dir
-        else Path.cwd().resolve()
-    )
-    try:
-        from ...wiki.auto_hooks import discover_wikis
-
-        has_wiki = bool(discover_wikis(project_root))
-    except Exception:  # noqa: BLE001
-        has_wiki = False
-    if not has_wiki:
-        return skill_block
-    from ...wiki.context import render_knowledge_wiki_block
-
-    return skill_block + render_knowledge_wiki_block(
-        project_root,
-        role="Reviewer",
-    )
-
-
 def _verification_directive() -> str:
     """Compact trust-first verification stance."""
     return (
