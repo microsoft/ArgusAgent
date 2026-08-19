@@ -53,16 +53,19 @@ MLE-Bench Lite campaign runs the official MLE-Bench Low split
 ~\citep{chan2024mlebench} under a reviewer-approved medal gate: a competition counts
 as complete only when an independently reviewed submission earns a Kaggle medal, so
 the reported outcomes are medals rather than raw leaderboard positions.
-Table~\ref{tab:mle-medals} lists the competitions closed to date: nine medals,
-evenly split into three gold, three silver, and three bronze. The gate is narrow
+Table~\ref{tab:mle-medals} lists the competitions closed to date: \MLEMedals{}
+medals from \MLEGraded{} graded competitions, a \MLEMedalRate\% medal rate, evenly
+split into three gold, three silver, and three bronze. The gate is narrow
 rather than nominal. On \code{denoising-dirty-documents} the campaign settled
 0.00009 RMSE short of the silver band, and on
 \code{jigsaw-toxic-comment-classification-challenge} it cleared the bronze
 threshold by 0.00018 AUC; both outcomes were awarded by the external grader
-against the official Kaggle leaderboard, not by internal review. Two further
-competitions were graded without reaching a medal: \code{dog-breed-identification}
-finished above the median after twelve submissions, and
-\code{new-york-city-taxi-fare-prediction} remained below it after four. The
+against the official Kaggle leaderboard, not by internal review. The remaining four
+graded competitions closed without a medal; two are documented in detail, with
+\code{dog-breed-identification} finishing above the median after twelve submissions
+and \code{new-york-city-taxi-fare-prediction} remaining below it after four. We
+report the denominator rather than the medal count alone because a medal rate stated
+without its graded total is not interpretable. The
 transparent-conductor result is also a verification-gated route change: the
 external grader rejected the initial approach at 0.208 RMSLE, the campaign
 replaced it with a public-state-of-the-art method, and the grader then certified
@@ -107,6 +110,150 @@ The table shows one runtime reaching competitive outcomes across heterogeneous
 tasks. The remainder of this section
 analyzes the SWE-Bench Pro row because it provides a long sequential trajectory and
 Reviewer decisions.
+
+\subsection{Does the Driver's Seat Stay Empty?}
+\label{sec:duty-cycle}
+
+Every preceding result measures what the runtime produced. This subsection measures
+whether producing it required a person, which is the claim that distinguishes an
+unattended Driver from a well-instrumented harness.
+
+Two metrics are needed, and neither is meaningful alone. \emph{Interruption rate}
+alone can be driven to zero by a system that does nothing; \emph{duty cycle} alone
+can be maximised by a system that burns Tokens in a loop. Reported together they
+bound the interesting case: work is being done, and nobody is being asked to
+supervise it.
+
+We define duty cycle by complement, which avoids the unfalsifiable question of what
+counts as productive:
+\begin{equation}
+\mathrm{DutyCycle} = \frac{\bigcup_i [\,s_i, c_i\,]}{W - G},
+\label{eq:duty-cycle}
+\end{equation}
+where $[s_i,c_i]$ are model-call intervals from the settled usage ledger, $W$ is the
+campaign wall-clock span, and $G$ is time in which no work was available or the
+execution environment was unusable. Using the union of call intervals rather than
+gaps between log events is not a detail: a single reasoning call can run for over two
+hours, during which the event stream is legitimately silent, so a silence threshold
+would systematically score deep reasoning as idleness. External jobs such as
+synthesis, timing analysis, or training runs consume no Tokens and are likewise not
+penalised, because they fall into neither subtracted term. Interruption rate counts
+only system-initiated requests for a human; an operator who volunteers a status
+question does not count, because the system was not waiting for them.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabularx}{\linewidth}{@{}Xp{1.7cm}p{1.7cm}p{1.9cm}@{}}
+\toprule
+\rowcolor{papersand}
+\textbf{Campaign} & \textbf{Span (h)} & \textbf{Busy (h)} & \textbf{Duty cycle} \\
+\midrule
+Research campaign A & 168.9 & 107.4 & \textbf{98.7\%} \\
+Research campaign B & 109.4 & 25.4 & \textbf{97.5\%} \\
+Mathematics campaign & 168.8 & 63.2 & \textbf{96.1\%} \\
+Retrieval-agent campaign & 133.1 & 46.5 & \textbf{95.3\%} \\
+Presentation campaign & 70.8 & 27.1 & \textbf{95.1\%} \\
+FlashAttention-4 adaptation & \FlashDASpan{} & 21.2 & 83.7\% \\
+Local-inference campaign & 169.2 & 44.7 & \DutyDegradedCycle\% \\
+\bottomrule
+\end{tabularx}
+\caption{Duty cycle with work in hand, computed from
+Equation~\ref{eq:duty-cycle}. Including all idle time---periods with an empty
+backlog awaiting a new assignment---the aggregate raw busy fraction is
+\DutyCycleRaw\%; the two figures answer different questions and should not be
+conflated.}
+\label{tab:duty-cycle}
+\end{table}
+
+Five campaigns sit between \DutyCycleLow\% and \DutyCycleHigh\%. The two lower rows
+are the informative ones. The FlashAttention-4 adaptation ran in a one-assignment
+-at-a-time mode: each of its long silences begins with a mission completing
+successfully and ends with the operator supplying the next objective, so the gap
+measures the human's response latency, not the runtime's hesitation. The lowest row,
+at \DutyDegradedCycle\%, is the campaign whose interruption log records a failed
+NVIDIA driver, corrupted container image storage, and contention for an exclusive
+GPU window. \textbf{The ceiling on unattended operation in these traces is
+infrastructure availability, not agent autonomy.}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabularx}{\linewidth}{@{}Xp{1.5cm}p{1.5cm}@{}}
+\toprule
+\rowcolor{papersand}
+\textbf{What the system asked for} & \textbf{Count} & \textbf{Share} \\
+\midrule
+Broken infrastructure (driver, storage, auth outage, GPU window) & 13 & \DutyInfraPercent\% \\
+Credentials, budget, or authorization & 10 & \DutyAuthorityPercent\% \\
+Missing context files & 7 & \DutyContextPercent\% \\
+\textbf{Research judgment} & \textbf{\DutyJudgmentCount{}} & \textbf{\DutyJudgmentPercent\%} \\
+Framework defect & 3 & \DutyFrameworkPercent\% \\
+\bottomrule
+\end{tabularx}
+\caption{All \DutyInterruptions{} human requests raised across \DutyCampaigns{}
+campaigns and \DutyWallHours{} wall-clock hours, classified by what was asked.}
+\label{tab:interruptions}
+\end{table}
+
+Across \DutyCampaigns{} campaigns, \DutyWallHours{} wall-clock hours, and
+\DutyEvents{} logged events, the runtime raised \DutyInterruptions{} requests for a
+human: one every \DutyInterval{} hours. The composition matters more than the rate.
+A majority---\DutyInfraPercent\% infrastructure plus \DutyAuthorityPercent\%
+authority---are cases where no autonomy improvement would help, because the machine
+was broken or the decision was not the machine's to make. The authority requests show
+the boundary working as designed rather than as a generic escape hatch; a
+representative one proposes its own ceiling before asking, requesting at most 256
+additional calls under an existing subscription with an explicit incremental billing
+cap of zero and no new credentials. Only \DutyJudgmentPercent\%, that is
+\DutyJudgmentCount{} requests in \DutyWallHours{} hours, are the case the Driver
+framing is really about: work was available and the system could not decide how to
+proceed. One of those is a mathematical campaign reporting that it had exhausted the
+analytic and structural bounding methods within its current scope---an escalation we
+would want a research system to make.
+
+The remaining \DutyContextPercent\% are the runtime's own fault in a specific and
+fixable way: canonical handoff files went missing and the system correctly refused to
+proceed from an inferred state rather than guess. Together with the infrastructure
+share, this locates most of the remaining gap in operational engineering---process
+supervision, storage reliability, durable context---rather than in the agent loop.
+
+For scale, a strong coding agent driven turn by turn sustains roughly
+\CodexEndurance{} hour of unattended operation before requiring its operator, an
+interval two orders of magnitude below the \DutyInterval{}-hour figure above. That
+comparison is not a controlled experiment, and we do not present it as one; the two
+systems differ in scaffolding, task assignment, and stopping policy. It is reported
+because the gap is large enough to be qualitative: one system's clock follows its
+operator's waking hours, and the other's does not.
+
+\subsection{What the Unattended Hours Delivered}
+\label{sec:delivery}
+
+Duty cycle establishes that the seat stayed empty; it does not establish that
+anything worth having came out of it. Section~\ref{sec:infra-vertical} presents the
+delivery evidence in full, drawn from GPU and serving infrastructure because that
+domain pairs an unforgiving verifier with reviewers outside this project. Three
+comparisons bound the question here.
+
+Against a human working with a coding agent, on a SenseNova U1 integration into
+SGLang, one engineer invested over \SGLangHumanHours{} hours without completing the
+task, while \systemname{} finished it within a \SGLangArgusHours{}-hour wall-clock
+envelope under an operator who was not an infrastructure specialist. Against a
+specialist team, on a FlashAttention-4 adaptation carrying six diffusion-LLM mask
+families across two GPU architectures, the runtime reached
+\FlashDAGapLow--\FlashDAGapHigh\% of native kernel performance for under
+\FlashDACostCNY{} CNY of model spend, in a direction that team had worked for over
+three months. Against an external reviewer, \FLAPRTotal{} kernels submitted to
+\code{flash-linear-attention} were accepted with no blocking changes requested.
+
+Each comparison is a bounding observation rather than a controlled trial, and
+Section~\ref{sec:limitations} states the specific asymmetries: the human attempt
+could consult an already-public implementation, the specialist-team figure comes from
+an interview covering different scope, and maintainer acceptance establishes that
+particular artifacts met an outside standard rather than that unattended output meets
+it in general. The distinction that matters for the argument is nonetheless
+available: the third comparison is decided by people who did not write the work and
+had no stake in its acceptance.
 
 \subsection{Knowing When to Stop: Verification Routing and Non-Termination}
 
@@ -174,7 +321,7 @@ final difficult-task window rebounds in both metrics.
   adaptive Reviewer routing, and observed review outcomes. Panels (b) and (c)
   aggregate \systemname solve input Tokens and active workflow time over
   approximately six-Wave windows using task-weighted means. Relative to W1--6,
-  W19--22 uses 21\% fewer solve input Tokens and 15\% less active time per task.
+  W19--22 uses \SWEProTokenReduction\% fewer solve input Tokens and \SWEProTimeReduction\% less active time per task.
   Two incomplete Waves are omitted, while W23--24 remains visible as late
   difficult-task stress. Copilot per-Wave resource traces were not retained; the
   window comparison characterizes the operating profile over this sequence, and a
@@ -196,11 +343,74 @@ The process theory is instantiated from two complementary traces. In the
 mathematical campaign, direct reasoning, verification, and action each account for
 approximately 56\% of their respective attributed units. In SWE-Bench Pro, Reviewer
 revision requests lead to 79.1\% official-verifier recovery and 51.2\% strict
-review-loop rescue, while the mature window uses 21\% fewer solve input Tokens and
-15\% less active time than startup. Appendix~\ref{app:formula-instantiation} gives
+review-loop rescue, while the mature window uses \SWEProTokenReduction\% fewer solve input Tokens and
+\SWEProTimeReduction\% less active time than startup. Appendix~\ref{app:formula-instantiation} gives
 the complete substitutions for the density, reuse, yield, and compression
 quantities.
 
 The public research inventory additionally contains 41 de-duplicated artifacts
 across six programs, illustrating the range of research programs executed by the
 same runtime.
+
+\subsection{The Delivery Ledger}
+\label{sec:ledger}
+
+Table~\ref{tab:ledger} indexes the campaigns reported in this section and the
+subsections that follow it, grouped by the kind of verifier each answers to. The
+grouping is the point: the further down the table a row sits, the less the runtime
+controls the standard it is judged against, and the harder it is to satisfy the gate
+with narrative.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\renewcommand{\arraystretch}{1.14}
+\begin{tabularx}{\linewidth}{@{}p{2.35cm} X p{3.15cm}@{}}
+\toprule
+\rowcolor{papersand}
+\textbf{Campaign} & \textbf{Result} & \textbf{Who decides} \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{Benchmark harnesses (Section~\ref{sec:results})}} \\
+SWE-Bench Pro & $\approx$\SWEProArgusAccuracy\% vs \SWEProDirectAccuracy\% direct; \ReviewerFirstBlocked{} declared blocked & Official verifier \\
+SOL-ExecBench & Global \#6; $2\times$ the \#1 score; 7 top-3 placements & Official scorer \\
+nanochat B200 / H100 & 0.9636 / 0.9855 BPB vs 0.9646 / 0.9879 human best & Fixed protocol \\
+nanoGPT speedrun & 79.77\,s vs 80.18\,s same-device human & Verifier runs \\
+AARRI-Bench & 63/82 (76.8\%) vs 68.3\% paper best & Task rubric \\
+Math-Reasoning Data & 28.0 gap vs 20.83 / 8.33 / 6.25 & Frozen solver \\
+MLE-Bench Lite & \MLEMedalRate\% medal rate (\MLEMedals{}/\MLEGraded{} graded): 3 gold, 3 silver, 3 bronze & Kaggle leaderboard \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{AI for Science (Sections~\ref{sec:vertical-trace}, \ref{sec:materials-vertical})}} \\
+MOF generation & Chemical control 92.5 / 100.0 / 74.5\%; AUC $0.594{\to}0.833$; simpler method wins at matched compute & External \code{MOFChecker} \\
+Erd\H{o}s--Gy\'arf\'as & Six proof-backed frontier updates; one falsified route retained & Proof checker \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{AI for research writing (Section~\ref{sec:paper-case-study})}} \\
+Paper production & Six pipelines to submission; \PaperCaseMissions{} missions, \PaperCaseRollbacks{} Stage rollbacks & Venue format \\
+Research inventory & 41 de-duplicated artifacts across six programs & Public manuscripts \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{AI infrastructure (Section~\ref{sec:infra-vertical})}} \\
+FlashAttention-4 dLLM & \FlashDAParity{}/\FlashDAParity{} parity; \FlashDAGapLow--\FlashDAGapHigh\% of native; \FlashDAVsTriton$\times$ over Triton; under \FlashDACostCNY{} CNY & Bit-exact reference \\
+SGLang integration & \SGLangFiles{} files, \code{+\SGLangLines{}}; 160/160 exact; \SGLangThroughput$\times$ at BS8 & Real-hardware parity \\
+Upstream kernels & \FLAPRTotal{} \code{fla-org} submissions: RWKV6 $1.21\times$ (\#1045), KDA $1.29\times$ (\#1128), SM100 fix restoring 76 tests (\#1109), AttnRes $1.102\times$ (\#1114) & \textbf{Outside maintainers} \\
+MiniMax-H3 local & 62\,GiB model on 24\,GB M4 Pro; $6.159\times$ on one A6000 & Published artifacts \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{AI for AI (Section~\ref{sec:rsi-vertical})}} \\
+Runtime self-evolution & Parameter-invariant axis: \SWEProTokenReduction\% fewer solve Tokens, \SWEProTimeReduction\% less active time at maturity & Longitudinal ledger \\
+1B pretraining stack & Parameter-changing axis: from-scratch pipeline on 8$\times$B200 built and run end to end & Training convergence \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{Hardware (Section~\ref{sec:silicon-vertical})}} \\
+ACE-2 accelerator & 13{,}914/13{,}914 commands; 0.614\,mm$^2$, WNS/TNS 0.00\,ns, exclusions published & Static timing engine \\
+\bottomrule
+\end{tabularx}
+\caption{Campaigns grouped by the authority that decides whether the result counts.
+Rows in the first block are scored by harnesses the runtime executes; the last two
+blocks are decided by external checkers, external reviewers, and physical tooling
+that the runtime does not own and cannot tune.}
+\label{tab:ledger}
+\end{table}
+
+Two rows carry disproportionate weight for the argument of this report, and neither
+is the highest number in the table. The upstream kernel row is the only one whose
+acceptance criteria were written by people with no connection to this project. The
+MOF row is the only one where the admitted method is \emph{smaller} than the
+published method it replaces, which is not an outcome a system optimizing a visible
+score tends to reach.

@@ -10,11 +10,53 @@ public prospective study of clarification quality, researcher calibration, or ti
 to identify the binding constraint. A publishable evaluation requires consented,
 prospectively designed collaboration studies with disclosure-safe tasks.
 
-\paragraph{Contract refinement can still fail.}
-Evidence and explicit authority reduce goal drift but do not eliminate it. A
-Manager or operator can approve a poorly framed tradeoff, a recorded standing
-intent can omit a tacit requirement, and the report-level $K_t/X_t$ projection is
-distributed across several runtime surfaces rather than one atomic transaction.
+\paragraph{Unattended-operation metrics come from production campaigns.}
+Duty cycle and interruption rate are measured from runtime ledgers across campaigns
+that differ in vertical, task difficulty, hardware, and operator availability. They
+characterise an operating profile, not a controlled protocol: no campaign was
+replayed under a matched configuration, and the duty-cycle denominator excludes
+periods with an empty backlog, which is a judgement about what the runtime should be
+held responsible for rather than a neutral measurement. The aggregate raw busy
+fraction over all wall-clock time is \DutyCycleRaw\%, and the two figures answer
+different questions. Interruption counts include only system-initiated requests, so a
+deployment whose operators intervene voluntarily will see a different practical
+experience than the rate suggests. The \CodexEndurance{}-hour comparison figure for a
+turn-by-turn coding agent is an internal observation under a different scaffold, not
+a matched trial.
+
+\paragraph{Delivery comparisons are bounding observations, not controlled trials.}
+The SGLang comparison involves one engineer, one task, and unmatched starting
+information---the human attempt could consult an already-public implementation, which
+makes \SGLangHumanHours{} hours a lower bound rather than an estimate. The
+three-month specialist-team figure for the FlashAttention-4 direction comes from a
+practitioner interview covering work with a different scope and acceptance standard.
+The \FlashDACostCNY{} CNY figure is incremental model spend reconciled from vendor
+billing; the settled ledger records these calls as unpriced because subscription CLIs
+do not report per-call cost, and the figure excludes subscription seats, GPU time,
+and human hours. External maintainer acceptance establishes that specific artifacts
+met an outside standard, not that unattended output meets it in general.
+
+\paragraph{Scope of the infrastructure results.}
+The FlashAttention-4 parity and performance figures were verified on an
+SM90/Hopper-class device; comparable H100 figures are a team report awaiting raw
+logs and should not be read as archive-verified. Two of the upstream kernel
+submissions are opt-in or restricted to a promoted dispatch bucket, so the default
+path for library users is unchanged and no general end-user speedup is claimed. The
+Blackwell correctness fix has no before-and-after performance comparison by
+construction. Single-workload measurements on one device are reported as such
+throughout, and none of these results establishes that the runtime reaches the same
+standard on kernel families it has not attempted.
+
+\paragraph{Evidence-driven control can still misjudge the evidence.}
+Holding the objective as a revisable hypothesis moves the failure mode rather than
+removing it. The risk is no longer that a correct target gets abandoned but that an
+incorrect revision is admitted: a Manager or operator can approve a poorly framed
+tradeoff, a recorded standing intent can omit a tacit requirement, and evidence
+sufficient to refute one framing does not by itself establish that the replacement is
+better. The report-level $K_t/X_t$ projection is also distributed across several
+runtime surfaces rather than one atomic transaction. We do not have a measurement
+separating revisions that were genuinely warranted from those that merely cleared the
+gate; establishing one requires seeded misspecifications with known ground truth.
 Future work should test adversarial refinements, invariant-preservation checks,
 disagreement handling, and rollback of harmful contract changes.
 
@@ -70,3 +112,122 @@ end-to-end lifecycle behavior and recovery under review across six domains and t
 venue formats, not paper acceptance, scientific novelty, or superiority to human
 research teams. It also does not establish a measured zero-touch rate. Recorded
 costs in the public data exclude utility calls without a priced event.
+
+\subsection{Future Work: The Loop Between Auto Research and RSI}
+
+The containment relation of Section~\ref{sec:rsi-related}---recursive
+self-improvement as auto research pointed at AI itself---is accurate but static. The
+direction we think matters is dynamic, and it runs in both directions: each capability
+is a precondition for the other, and neither reaches its ceiling alone.
+
+\paragraph{RSI is a precondition for auto research in any specialized domain.}
+An auto research system operating on frontier problems cannot run on pretrained
+knowledge alone, and this is a structural limitation rather than a matter of scale.
+Domain expertise has a short half-life at the frontier: the kernel technique that
+matters was published last quarter, the mask semantics were defined by a paper that
+does not yet have citations, the toolchain quirk that blocks synthesis was discovered
+by three people and written down by none of them. Human experts do not merely hold
+knowledge; they continuously manufacture it, and a system whose parameters were
+frozen before that manufacture is permanently behind wherever the work is actually
+interesting.
+
+A system that only retrieves what it was trained on can therefore assist an expert
+but cannot replace one. Doing what an expert does requires learning \emph{in situ}:
+acquiring, from the campaign itself, the facts and procedures that did not exist when
+the model was trained, and retaining them in a form later work can rely on. That is
+self-improvement, and it is not optional garnish on auto research---it is what
+separates auto research at the frontier from auto research on solved problems. This
+report measures the parameter-invariant form of it, and the natural extension is to
+carry the same discipline into the parameters themselves, so that what a campaign
+discovers can change how the system reasons rather than only what it retrieves.
+
+\paragraph{Auto research is a precondition for RSI, in two ways.}
+The reverse dependency is at least as strong, and it is why we regard the
+model-training-engineer direction as the one that will arrive first.
+
+The first is data. Equation~\ref{eq:process-data} formalizes why a final artifact is a
+lossy projection of the trajectory that produced it, and the practical consequence is
+that the internet contains overwhelmingly the projections. It records the merged
+patch, not the four approaches abandoned before it; the published theorem, not the
+route that was falsified on the way; the accepted paper, not the reframing that
+happened after the method search failed. \textbf{Process data is the scarce
+resource}, and it is scarce for a structural reason: nobody was ever paid to write
+down the reasoning that did not work. An auto research runtime operating under
+verification produces exactly this, continuously and in typed form---objectives,
+actions, measurements, verdicts, the routes that were refuted, and the evidence that
+refuted them---as a byproduct of doing its job. The trajectories in this report were
+retained to coordinate the next mission. Their more consequential use is as
+supervision for training the next model, and the conversion path---supervised,
+preference-based, and reinforcement-learning transitions over agent trajectories---is
+already established in the literature Section~\ref{sec:related} surveys. The demand
+side is visible in how much effort now goes into manufacturing such corpora
+deliberately: SWE-Gym and SWE-smith construct software-agent trajectories at scale
+precisely because they do not occur naturally in scraped
+data~\citep{pan2024swegym,yang2025swesmith}, and process supervision outperforms
+outcome supervision when the intermediate steps can be
+obtained~\citep{lightman2023verify}. What has been missing is a source that generates
+such data at volume without a human authoring each example. A working auto researcher
+is that source.
+
+The second is capability. Parameter self-evolution requires something that can
+actually train models: process the data, modify the code, design the ablation, read
+the curve, and decide what to change. That is not a capability a model has by virtue
+of being large; it is the competence of a strong training engineer, and acquiring it
+is an auto research problem in its own right. \textbf{Only once a system can conduct
+research does it become possible for it to conduct the research that produces its own
+successor.} The pretraining stack of Section~\ref{sec:rsi-vertical} is the first
+concrete step: the runtime now owns the machinery, and the open question is whether
+it can operate that machinery well enough that the resulting model is better because
+of its decisions rather than despite them.
+
+\paragraph{What closing the loop would look like.}
+Composing the two directions gives a cycle rather than a ladder. An auto researcher
+runs frontier campaigns; those campaigns generate verified process data no corpus
+contains; that data trains a model with better research judgment; the improved model
+conducts better campaigns, including campaigns about training; and its in-situ
+learning keeps it current with knowledge produced after its own training cutoff. Each
+turn compounds the next, and the constraint that binds it is neither model scale nor
+data volume but whether the system can run long enough, unattended enough, and with
+enough judgment about its own output to complete a turn without a human carrying it.
+That is why we regard duty cycle, interruption rate, and the willingness to return
+\code{blocked} as foundational rather than operational metrics: they measure whether
+the cycle can turn at all.
+
+We do not claim to have closed this loop, and we are explicit that no step of it is
+demonstrated end to end here. We claim to have built a runtime that executes
+research-level work unattended, that improves its retained state under verification,
+that produces the process record such a loop would consume, and that has now built
+the training machinery such a loop would require. The remaining work is to connect
+them, and to measure honestly at each turn whether the system that comes out is
+better than the one that went in.
+
+\subsection{Work in Progress}
+
+Three campaigns are running at the time of writing and are reported here as
+direction rather than result, so that the boundary between what has been verified
+and what is merely underway stays explicit.
+
+\paragraph{The next three steps on the loop.}
+Concretely, the cycle described above advances by three measurable steps, each
+independently hard: training a model good enough to serve as a role backbone rather
+than a demonstration; using \systemname{}'s own retained trajectories as the training
+corpus rather than public data; and running the resulting model in a role to measure
+whether the runtime that produced it improves. Only the third would constitute
+evidence of a closed loop rather than of capability, and none is claimed here.
+
+\paragraph{Scaling the materials model.}
+Section~\ref{sec:materials-vertical} holds at a research candidate. The continuing
+work moves from method optimization on an existing backbone to architecture and
+training-route exploration at larger parameter and data scale on the same B200
+cluster, with the aim of carrying the verified scoring function and selection
+mechanism into a foundation-model setting. The outstanding items enumerated in that
+section---an independent holdout, the full leaderboard, cross-dataset transfer, and
+physical plausibility checks beyond the selecting validator---gate any stronger
+claim.
+
+\paragraph{Completing the in-flight benchmark arenas.}
+The MLE-Bench Lite campaign continues beyond the \MLEGraded{} graded competitions
+reported in Section~\ref{sec:results}, and the GLM-5.2 SWE-Bench Pro run on Claude
+Code has no matched direct baseline and is excluded from all comparisons until it
+does. Both will be reported on completion rather than at their current partial
+standing.

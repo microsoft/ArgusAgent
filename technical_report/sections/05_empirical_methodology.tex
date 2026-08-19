@@ -9,6 +9,16 @@ also enables deeper analyses of runtime evolution and Reviewer intervention.
 
 \subsection{Research Questions}
 
+Evaluation is organized around five questions. RQ0 concerns the operating mode
+itself and is prerequisite to the rest: a result obtained under continuous
+supervision and the same result obtained unattended are different findings.
+
+\paragraph{RQ0: Unattended operation.}
+How often does the runtime require a human, what does it ask for when it does, and
+what fraction of available time is it producing? These are reported as duty cycle and
+interruption rate over campaign ledgers, together with what the unattended hours
+delivered.
+
 \paragraph{RQ1: Benchmark performance.}
 What task-native outcomes does \systemname achieve across the seven benchmark
 arenas, and how do they compare with the reference reported for each arena?
@@ -25,6 +35,23 @@ and how many initially rejected solutions are recovered after Reviewer feedback?
 \paragraph{RQ4: Process-to-capability mechanisms.}
 How do the retained traces quantify process-data advantage, verification-gated
 correction, Token conversion, and cross-task reuse?
+
+\subsection{Measuring Unattended Operation}
+
+Duty cycle and interruption rate are computed from two runtime ledgers rather than
+from instrumentation added for this report. The settled usage ledger records one row
+per model call with start and completion timestamps, so the union of call intervals
+gives occupied time without relying on a silence heuristic; a single call can exceed
+two hours, which is why event-gap thresholds are unsuitable. The event log records
+system-initiated human requests as typed events, which separates them from operator
+messages that the system never waited on. Campaigns with fewer than 50 recorded calls
+are excluded as too short to characterise. The two subtracted terms in
+Equation~\ref{eq:duty-cycle}---empty backlog and unusable environment---are
+identified from gaps exceeding one hour, with the distinction drawn by whether the
+preceding event was a completed mission or an interrupted execution. Because these
+are production campaigns rather than a controlled protocol, task difficulty, vertical,
+and operator availability all vary across rows; the tables characterise an operating
+profile and are not a matched comparison.
 
 \subsection{Benchmark Suite}
 

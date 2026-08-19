@@ -1,18 +1,49 @@
 \section{Analysis and Discussion}
 \label{sec:discussion}
 
+\subsection{What the Duty-Cycle Result Does and Does Not Show}
+
+The central measurement of this report is that the Driver's seat stayed empty:
+\DutyInterruptions{} human requests across \DutyWallHours{} hours, one every
+\DutyInterval{} hours, at \DutyCycleLow--\DutyCycleHigh\% duty cycle with work in
+hand. Three readings of that result are worth separating.
+
+It does \emph{not} show that the runtime never needs a person. It shows that the
+requests concentrate where a person is genuinely required. Two thirds of them report
+broken infrastructure or ask for authority the machine should not grant itself, and
+both categories would survive any improvement in agent reasoning; a corrupted
+container store is not an autonomy problem, and a system that quietly provisioned its
+own credentials would be a worse system, not a better one. The
+\DutyJudgmentPercent\% that are research judgment is the number that would fall if
+the underlying model improved.
+
+It does \emph{not} show that unattended time is free. The residual gap between the
+observed duty cycle and unity is dominated by infrastructure failure and lost context
+files, which is an argument for process supervision and durable storage rather than
+for a stronger model. The lowest-scoring campaign in
+Table~\ref{tab:duty-cycle} is the clearest case: its ceiling was a GPU driver, not
+its planner.
+
+What it does show is a change in what bounds the work. Under turn-by-turn
+supervision, the effective operating window of an agent is its operator's attention,
+and no amount of accuracy extends it. Once completion has an owner other than the
+executor, the window becomes a property of the runtime and its infrastructure.
+Sections~\ref{sec:delivery} and the benchmark results below address the obvious
+follow-up---whether the hours produce anything---because duty cycle alone would
+describe an expensive idle loop equally well.
+
 \subsection{System-Level Performance}
 
 The seven-benchmark suite shows one runtime operating across software repair,
 GPU-kernel optimization, model training, research tasks, and data synthesis; a
 separate mathematical vertical trace examines proof-oriented research depth. On
-SWE-Bench Pro, \systemname reaches approximately 78\%
-accuracy compared with 59\% for Direct Copilot at 1.41$\times$ aggregate Tokens.
+SWE-Bench Pro, \systemname reaches approximately \SWEProArgusAccuracy\%
+accuracy compared with \SWEProDirectAccuracy\% for Direct Copilot at \SWEProTokenRatio$\times$ aggregate Tokens.
 The comparison pairs additional computation for planning, execution, and review
 with a 19-point accuracy difference.
 
 The longitudinal run shows how this cost changes with accumulated state. Mature
-W19--22 uses 21\% fewer solve input Tokens and 15\% less active time per task than
+W19--22 uses \SWEProTokenReduction\% fewer solve input Tokens and \SWEProTimeReduction\% less active time per task than
 startup W1--6. The curve remains non-monotone: W13--18 combines low Token use with
 longer execution, while W23--24 contains a late concentration of difficult tasks. The operating profile changes
 over time as shared state expands, while task-dependent variation remains visible.
@@ -87,7 +118,10 @@ attribute a causal gain to memory, Skills, verification, or routing separately.
 
 A harness is supposed to bound what a system may do. The instructive failure is when
 a system manufactures its own harness out of a decision it made earlier, and then
-obeys it. We call this \emph{endogenous harnessing}.
+obeys it. We call this \emph{endogenous harnessing}. It is the specific way an
+unattended runtime goes wrong: not by running out of capability, but by continuing to
+execute, correctly and productively, against a target that later evidence has already
+undermined.
 
 The mechanism follows directly from the two levels in Algorithm~1. A Planner proposes
 a strategy under the information available at planning time. That proposal is written
@@ -101,40 +135,60 @@ by a note they wrote before the experiment ran.
 A recorded verification trace shows the shape. The Planner required a
 \code{skip-zero} candidate. The Engineer satisfied that local objective. The Reviewer
 then identified a no-gap validator alternative that would have discharged the same
-obligation more directly. The Reviewer, however, is scoped to the current round: it
-can reject, request revision, or escalate, but it cannot redefine the mission that
-made the weaker route mandatory. The better judgement arrived, was recorded, and did
-not change the task. The earlier, less informed decision won on authority rather than
-on evidence.\footnote{This trace is drawn from internal system-verification work. We
+obligation more directly. The better judgement arrived, was recorded, and did not
+change the task. The earlier, less informed decision won on authority rather than on
+evidence.\footnote{This trace is drawn from internal system-verification work. We
 report it as a described sequence rather than a public reproducible artifact.}
 
 Planning is not the problem here, and neither is bounding. The problem is category
 confusion between two things a plan can be. A plan can be a \emph{contract}, which is
 binding and expensive to change, or a \emph{falsifiable hypothesis}, which is
-supposed to be discarded the moment the evidence turns. \systemname currently records
-both in the same place, so a technical strategy inherits the immovability that should
-belong only to a safety boundary. The correct division is sharper than the one the
-runtime implements: frozen authority, prohibitions on granting new trust, and
-irreversibility limits are hard harness and should resist revision; the choice of
-route, validator, or representation is a technical bet and should be revisable by any
-role that produces evidence against it.
+supposed to be discarded the moment the evidence turns. Filing both in the same place
+gives a technical strategy the immovability that should belong only to a safety
+boundary. The correct division is sharper: frozen authority, prohibitions on granting
+new trust, and irreversibility limits are hard harness and should resist revision;
+the choice of route, validator, or representation is a technical bet and should be
+revisable by any role that produces evidence against it.
 
-The implemented contract already encodes half of this distinction. As
-Section~\ref{sec:method} describes, semantic clauses move freely while precise
-clauses and the objective require explicit confirmation. What is missing is that a
-mission's technical strategy is filed on the immovable side of that line rather than
-the negotiable one, and that the Reviewer, which is the role most likely to hold
-disconfirming evidence, has no channel to move it.
+\paragraph{The channel, and why it was silent.}
+The runtime's response is to give the disconfirming role a formal way to move the
+task boundary without letting it seize the authority to do so unilaterally. A
+Reviewer may emit \code{plan\_signal=reconsider} together with the assumption it
+disputes, a concrete alternative, and an \code{authority\_impact} declaring whether
+the change is technical, touches the Manager's contract, or belongs to the operator.
+The Manager adjudicates and returns one of keep, revise, replace, or ask-operator;
+the Planner then authors any replacement. Authority stays where it was, but evidence
+acquires a route to the decision it contradicts.
 
-This reframes where the current bottleneck sits. The failures above are not reasoning
-failures. The system found the counterexample, identified the validator alternative,
-and understood the cascading invariant. It could not act on any of them in time
-because the workflow gave later, better-informed roles no authority to revise the task
-boundary. The binding constraint on this class of system is methodological rather than
-cognitive, which is also why the remedy is a change in authority routing rather than a
-stronger model.
+The instructive part is that this channel existed end to end and was nonetheless
+unreachable. The Reviewer's decision event is flat, while the parser read the plan
+fields only from a nested object, so a correctly formed challenge was discarded
+before anything could route it. The vocabulary compounded the failure: the token
+\code{reconsider} appeared in no role prompt, and the only worked example showed an
+invalid value. A campaign could therefore close round after locally correct round
+with nothing able to question the design that produced them---which is precisely the
+failure this section names. The defect was diagnosed and repaired during the
+preparation of this report by reading both payload shapes through one reader and
+naming the vocabulary, with the authority each impact level carries, in the Reviewer
+prompt.
+
+We report this rather than quietly shipping the fix because the sequence is the
+argument. Endogenous harnessing is not a reasoning failure. In every instance we
+recorded, the system found the counterexample, identified the validator alternative,
+and understood the cascading invariant; it could not act on any of them in time
+because later, better-informed roles had no authority to revise the task boundary.
+The binding constraint on this class of system is methodological rather than
+cognitive, which is also why the remedy is a change in authority routing rather than
+a stronger model. It is worth noting how this failure surfaces under unattended
+operation: with a human Driver, a badly framed plan is caught the next time the
+operator reads the output. Once the seat is delegated, nothing catches it unless the
+runtime itself provides the channel. Longitudinal evidence on how often the reopened
+channel fires is future work; the campaign tally now reports objective-level
+stagnation and cumulative spend as facts so that a stalled plan is visible before a
+human is asked to notice it.
 
 \subsection{From Runtime Learning to Model Training}
+\label{sec:runtime-to-training}
 
 The same trajectories can be transformed into supervised examples, preference
 pairs, and reinforcement-learning transitions. AgentInstruct, Agent-FLAN, and
@@ -144,6 +198,42 @@ Agent Lightning provide complementary mechanisms for this conversion
 measurements, revisions, and retained-state updates. A future training stage can use
 this stream to internalize recurring planning and verification patterns while the
 runtime continues to provide long-horizon coordination.
+
+Section~\ref{sec:rsi-vertical} supplies the other half of that path, and the
+relationship between the two halves is the substantive point. Self-improvement
+separates into a parameter-invariant axis, which this report measures, and a
+parameter-changing axis, which it does not. The first compounds within a fixed
+capability ceiling: retained skills, verifiers, routing, and refuted routes make
+later missions cheaper and better targeted, but no accumulation of state makes a
+frozen backbone reason beyond its limit. The second moves the ceiling.
+
+The two are coupled in a specific way. Operating on the first axis produces, as a
+byproduct, precisely the supervision the second axis consumes---typed trajectories
+in which an objective, the actions taken, the measurements obtained, the verdict
+issued, and the routes abandoned are all recorded with their justification. A
+runtime that self-evolves while logging how it did so is generating its own training
+corpus while it works. Owning a pretraining stack is what makes that byproduct
+actionable rather than merely suggestive.
+
+We separate the axes deliberately, because the gap between holding both and having
+joined them is where claims about recursive self-improvement usually become
+unfalsifiable. Three steps remain: a model good enough to carry a role, training on
+the runtime's own trajectories rather than a public corpus, and a measured
+improvement in the runtime that produced it. Only the third closes the loop.
+
+This is what commits \systemname{} to the second of the two routes in
+Section~\ref{sec:rsi-related}. We do not claim a system that autonomously discovers
+how to improve itself. We report a runtime that executes research-level work
+unattended across software, kernels, silicon, mathematics, materials, and
+manuscripts; that measurably improves its retained state under an unchanged backbone;
+and that has built the pretraining stack which is the precondition for participating
+in weight production at all. The stages of the model-development pipeline it has
+taken over, and those still held by humans, are enumerated rather than asserted---and
+that enumeration is what we think an honest claim in this area currently looks like.
+The useful test is not whether a system can write a paper about AI, but whether it
+can move model capability; when a system is not only the object being trained but
+also a subject doing the training, the interesting question stops being whether
+recursive self-improvement has started and becomes how far the transfer has gone.
 
 \subsection{Vertical Research in Mathematics}
 
@@ -157,6 +247,38 @@ Later missions improve a bound and close two graph-realizability gaps by startin
 from the reviewed ledger rather than restarting from the original conjecture. This
 is the same runtime mechanism seen in software repair, applied to a domain where
 progress is expressed through definitions, lemmas, counterexamples, and proofs.
+
+\subsection{Why Infrastructure Is the Load-Bearing Vertical}
+
+Of the domains in this report, GPU and serving infrastructure carries the most
+weight, for a reason that has little to do with the domain being fashionable. It
+combines the two properties this report keeps separating. It is maximally
+underdefined at the start---no one could specify in advance which mask families the
+tile scheduler would tolerate, or that a determinism defect would appear only at
+batch size eight---and it is maximally verifiable at the end, because parity is
+bit-exact, latency is measured on the same hardware with the same shapes, and a
+compilation that crashes is not a matter of opinion. That combination is exactly the
+regime in which a Driver is both necessary and safe to delegate.
+
+It also supplies the strongest external check available to us. Benchmarks and papers
+in this report are, ultimately, evaluated by harnesses and standards we selected.
+Upstream review is not: the repository's acceptance criteria were written by people
+who have never heard of this project, and a maintainer independently re-derived the
+autotune configuration count, verified the described scope against the diff, and
+distinguished infrastructure flakes from test failures before approving. The result
+that carries the most information is the two-line correctness fix, precisely because
+it has no performance story. A system optimising for a visible number does not
+produce it. A system that treats ``the test suite cannot run to completion'' as a
+result worth delivering does.
+
+The same section contains the clearest negative evidence in the report. The
+FlashAttention-4 campaign's initial dense-plus-block-sparsity route was
+\FlashDAWorstRoute$\times$ slower than native, and the campaign recovered by
+recognising the data path was wrong rather than by optimising within it. That
+rejected route, its measurements, and the reasoning that killed it are retained in
+the skill library. This is what Section~\ref{sec:method} means by admitted state
+changing the starting point of later work: the next campaign in this area does not
+have to rediscover that the route is a dead end.
 
 \subsection{Verticals Whose Verifier the Runtime Does Not Own}
 
@@ -194,7 +316,7 @@ measurements reported in Sections~\ref{sec:results} and~\ref{sec:vertical-trace}
 \midrule
 Process-data dominance & Mathematical trajectory & One dead route and six dependent theorem updates & The retained process changes the starting state of later missions. \\
 Review gate & 43 Reviewer revision requests & 34 verifier recoveries; 22 strict rescues & Independent review redirects initially unacceptable work into another implementation round. \\
-Reuse value $G_L$ & Startup W1--6 versus mature W19--22 & 21\% fewer solve input Tokens; 15\% less active time & Later operation reaches a lower resource regime while shared state expands. \\
+Reuse value $G_L$ & Startup W1--6 versus mature W19--22 & \SWEProTokenReduction\% fewer solve input Tokens; \SWEProTimeReduction\% less active time & Later operation reaches a lower resource regime while shared state expands. \\
 Recovery under persistent state & Paper-production trajectory & Seven approaches dropped, two late submission repairs, and 29 session rolls & The campaign changes hypothesis and repairs evidence without losing accepted results or restarting the manuscript. \\
 Token conversion & Rounds 12--17 role attribution & 56.0\% reasoning, 55.4\% verification, and 55.6\% action direct shares & The research trace separates frontier work, coordination, and interrupted work. \\
 \bottomrule

@@ -47,10 +47,10 @@
 \newcommand{\systemname}{Argus\xspace}
 
 \hypersetup{
-  pdftitle={\systemname: A General-Purpose Agentic Reasoning Runtime for Long-Horizon Tasks: Evidence-Governed Progressive Evolution over Durable State},
+  pdftitle={\systemname: Who Drives the Harness? Unattended Long-Horizon Research on an Evidence-Driven Runtime},
   pdfauthor={Argus Team},
   pdfsubject={\systemname Technical Report},
-  pdfkeywords={objective revision, verification-gated review, long-horizon research, general-purpose agentic runtime, persistent state}
+  pdfkeywords={unattended autonomy, driver-harness model, evidence-driven control, duty cycle, interruption rate, long-horizon research}
 }
 
 \color{ink}
@@ -91,7 +91,7 @@
 \fancyhf{}
 \renewcommand{\headrulewidth}{0.35pt}
 \fancyhead[L]{\footnotesize\rmfamily\color{muted}\systemname}
-\fancyhead[R]{\footnotesize\rmfamily\color{muted}Evidence-Governed Progressive Evolution}
+\fancyhead[R]{\footnotesize\rmfamily\color{muted}Who Drives the Harness?}
 \fancyfoot[C]{\footnotesize\sffamily\color{muted}\thepage}
 \newcommand{\linkitem}[3]{%
   \raisebox{-0.18\height}{\includegraphics[height=8.5pt]{#1}}\,\href{#2}{#3}}
@@ -136,6 +136,7 @@
 \input{figures/swebench_metrics}
 \input{figures/reviewer_metrics}
 \input{figures/paper_case_study_metrics}
+\input{figures/autonomy_metrics}
 
 \begin{document}
 \thispagestyle{firstpage}
@@ -147,10 +148,10 @@
 \vspace{0.085in}
 
 \noindent{\raggedright\sffamily\fontsize{23}{26}\selectfont\bfseries\color{ink}
-  \systemname: A General-Purpose Agentic Reasoning Runtime for Long-Horizon Tasks}\par
+  \systemname: Who Drives the Harness?}\par
 \vspace{0.055in}
 \noindent{\raggedright\sffamily\fontsize{13}{16}\selectfont\bfseries\color{argusdeep}
-  Evidence-Governed Progressive Evolution over Durable State}\par
+  Unattended Long-Horizon Research on an Evidence-Driven Runtime}\par
 \vspace{0.06in}
 \noindent{\raggedright\sffamily\normalsize\bfseries\color{ink}
   \systemname Team}\par
@@ -176,67 +177,95 @@
 \begin{abstractbox}
 \small
 \textbf{Abstract.}
-Recursive self-improvement currently works where the supervision signal is dense.
-Kernel optimization, competitive benchmarks, and any task with a fast numeric score
-give an agent something to climb, and agents that climb them improve. The tasks that
-matter most in research supply no such signal: the objective is underdefined at the
-start, the right measurement is itself part of the problem, and the only available
-feedback is sparse, delayed, and contested. A system tuned to a dense score is a
-student who can only answer exam questions. We present \systemname, a persistent
-agentic runtime built for the other case, in which an expert and the system
-\emph{co-evolve} a problem statement: the runtime carries a campaign long enough to
-turn an underdefined goal into a defined one, and surfaces the specific contradiction
-that requires a human decision instead of guessing past it. Manager, Planner,
-Engineer, and Reviewer execute bounded missions over durable project state, and the
-working contract separates stable user intent from the operational objective,
-constraints, and verification criteria that evidence may refine. Verification-gated
-admission makes refinement cumulative rather than ad hoc: candidate memories, skills,
-procedures, verifiers, routing decisions, and rejected routes become reusable only
-after role-owned review and, where available, task-native verifier evidence. Model
-weights remain fixed, so self-evolution occurs in the persistent runtime state and
-control policy, and ordinary rounds run unattended between operator-owned escalation
-points.
+An agent harness lets a model reach the real world. Something still has to decide
+where to reach, when the result is good enough, and when to stop and ask. That seat
+has always been occupied by a person, which is why agentic progress is bounded by a
+resource nobody can scale: human waking hours. The work pauses when its operator
+sleeps, so human intelligence is delivered in discrete bursts. We call the occupant
+of that seat the \emph{Driver}, and we hand it to the machine. The Driver's job
+decomposes into three questions: \emph{is this actually done}, \emph{what is worth
+doing next}, and \emph{does this need a person}. \systemname answers the first with
+an independent read-only Reviewer that cannot edit the evidence it judges and can
+withhold completion outright, the second with a Manager-owned stage authority over
+a durable campaign, and the third with an authority boundary that stops for
+credentials, money, and irreversible actions while absorbing ordinary technical
+failure. Verification is therefore not a quality filter bolted onto execution; it is
+the load-bearing wall that makes the seat delegable at all. It also makes the runtime
+\emph{evidence-driven} rather than goal-driven: on work that is underdefined at the
+outset, the objective an expert states first is a hypothesis formed with the least
+information anyone will ever have, so departure from it is not automatically drift to
+be suppressed---if the objective is wrong, departing from it is correct. What must be
+disciplined is not the revision but its justification, and \systemname{} admits one
+only when evidence refutes the prior framing, an explicit role boundary is crossed,
+and the reason is recorded.
 
-In benchmark runs with autonomous mission execution, the same harness remains effective across seven
-GPT-5.5 benchmark arenas. It reaches approximately \SWEProArgusAccuracy\% on
-SWE-Bench Pro versus \SWEProDirectAccuracy\% for Direct Copilot, while using
-\SWEProTokenRatio$\times$ the aggregate Tokens. After verification-gated runtime
-self-evolution, mature SWE-Bench Waves use \SWEProTokenReduction\% fewer solve input
-Tokens and \SWEProTimeReduction\% less active workflow time per task than startup
-Waves. This observational trajectory is not monotone; it also records
-\ReviewerVerifierRecovered{} verifier recoveries and \ReviewerStrictRescues{}
-strict review-loop rescues. Across the broader suite, \systemname reaches 76.8\% on
-AARRI-Bench research tasks and a 28.0 gap on mathematical data synthesis, alongside
-competitive GPU-kernel and language-model-training results. Its artifacts extend
-beyond benchmark endpoints: an optimized RWKV6 kernel was merged into the upstream
-Flash Linear Attention repository. A multi-day mathematical campaign retains one
-falsified route and six proof-backed frontier updates; six paper pipelines with
-autonomous mission execution
-span \PaperCaseMissions{} missions and \PaperCaseRollbacks{} Stage rollbacks before
-reaching submission completion. Two verticals close against external checkers the
-runtime does not own: an inference accelerator certified for its demonstrated scope,
-and a materials campaign in which the admitted method is simpler than the published
-one it replaces. These results show a general, self-evolving harness
-that can revise, recover, and accumulate verified approaches without forcing every
-long-horizon trajectory into a success claim. The retained trajectories also form
-structured data for future supervised and reinforcement learning.
+We measure the delegation directly. Across \DutyCampaigns{} campaigns spanning
+\DutyWallHours{} wall-clock hours and \DutyEvents{} logged events, \systemname{}
+raised \DutyInterruptions{} requests for a human---one every \DutyInterval{} hours.
+Their composition matters more than their rate: \DutyInfraPercent\% reported broken
+infrastructure and \DutyAuthorityPercent\% requested credentials or budget, while
+only \DutyJudgmentPercent\% were research judgment. With work in hand, duty cycle
+runs \DutyCycleLow--\DutyCycleHigh\%; the sole campaign that fell to
+\DutyDegradedCycle\% is the one whose GPU driver and container storage failed
+repeatedly, which locates the ceiling in infrastructure rather than autonomy. A
+coding agent driven turn-by-turn sustains roughly \CodexEndurance{} hour unattended
+by comparison.
+
+Uptime alone would describe an expensive idle loop, so we pair it with delivery, and
+the least forgiving evidence comes from GPU and serving infrastructure, where a claim
+survives only until someone runs the tool that contradicts it. \systemname{} carried
+six diffusion-LLM mask families into a FlashAttention-4 CuTe DSL kernel across two
+GPU architectures, passing all \FlashDAParity{} parity cases and landing within
+\FlashDAGapLow--\FlashDAGapHigh\% of the native kernel---\FlashDAVsTriton$\times$
+faster than the production Triton path---for under \FlashDACostCNY{} CNY of model
+spend, after abandoning a first route that ran 4.9--\FlashDAWorstRoute$\times$ slower than
+native and retaining it as evidence. It completed a SenseNova U1 integration into
+SGLang (\SGLangFiles{} files, \code{+\SGLangLines{}} lines, exact parity on 160 of
+160 tokens, \SGLangThroughput$\times$ throughput at batch size 8) that one engineer
+working with a turn-by-turn agent had not finished in over \SGLangHumanHours{} hours,
+and it ran a frontier audio-video model whose weights exceed 62\,GiB on a 24\,GB
+laptop. \FLAPRTotal{} kernels it authored---a TileLang RWKV6 backend, a KDA training
+acceleration, a long-sequence reduction rewrite, and a two-line Blackwell fix for an
+illegal memory access that had rendered a test suite uncompletable---were reviewed by
+outside maintainers of \code{flash-linear-attention} and accepted with no blocking
+changes requested. In
+materials science, judged by an external chemistry validator it does not own, it
+added discrete chemical control to a published MOF generator, raised structural
+discrimination from 0.594 to 0.833 AUC, and then showed that a \emph{simpler}
+sampling method outperforms the published one at matched compute---a finding that
+became admissible only after a confound in the original comparison was removed.
+
+Self-improvement here has two axes. On the parameter-invariant one, which this report
+measures, retained skills, verifiers, and routing let mature waves run on
+\SWEProTokenReduction\% fewer solve input Tokens under an unchanged backbone. On the
+parameter-changing one, the runtime built and ran a from-scratch 1B pretraining stack
+on an eight-GPU B200 node---the entry condition for moving a ceiling no accumulation
+of state can move, with training on its own trajectories and measuring the result in
+a role still ahead. Across seven benchmark arenas the same runtime reaches
+approximately \SWEProArgusAccuracy\% on SWE-Bench Pro against
+\SWEProDirectAccuracy\% for direct Copilot, and declares \ReviewerFirstBlocked{}
+tasks blocked rather than reporting an unsupported success. Unattended operation, on
+this evidence, is not a longer leash on the same loop. It is what becomes possible
+once completion has an owner other than the executor.
 \end{abstractbox}
 
 \noindent{\footnotesize\color{muted}
-  \textbf{Keywords:} verified pivoting; runtime self-evolution; long-horizon
-  research; general-purpose agentic runtime; persistent state.\par}
+  \textbf{Keywords:} unattended autonomy; driver--harness model; evidence-driven
+  control; duty cycle; interruption rate; long-horizon research.\par}
 
-\begin{figure}[!t]
+\begin{figure}[!ht]
   \centering
   \includegraphics[width=\linewidth]{figures/argus_teaser.pdf}
   \caption{\systemname runtime and breadth evidence. The central diagram shows
   Manager authority over tasks, research verticals, and Stage transitions;
   Planner, Engineer, and Reviewer operate over a shared workspace whose knowledge,
   event log, artifacts, backlog, budget, daemon, and memory persist across bounded
-  missions. The surrounding cards report outcomes from seven task-native
-  evaluations. Their bars use independent scales and indicate comparison direction
-  with arrows; they are breadth evidence rather than a single normalized
-  leaderboard.}
+  missions. Together these roles occupy the Driver's seat: the Reviewer decides
+  whether work is done, the Planner and Manager decide what comes next, and an
+  authority boundary decides what still belongs to a person. The surrounding cards
+  report outcomes from seven task-native evaluations. Their bars use independent
+  scales and indicate comparison direction with arrows; they are breadth evidence
+  rather than a single normalized leaderboard.}
   \label{fig:overview}
 \end{figure}
 
@@ -248,6 +277,8 @@ structured data for future supervised and reinforcement learning.
 \input{sections/06_results}
 \input{sections/06b_vertical_trace}
 \input{sections/06c_paper_production_case_study}
+\input{sections/06f_infra_vertical}
+\input{sections/06h_rsi_vertical}
 \input{sections/06d_silicon_vertical}
 \input{sections/06e_materials_vertical}
 \input{sections/07_discussion}
