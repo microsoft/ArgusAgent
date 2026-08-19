@@ -66,6 +66,28 @@ def _planner_report(
     return report
 
 
+def _planner_report_from_payload(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Read the plan fields from either shape the Reviewer has been shown.
+
+    The decision event documented in the prompt is flat — ``plan_signal``,
+    ``plan_challenge``, ``plan_alternative`` sit beside ``status`` — while
+    older schema-constrained output nested the same fields under
+    ``planner_report``. Reading only the nested shape silently discarded every
+    plan challenge the current prompt asks the Reviewer to raise, so a campaign
+    could close round after locally correct round with no way to say that the
+    plan itself had become the obstacle.
+    """
+    nested = parsed.get("planner_report")
+    source = nested if isinstance(nested, dict) else parsed
+    return _planner_report(
+        forward_progress=source.get("forward_progress"),
+        plan_signal=source.get("plan_signal"),
+        challenge=source.get("challenge", source.get("plan_challenge")),
+        alternative=source.get("alternative", source.get("plan_alternative")),
+        authority_impact=source.get("authority_impact"),
+    )
+
+
 def _frontier_report(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -254,7 +276,6 @@ def parse_decision_text(
         reason = parsed.get("reason")
         next_action = parsed.get("next_action")
         operator_question = parsed.get("operator_question")
-        raw_planner_report = parsed.get("planner_report")
         if status not in _STATUSES:
             continue
         if not isinstance(reason, str) or not reason.strip():
@@ -278,17 +299,7 @@ def parse_decision_text(
                 research_result=normalize_research_result(
                     parsed.get("research_result")
                 ),
-                planner_report=(
-                    _planner_report(
-                        forward_progress=raw_planner_report.get("forward_progress"),
-                        plan_signal=raw_planner_report.get("plan_signal"),
-                        challenge=raw_planner_report.get("challenge"),
-                        alternative=raw_planner_report.get("alternative"),
-                        authority_impact=raw_planner_report.get("authority_impact"),
-                    )
-                    if isinstance(raw_planner_report, dict)
-                    else {}
-                ),
+                planner_report=_planner_report_from_payload(parsed),
                 frontier_report=_frontier_report(parsed.get("frontier_report")),
                 session_signal=_session_signal(parsed.get("session_signal")),
             )

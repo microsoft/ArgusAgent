@@ -57,9 +57,9 @@ commands, tests, and iteration.
 - `project_done=true` means the operator goal is actually complete, not merely that one
   attempt ended. Integrity and reproducibility are admission constraints, not a routing command.
   Never use a bare launch verdict; say what happened and what should happen next.
-- Payload fields: `project_done`, `reason`, `tasks`, and optional
-  `advance_to_stage`. Set it to the exact later canonical stage when these tasks
-  belong there; omit it otherwise. Host validates it. Task fields: `key`, `deps`,
+- Payload: `project_done`, `reason`, `tasks`, `advance_to_stage`. In staged work,
+  `advance_to_stage` is required: current stage to stay, exact later stage to
+  advance. Host validates it. Task fields: `key`, `deps`,
   `title`, `objective`, and optional `acceptance_check`, `parallel_safe`,
   `owns_paths`, and `vertical`; omit `vertical` to inherit the campaign route.
 - For a real external blocker, use `waiting` with `blocker_fingerprint`,

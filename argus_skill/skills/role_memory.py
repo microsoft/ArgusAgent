@@ -12,6 +12,21 @@ _ROLE_LABELS = {
     "manager": "Manager",
 }
 
+# What a role can durably learn follows from what it decides. Engineer and
+# Manager own repeatable procedure. Planner owns judgement, and asking it for a
+# procedure discards its real lesson as "generic advice" — precisely the
+# campaign-level learning that would question a stalled plan sooner. The
+# Reviewer has no entry on purpose: it never edits Skills during a review, so
+# its learning is written later by the independent post-mission pass.
+_ROLE_LESSONS = {
+    "planner": (
+        "a strategic decision heuristic — the campaign pattern behind it, the "
+        "question it should raise next time, where it applies, and one case "
+        "where following it would be wrong"
+    ),
+}
+_DEFAULT_LESSON = "a reusable procedure"
+
 
 def role_skill_maintenance_enabled() -> bool:
     """Resolve the existing post-task-learning A/B switch."""
@@ -56,7 +71,7 @@ def role_skill_edit_rules(role: str, skill_dir: Path | str) -> str:
         "Inspect existing Markdown first. Each Skill has exactly `name` and "
         "`description` frontmatter followed by Markdown. Use an explicit semantic "
         "path, update a related Skill instead of duplicating it, and never write "
-        "shared/global layers. Keep only reusable procedures and checklists here; "
+        "shared/global layers. Keep only reusable role learning here; "
         "when a shared project Wiki is listed in the prompt, route durable project "
         "facts, contracts, support limits, environment constraints, and scoped "
         "measurements to that Wiki instead."
@@ -75,12 +90,15 @@ def role_skill_maintenance_block(
     skill_dir = project_role_skill_dir(skill_store, role)
     if skill_dir is None:
         return ""
-    label = _ROLE_LABELS[(role or "").strip().lower()]
+    normalized = (role or "").strip().lower()
+    label = _ROLE_LABELS[normalized]
     return (
         f"## {label} self-evolution\n"
-        f"Before finishing this {label} turn, retain a durable reusable procedure "
+        f"Before finishing this {label} turn, retain "
+        f"{_ROLE_LESSONS.get(normalized, _DEFAULT_LESSON)} "
         "only when it would materially improve a future turn of the same role. "
-        "Do not store this task's history, outcome, or generic advice.\n"
+        "Do not store this task's history, outcome, or advice that names no "
+        "evidence.\n"
         f"{role_skill_edit_rules(role, skill_dir)}\n"
         "If there is no durable role-specific learning, make no Skill edit.\n\n"
     )
