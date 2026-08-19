@@ -2,7 +2,7 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-## Overview 
+## Overview
 
 Argus is an autonomous research and engineering runtime for long-horizon work. It coordinates four persistent AI roles:
 
