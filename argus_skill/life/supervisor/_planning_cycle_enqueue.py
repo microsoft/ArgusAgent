@@ -91,6 +91,43 @@ def _research_stage_ready_for_close(
         return False
 
 
+def _apply_planner_stage_request(
+    *,
+    state_root: Path,
+    requested_stage: str,
+    reason: str,
+    evidence_root: Path,
+) -> None:
+    """Apply a Manager-owned Planner stage request in either valid direction."""
+    from ...skills.stage_machine import (
+        advance_stage,
+        current_stage,
+        rollback_stage,
+    )
+
+    if requested_stage == current_stage(state_root):
+        return
+    try:
+        advance_stage(
+            state_root,
+            target_stage=requested_stage,
+            reason=reason,
+            advanced_by="manager:planner_request",
+            evidence_root=evidence_root,
+        )
+    except ValueError as advance_error:
+        try:
+            rollback_stage(
+                state_root,
+                target_stage=requested_stage,
+                reason=reason,
+                rolled_back_by="manager:planner_request",
+                evidence_root=evidence_root,
+            )
+        except ValueError:
+            raise advance_error
+
+
 class PlanningCycleEnqueueMixin:
     """Dedupe index, pending-item construction, commit, and final emission."""
 
@@ -324,16 +361,12 @@ class PlanningCycleEnqueueMixin:
         ).strip()
         if requested_stage:
             try:
-                from ...skills.stage_machine import advance_stage, current_stage
-
-                if requested_stage != current_stage(state_root):
-                    advance_stage(
-                        state_root,
-                        target_stage=requested_stage,
-                        reason=state.verdict.reason or "Planner requested stage advance",
-                        advanced_by="manager:planner_request",
-                        evidence_root=Path(context_root).resolve(),
-                    )
+                _apply_planner_stage_request(
+                    state_root=Path(state_root),
+                    requested_stage=requested_stage,
+                    reason=state.verdict.reason or "Planner requested stage transition",
+                    evidence_root=Path(context_root).resolve(),
+                )
             except Exception as exc:  # noqa: BLE001 - invalid requests replan safely
                 self._emit({
                     "type": EventType.LIFE_PLANNER_TASK_SKIPPED,
