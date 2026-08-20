@@ -282,8 +282,10 @@ once completion has an owner other than the executor.
   across bounded missions. The cards immediately
   surrounding it report task-native benchmark outcomes together with the two
   measurements of unattended operation: how long the runtime goes before it needs a
-  person, and what share of its available time it spends producing while it has a
-  task in hand. Bars use independent scales and indicate comparison direction with
+  person, and what share of its available time it spends producing. The
+  human-driven comparison on the second card is arithmetic rather than a measured
+  system: a harness cannot outlast its operator's working day, which bounds it near
+  a third of wall-clock time however capable its model becomes. Bars use independent scales and indicate comparison direction with
   arrows; they are breadth evidence rather than a single normalized leaderboard. The
   lower band summarizes delivered work in three domains where the deciding evaluator
   is external to the runtime: a compiler and a reference implementation for
