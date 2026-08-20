@@ -41,7 +41,9 @@ from argus_skill.life.supervisor._constants import (
     PLANNER_SCOPE_BOUNDED,
     PLANNER_SCOPE_FINAL_SUBMISSION,
 )
+from argus_skill.life.memory import BacklogItem
 from argus_skill.life.supervisor._planning_context import PlanningContextMixin
+from argus_skill.planner import parse_planner_text
 from argus_skill.skills.vertical_select import persist_vertical
 from argus_skill.verticals._base import load_vertical_contract
 
@@ -102,6 +104,35 @@ def test_the_planner_scope_survives_enqueue(tmp_path, vertical) -> None:
 
     assert f"scope:{PLANNER_SCOPE_FINAL_SUBMISSION}" in tags
     assert "bounded_dag_node" not in tags
+
+
+def test_structural_final_submission_task_produces_consumable_gate_shape(tmp_path) -> None:
+    harness = _project(tmp_path, CERTIFIED_AND_TARGETED)
+    verdict = parse_planner_text(
+        "\n".join(
+            [
+                "PROJECT_DONE=false",
+                "REASON=final certification remains",
+                "TASK_KEY=final-certification",
+                "TASK_TITLE=Obtain final certification",
+                "TASK_OBJECTIVE=Run the final independent Reviewer gate.",
+                "TASK_SCOPE=final_submission",
+                "TASK_ACCEPTANCE_CHECK=Reviewer PASS is recorded.",
+            ]
+        )
+    )
+
+    assert verdict.error == ""
+    tags = harness._planner_task_tags(verdict.new_tasks[0])
+    item = BacklogItem.new(
+        title=verdict.new_tasks[0].title,
+        objective=verdict.new_tasks[0].objective,
+        tags=tags,
+    )
+
+    assert f"scope:{PLANNER_SCOPE_FINAL_SUBMISSION}" in tags
+    assert "bounded_dag_node" not in tags
+    assert harness._planner_scope_from_item(item) == PLANNER_SCOPE_FINAL_SUBMISSION
 
 
 def test_a_certified_vertical_is_unchanged(tmp_path) -> None:

@@ -34,6 +34,10 @@ TASK_SCOPE_FINAL_SUBMISSION = "final_submission"
 NO_CONCRETE_TASKS_ERROR = "planner said not done but produced no concrete tasks"
 FORBIDDEN_BARE_VERDICT_ERROR = "planner used a forbidden bare launch verdict"
 INVALID_DEPENDENCY_IDENTIFIER_ERROR = "invalid planner task dependency identifier"
+PROSE_ONLY_FINAL_SUBMISSION_SCOPE_ERROR = (
+    "final_submission scope must be declared in structured task scope metadata, "
+    "not only in task prose"
+)
 OPEN_ENDED_PROJECT_DONE_ERROR = (
     "standing continuous objective cannot finish with PROJECT_DONE=true; "
     "delegate the next distinct task or report an explicit wait"
@@ -672,6 +676,25 @@ def parse_task_scope(raw: str) -> str:
     return match.group(1).casefold().replace("-", "_")
 
 
+_PROSE_FINAL_SUBMISSION_SCOPE = re.compile(
+    r"(?:TASK_SCOPE\s*=\s*|scope\s*:\s*[\"']?)final[_-]submission",
+    re.IGNORECASE,
+)
+
+
+def _task_prose_mentions_final_submission_scope(row: dict[str, str]) -> bool:
+    prose = "\n".join(
+        str(row.get(field, "") or "")
+        for field in (
+            "TASK_TITLE",
+            "TASK_OBJECTIVE",
+            "TASK_ACCEPTANCE_CHECK",
+            "TASK_NON_GOALS",
+        )
+    )
+    return bool(_PROSE_FINAL_SUBMISSION_SCOPE.search(prose))
+
+
 def hydrate_task_context_refs(
     context_refs: list[dict[str, str]],
     project_root: Path | str,
@@ -885,8 +908,20 @@ def parse_planner_text(text: str) -> PlannerVerdict:
                 raw_text=text,
                 error=INVALID_DEPENDENCY_IDENTIFIER_ERROR,
             )
+        raw_scope = row.get("TASK_SCOPE", "")
+        if not str(raw_scope or "").strip() and _task_prose_mentions_final_submission_scope(row):
+            return PlannerVerdict(
+                project_done=False,
+                reason=PROSE_ONLY_FINAL_SUBMISSION_SCOPE_ERROR,
+                new_tasks=[],
+                raw_text=text,
+                error=(
+                    "invalid planner task metadata: "
+                    f"{PROSE_ONLY_FINAL_SUBMISSION_SCOPE_ERROR}"
+                ),
+            )
         try:
-            scope = parse_task_scope(row.get("TASK_SCOPE", ""))
+            scope = parse_task_scope(raw_scope)
         except ValueError as exc:
             return PlannerVerdict(
                 project_done=False,

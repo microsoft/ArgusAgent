@@ -192,7 +192,10 @@ def test_planner_prompt_requires_read_only_delegation_and_process_decision() -> 
         "TASK_STAGE_CLOSING",
     ):
         assert field not in _PLANNER_CORE_CONTRACT
-    assert "The Host owns workdir, scope" in _PLANNER_CORE_CONTRACT
+    assert "Planner proposes task scope only through the structured task" in (
+        _PLANNER_CORE_CONTRACT
+    )
+    assert "enqueue-time validation/normalization of that" in _PLANNER_CORE_CONTRACT
     assert "external algorithm" in _PLANNER_CORE_CONTRACT
     assert "primary-source grounding" in _PLANNER_CORE_CONTRACT
     assert "starting context, not a" in _PLANNER_CORE_CONTRACT
@@ -258,6 +261,30 @@ def test_parse_planner_rejects_binary_outcome_label() -> None:
 def test_parse_task_scope_accepts_final_certification_annotation() -> None:
     assert parse_task_scope("bounded — one coherent mission") == "bounded"
     assert parse_task_scope("final_submission (certification)") == "final_submission"
+
+
+def test_planner_rejects_prose_only_final_submission_scope() -> None:
+    verdict = parse_planner_text(
+        "\n".join(
+            [
+                "PROJECT_DONE=false",
+                "REASON=final certification still needs a host-visible mission",
+                "TASK_KEY=final-certification",
+                "TASK_TITLE=Make final certification host-visible",
+                (
+                    "TASK_OBJECTIVE=Run the certification handoff with "
+                    "TASK_SCOPE=final_submission so the completion gate can consume it."
+                ),
+                "TASK_ACCEPTANCE_CHECK=Reviewer PASS is recorded.",
+            ]
+        )
+    )
+
+    assert verdict.new_tasks == []
+    assert verdict.error == (
+        "invalid planner task metadata: final_submission scope must be declared "
+        "in structured task scope metadata, not only in task prose"
+    )
 
 
 def test_parse_planner_task_rejects_malformed_dependency_controls() -> None:

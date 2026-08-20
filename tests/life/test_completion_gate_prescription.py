@@ -28,6 +28,10 @@ from __future__ import annotations
 
 import pytest
 
+from argus_skill.core.models import RunnerResult
+from argus_skill.life.memory import LifeMemory
+from argus_skill.life.supervisor import LifeBudget, LifeSupervisor, LifeSupervisorConfig
+from argus_skill.life.supervisor._constants import PLAN_ERROR
 from argus_skill.life.supervisor._planning_context import PlanningContextMixin
 
 PRESCRIBED = "`TASK_SCOPE=final_submission`"
@@ -87,3 +91,89 @@ def test_no_feedback_means_no_note() -> None:
             return None
 
     assert Harness()._manager_planner_feedback_runtime_note() == ""
+
+
+def test_feedback_prescription_rejects_bounded_scope_task_before_enqueue(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class _Sink:
+        def __init__(self) -> None:
+            self.events = []
+
+        def handle_event(self, event):
+            self.events.append(event)
+
+    class _Runner:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run_exec(self, **_kwargs):
+            self.calls += 1
+            return RunnerResult(
+                exit_code=0,
+                agent_messages=[
+                    "\n".join(
+                        [
+                            "PROJECT_DONE=false",
+                            "REASON=final certification remains",
+                            "TASK_KEY=final-certification",
+                            "TASK_TITLE=Make final certification host-visible",
+                            (
+                                "TASK_OBJECTIVE=Run Reviewer certification with "
+                                "TASK_SCOPE=final_submission so the gate can consume it."
+                            ),
+                            "TASK_ACCEPTANCE_CHECK=Reviewer PASS is recorded.",
+                        ]
+                    )
+                ],
+                stdout_lines=[],
+                stderr_lines=[],
+                thread_id=None,
+                fatal_error=None,
+                input_tokens=0,
+                cached_input_tokens=0,
+                output_tokens=0,
+            )
+
+    sink = _Sink()
+    planner_runner = _Runner()
+    supervisor = LifeSupervisor(
+        memory=LifeMemory.open(tmp_path / "life"),
+        runner=object(),
+        sink=sink,
+        config=LifeSupervisorConfig(
+            continuous=True,
+            continuous_objective="complete final submission certification",
+            budget=LifeBudget(max_missions=1),
+            final_certification_gate=True,
+            project_worktree=tmp_path,
+            artifact_root=tmp_path,
+        ),
+        planner_runner=planner_runner,
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_maybe_idle_after_unchanged_open_ended_done",
+        lambda: None,
+    )
+    monkeypatch.setattr(supervisor, "_resolve_vertical_once", lambda: None)
+    monkeypatch.setattr(supervisor, "_wiki_collect_task_if_due_under_blocker", lambda: None)
+    monkeypatch.setattr(
+        supervisor,
+        "_render_journal_for_planner",
+        lambda: _note("final_certification_missing"),
+    )
+    monkeypatch.setattr(supervisor, "_recent_no_progress_failures", lambda: {})
+    monkeypatch.setattr(supervisor, "_recent_subagent_family_failures", lambda: {})
+    monkeypatch.setattr(supervisor, "_planner_runtime_with_idle_note", lambda: "")
+
+    assert supervisor._plan_next_work() == PLAN_ERROR
+    assert planner_runner.calls == 1
+    assert supervisor.memory.backlog.all() == []
+    error = next(
+        event for event in sink.events if event.get("type") == "life.planner.error"
+    )
+    assert "final_submission scope must be declared in structured task scope" in (
+        error["error"]
+    )

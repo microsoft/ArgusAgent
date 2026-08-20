@@ -71,7 +71,10 @@ commands, tests, and iteration.
   `recheck_condition`, and `recheck_token`; add `operator_action_required=true`
   only when the operator must act. Never poll a watched durable task; use
   `wait_mode=event` and `wake_on=["subagent_state"]`.
-- The Host owns workdir, scope, review, stage transitions, context, and Skill.
+- The Planner proposes task scope only through the structured task `scope` field
+  (legacy key-value: `TASK_SCOPE`). The Host owns workdir, review policy, stage
+  transitions, context, Skill, and enqueue-time validation/normalization of that
+  structured scope.
 - Use the operator's language.
 """ + _PLANNER_DECISION_EVENT
 
