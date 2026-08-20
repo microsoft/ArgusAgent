@@ -37,11 +37,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from argus_skill.life.memory import BacklogItem
 from argus_skill.life.supervisor._constants import (
     PLANNER_SCOPE_BOUNDED,
     PLANNER_SCOPE_FINAL_SUBMISSION,
 )
-from argus_skill.life.memory import BacklogItem
 from argus_skill.life.supervisor._planning_context import PlanningContextMixin
 from argus_skill.planner import parse_planner_text
 from argus_skill.skills.vertical_select import persist_vertical
