@@ -248,6 +248,31 @@ from the reviewed ledger rather than restarting from the original conjecture. Th
 is the same runtime mechanism seen in software repair, applied to a domain where
 progress is expressed through definitions, lemmas, counterexamples, and proofs.
 
+\subsection{What Progress Looks Like Without a Score}
+
+Three results in this report would be invisible to a scalar objective, and reading
+them together shows what the vocabulary of Section~\ref{sec:no-score} is for.
+
+The mathematical campaign retains one falsified route alongside six accepted
+frontier updates. On a score, the falsified route is a week that produced nothing.
+In the ledger it is an eliminated branch with the evidence that eliminated it, and
+later missions cite it rather than re-entering it. The FlashAttention-4 campaign is
+the sharper case: its initial data path ran up to \FlashDAWorstRoute$\times$
+\emph{slower} than the native kernel. A system optimizing a latency number would have
+recorded its worst result of the campaign and kept tuning inside that route. What the
+runtime recorded instead was information gain about the data path, which is what
+licensed abandoning it rather than optimizing within it---and the final result came
+from that abandonment. The materials campaign inverts the usual direction of
+progress: the admitted method is \emph{simpler} than the published one it replaces,
+and it became admissible only after a confound was removed from the original
+comparison. Removing a confound raises no metric at all.
+
+None of these three are anomalies to be explained away. They are the ordinary shape
+of research, and a runtime that could only recognize a rising number would have
+mishandled each one---by discarding the retained route, by continuing to optimize a
+route it should have left, and by never running the comparison that made the simpler
+method visible.
+
 \subsection{Why Infrastructure Is the Load-Bearing Vertical}
 
 Of the domains in this report, GPU and serving infrastructure carries the most

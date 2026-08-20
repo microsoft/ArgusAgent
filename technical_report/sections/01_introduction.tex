@@ -46,6 +46,29 @@ report. A Driver answers exactly three questions, over and over:
     have?
 \end{enumerate}
 
+It is worth noticing when these questions are hard. Given a dense reward---a test to
+turn green, a leaderboard to climb, a latency to halve---all three collapse. Q1 is
+answered by reading the number, Q2 by whatever raises it, and Q3 never arises because
+nothing is ambiguous enough to escalate. This is why recursive self-improvement has
+progressed fastest exactly where such signals exist, and why that progress has not
+transferred: \textbf{the Driver's seat is not a separate problem from the missing
+score. It is what the missing score leaves behind.}
+
+The tasks that motivate this report supply no such signal. A mathematical campaign
+rarely terminates in the theorem it set out to prove, and its intermediate bounds and
+counterexamples have no natural numeric value. A kernel rewrite that turns out to be
+architecturally wrong yields a large negative number that is nonetheless the most
+valuable output of the week. In materials research the measurement that would settle
+the question is frequently the thing under construction. Under those conditions an
+agent has nothing to hill-climb, and the standard remedy---have a model score its own
+progress---reintroduces the problem, since the same class of system produces both the
+work and the grade. Section~\ref{sec:no-score} describes what \systemname{} does
+instead: rather than manufacture a score, it replaces the scalar with a typed
+vocabulary of state transitions in which an informative failure is recorded as
+forward motion, and it makes certain readings of the evidence mechanically
+impossible---most importantly, that an experiment which never ran can never be
+recorded as a refuted idea.
+
 Automating Q2 alone yields an agent that confidently executes a plan nobody checked.
 Automating Q1 and Q2 without Q3 yields an agent that spends a credential or force
 pushes a branch because no rule told it that this class of decision is not its to
@@ -187,7 +210,7 @@ reporting an unsupported success, which is the same gate viewed from the other s
 a system that can leave the room is a system that can also refuse to claim it
 finished.
 
-This report makes ten contributions:
+This report makes eleven contributions:
 
 \begin{enumerate}[label=\textbf{C\arabic*.}]
   \item We frame \emph{auto research} as the machinery converting tokens into
@@ -196,6 +219,13 @@ This report makes ten contributions:
     invention rather than invention itself, and fix its relationship to
     \emph{recursive self-improvement} as containment: RSI is auto research pointed at
     the production of AI, and inherits every constraint of the general case.
+  \item We show how a runtime can iterate and self-improve where no dense reward,
+    well-formed objective, or reliable numeric feedback exists---the regime in which
+    recursive self-improvement has previously stalled---by replacing the scalar with
+    a typed vocabulary of frontier transitions in which informative failure counts as
+    progress, separating execution failure from hypothesis refutation so that a run
+    which never executed cannot refute an idea, naming the honest non-terminal
+    outcomes, and scaling the evidence bar to the maturity of the claim.
   \item We identify the \emph{Driver} as a distinct, previously unautomated role
     sitting above the harness, and decompose it into three separable questions---is
     this done, what is next, does this need a person---each of which must be owned by

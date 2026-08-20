@@ -164,6 +164,86 @@ be waived. Completion never comes from filenames, Token volume, or prose keyword
 The corresponding artifacts and execution records remain inspectable, while
 credential redaction and result provenance preserve the selected verdict source.
 
+\subsection{Iterating Without a Score}
+\label{sec:no-score}
+
+Section~\ref{sec:introduction} observed that the Driver's three questions become
+trivial when a dense reward exists. This subsection describes what answers them when
+one does not, because that case is the reason the seat could not be automated
+earlier.
+
+The naive substitute---have a model rate progress on a numeric scale---reintroduces
+the problem it was meant to solve, since the rating is produced by the same class of
+system whose work is being rated, and Section~\ref{sec:related} records how
+unreliable that is. \systemname{} takes the opposite route. It does not manufacture a
+score. It replaces the scalar with a small typed vocabulary of state transitions, and
+makes certain readings of the evidence mechanically unavailable.
+
+\paragraph{Progress is a transition, not a number.}
+A mission carries a durable frontier recording what it now knows and what it still
+owes. Each round closes with one named transition drawn from a fixed set:
+\code{artifact\_improved}, \code{risk\_reduced}, \code{uncertainty\_reduced},
+\code{information\_gain}, \code{bounded\_regression}, \code{recovered},
+\code{unchanged\_failure}, \code{expanding\_regression}, or
+\code{unexplained\_regression}. Six of the nine count as forward motion, and the
+selection is deliberate: \emph{a failure that produces information counts as
+progress, and a repair that trades a known bounded cost for a resolved risk counts as
+progress}, while a repetition that changes nothing does not. This is what makes it
+possible to run a campaign that improves for days without any number improving. A
+route that is eliminated with evidence has moved the frontier as surely as a faster
+kernel has, and the runtime records both without needing them to be commensurable.
+The three regression states are not merely negative labels: a
+\code{bounded\_regression} must arrive with a cause, a scope, a budget, a recovery
+test, and an exit trigger, and one that does not is automatically downgraded to a
+request for the plan itself to be reconsidered.
+
+\paragraph{An experiment that did not run is not a refuted idea.}
+The most expensive failure mode in unattended research is not a wrong answer; it is
+discarding a correct hypothesis because the evidence against it was an artifact of
+the environment. A missing compiler, an unavailable GPU, a denied profiler
+permission, or an underpowered pilot all produce a failed run, and a failed run reads
+as a negative result unless something forbids that reading. \systemname{} forbids it
+structurally, by recording three separate fields rather than one outcome: whether the
+attempt executed at all, which class of failure occurred if it did not, and what is
+now believed about the premise---\code{untested}, \code{inconclusive},
+\code{supported}, or \code{refuted}. Each domain declares which failure classes carry
+information about the idea and which cannot; environment, dependency, and toolchain
+failures are in the second group everywhere. The validator then enforces the
+invariant that matters: \textbf{a non-idea failure can never yield
+\code{supported} or \code{refuted}}. The hypothesis returns to the queue as
+\code{untested}, which is the truthful record and also the useful one.
+
+\paragraph{Not finishing is a result with a name.}
+A system that can only report success or failure will, over a long campaign, be
+pushed toward reporting success. The runtime therefore gives the honest intermediate
+outcomes their own vocabulary, and a Reviewer selects among them explicitly: a
+counterexample, a partial result, an improved bound, a finite verification, a
+structured failure report, a candidate whose novelty is unverified, or the
+declaration that current methods are exhausted. Correctness, novelty, and
+significance are recorded as separate fields rather than collapsed into a verdict, so
+a result can be correct, already known, and still worth retaining. Nothing in this
+vocabulary requires the campaign to have reached its original objective, which is
+what allows the objective itself to be revised on evidence rather than defended to
+the end.
+
+\paragraph{The evidence bar moves with the work.}
+Requiring certification-grade evidence of an early probe stops exploration; accepting
+exploratory evidence for a final claim produces unsupported results. The runtime
+resolves an evidence profile per mission---\code{explore} asks whether the premise is
+real, testable, and worth the next probe; \code{develop} asks whether the
+implementation, comparison, and claim scope hold; \code{certify} asks whether the
+result can be published as it stands. The profile derives from the campaign stage by
+default, a final-submission scope always forces \code{certify}, and lowering the bar
+requires an explicit confirmation. What varies is the standard of evidence demanded,
+never whether evidence is demanded.
+
+Together these four mechanisms answer the question a dense reward would otherwise
+answer for free. The runtime knows whether the last round advanced the campaign,
+whether a negative result was about the idea or about the machine, what kind of
+finding it is holding, and how strong the evidence must be before that finding may be
+believed. None of this requires a scalar, and none of it requires the runtime to
+grade itself.
+
 \subsection{Verification-Gated Fixed-Model Runtime Self-Evolution}
 
 Equation~\ref{eq:runtime-update} separates the model from the state around it.

@@ -8,7 +8,15 @@ which is why agent progress has been rate-limited by human waking hours rather t
 by model capability. \systemname{} is our attempt to hand that seat over.
 
 The enabling condition turned out not to be a stronger model. It was giving the
-completion decision an owner other than the executor. A Reviewer that runs read-only
+completion decision an owner other than the executor---and, where no dense reward
+exists, giving that owner something other than a number to decide with. Given a test
+to turn green, all three Driver questions collapse into reading a score, which is why
+self-improving agents have advanced fastest exactly there. Where the score is absent,
+\systemname{} does not manufacture one. It records progress as a typed transition in
+which an informative failure moves the frontier, refuses to let an experiment that
+never ran count as a refuted hypothesis, and scales the evidence it demands to the
+maturity of the claim. A campaign can improve for days with no number improving,
+which is the ordinary condition of research rather than an edge case. A Reviewer that runs read-only
 cannot repair the evidence it judges even when that would make the round look
 better; a Reviewer that can return \code{blocked} can decline to certify rather than
 manufacture a success; an authority boundary that stops for credentials, money, and
