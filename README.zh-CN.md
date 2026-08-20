@@ -17,7 +17,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![arXiv](https://img.shields.io/badge/arXiv-2608.05144-b31b1b?style=flat-square&logo=arxiv&logoColor=white)](https://arxiv.org/abs/2608.05144)
 
-[官方网站](https://argusbot.cn) · [视频演示](https://www.youtube.com/watch?v=i8Qy9HCboQE) · [技术报告 · arXiv:2608.05144](technical_report/argus-technical-report.pdf) · [微信群](#微信群) · [English](README.md) / **简体中文**
+[官方网站](https://argusbot.cn) · [视频演示](https://www.youtube.com/watch?v=i8Qy9HCboQE) · [技术报告 · arXiv:2608.05144](technical_report/argus-technical-report.pdf) · [English](README.md) / **简体中文**
 
 `Manager` → `Planner` → `Engineer` ⇄ `Reviewer`
 
@@ -62,17 +62,6 @@ Manager/Planner/Engineer/Reviewer 运行时作为自定义 Agent 直接调用。
 
 **Code Agent 插件：** 可通过打包的 MCP bridge 和宿主 Skills 使用 Argus，不修改
 核心 runtime。参见 **[插件快速入门](https://github.com/lbx154/Argus/blob/main/docs/plugin.md)**。
-
-## 微信群
-
-扫码加入 Argus 交流群；点击图片可以查看原图。二维码有效期以图片中的提示为准；
-如果已经过期，请在 Issue 中联系维护者更新。
-
-<p align="center">
-  <a href="https://raw.githubusercontent.com/lbx154/Argus/main/docs/assets/argus-wechat-group.jpg">
-    <img src="https://raw.githubusercontent.com/lbx154/Argus/main/docs/assets/argus-wechat-group.jpg" width="360" alt="Argus 微信交流群二维码">
-  </a>
-</p>
 
 ## 快速安装
 

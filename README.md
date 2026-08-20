@@ -17,7 +17,7 @@ Long-running agent work that can plan, execute, verify, pause, and continue beyo
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![arXiv](https://img.shields.io/badge/arXiv-2608.05144-b31b1b?style=flat-square&logo=arxiv&logoColor=white)](https://arxiv.org/abs/2608.05144)
 
-[Website](https://argusbot.cn) · [Video Demo](https://www.youtube.com/watch?v=i8Qy9HCboQE) · [Technical Report · arXiv:2608.05144](technical_report/argus-technical-report.pdf) · [WeChat Community](#wechat-community) · **English** / [简体中文](README.zh-CN.md)
+[Website](https://argusbot.cn) · [Video Demo](https://www.youtube.com/watch?v=i8Qy9HCboQE) · [Technical Report · arXiv:2608.05144](technical_report/argus-technical-report.pdf) · **English** / [简体中文](README.zh-CN.md)
 
 `Manager` → `Planner` → `Engineer` ⇄ `Reviewer`
 
@@ -64,18 +64,6 @@ Manager/Planner/Engineer/Reviewer runtime as a custom agent. See
 
 **Coding-agent plugin:** use the packaged MCP bridge and host-specific Skills
 without changing the core runtime. See **[Plugin quick start](https://github.com/lbx154/Argus/blob/main/docs/plugin.md)**.
-
-## WeChat community
-
-Scan the QR code to join the Argus community. Click the image to open it at full
-size. If the printed expiry date has passed, open an Issue and ask the
-maintainers for the latest code.
-
-<p align="center">
-  <a href="https://raw.githubusercontent.com/lbx154/Argus/main/docs/assets/argus-wechat-group.jpg">
-    <img src="https://raw.githubusercontent.com/lbx154/Argus/main/docs/assets/argus-wechat-group.jpg" width="360" alt="Argus WeChat community QR code">
-  </a>
-</p>
 
 ## Quick Install
 
