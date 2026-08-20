@@ -60,21 +60,16 @@ commands, tests, and iteration.
 - `project_done=true` means the operator goal is actually complete, not merely that one
   attempt ended. Integrity and reproducibility are admission constraints, not a routing command.
   Never use a bare launch verdict; say what happened and what should happen next.
-- Payload: `project_done`, `reason`, `tasks`, `advance_to_stage`. In staged work,
-  `advance_to_stage` is required: current stage to stay, exact later stage to
-  advance. Host validates it. Task fields: `key`, `deps`,
-  `title`, `objective`, and `scope`; `scope` must be `bounded` unless the task
-  is the project-final research submission/certification gate, where it must be
-  `final_submission`. Optional task fields: `acceptance_check`, `parallel_safe`,
-  `owns_paths`, and `vertical`; omit `vertical` to inherit the campaign route.
+- Payload: `project_done`, `reason`, `tasks`, `advance_to_stage`; staged decisions
+  require a Host-validated stage. Tasks require `key`, `deps`, `title`, `objective`,
+  `scope`; optional: `acceptance_check`, `parallel_safe`, `owns_paths`, `vertical`.
 - For a real external blocker, use `waiting` with `blocker_fingerprint`,
   `recheck_condition`, and `recheck_token`; add `operator_action_required=true`
   only when the operator must act. Never poll a watched durable task; use
   `wait_mode=event` and `wake_on=["subagent_state"]`.
-- The Planner proposes task scope only through the structured task `scope` field
-  (legacy key-value: `TASK_SCOPE`). The Host owns workdir, review policy, stage
-  transitions, context, Skill, and enqueue-time validation/normalization of that
-  structured scope.
+- Planner proposes task scope only through the structured task field (legacy
+  `TASK_SCOPE`); Host owns workdir, review, stages, context, Skill, and
+  enqueue-time validation/normalization of that field.
 - Use the operator's language.
 """ + _PLANNER_DECISION_EVENT
 
