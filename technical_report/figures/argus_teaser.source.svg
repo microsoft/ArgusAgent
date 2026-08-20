@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="383" viewBox="0 0 900 383" data-pptx-page-role="content" font-family="Arial, Microsoft YaHei, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="556" viewBox="0 0 900 556" data-pptx-page-role="content" font-family="Arial, Microsoft YaHei, sans-serif">
   <g id="background" data-pptx-role="background" data-pptx-bounds="0 0 900 383">
-    <rect x="0" y="0" width="900" height="383" fill="#FBF7EE"/>
+    <rect x="0" y="0" width="900" height="556" fill="#FBF7EE"/>
   </g>
 
   <g id="result-connectors" data-pptx-role="decoration" data-pptx-bounds="8 8 884 367">
@@ -187,5 +187,81 @@
         <text x="700" y="366" text-anchor="end" font-size="9" fill="#66717D">outside maintainers</text>
       </g>
     </g>
+
+      <g id="delivery-band" data-pptx-role="content" data-pptx-bounds="8 388 884 160">
+        <text x="8" y="399" font-size="11" font-weight="bold" fill="#173B70">DELIVERED WORK — the same runtime, four domains, judged by tools and people it does not control</text>
+
+        <!-- ===== AI for Infrastructure ===== -->
+        <rect x="8" y="406" width="288" height="142" rx="8" fill="#FFFDF8" stroke="#315BCE" stroke-width="1.3"/>
+        <rect x="8" y="406" width="288" height="22" rx="8" fill="#315BCE"/>
+        <rect x="8" y="420" width="288" height="8" fill="#315BCE"/>
+        <text x="20" y="422" font-size="11.5" font-weight="bold" fill="#FFFDF8">AI for INFRASTRUCTURE</text>
+        <text x="286" y="422" text-anchor="end" font-size="9" fill="#D8E0E8">GPU kernels · serving · local</text>
+
+        <text x="20" y="444" font-size="10.5" font-weight="bold" fill="#173B70">flash-linear-attention</text>
+        <text x="286" y="444" text-anchor="end" font-size="10" font-weight="bold" fill="#315BCE">4 kernels</text>
+        <text x="20" y="455" font-size="9.5" fill="#66717D">RWKV6 1.21× · KDA 1.29× · AttnRes 1.10× · SM100 fix</text>
+        <text x="20" y="465" font-size="9.5" fill="#66717D">reviewed by outside maintainers; no blocking changes</text>
+
+        <line x1="20" y1="471" x2="284" y2="471" stroke="#D8E0E8" stroke-width="0.8"/>
+        <text x="20" y="484" font-size="10.5" font-weight="bold" fill="#173B70">FlashDA — dLLM masks on FA4</text>
+        <text x="286" y="484" text-anchor="end" font-size="10" font-weight="bold" fill="#315BCE">19/19</text>
+        <text x="20" y="495" font-size="9.5" fill="#66717D">6 mask families, SM80+SM90; within 5–14% of native FA4</text>
+        <text x="20" y="505" font-size="9.5" fill="#66717D">2.5–4.2× over Triton · under ¥80 of model spend</text>
+
+        <line x1="20" y1="511" x2="284" y2="511" stroke="#D8E0E8" stroke-width="0.8"/>
+        <text x="20" y="524" font-size="10.5" font-weight="bold" fill="#173B70">SGLang · MiniMax-H3</text>
+        <text x="286" y="524" text-anchor="end" font-size="10" font-weight="bold" fill="#315BCE">+11,263 ln</text>
+        <text x="20" y="535" font-size="9.5" fill="#66717D">unified model integrated: 160/160 exact, 5.108× at BS8</text>
+        <text x="20" y="545" font-size="9.5" fill="#66717D">62 GiB video model on a 24 GB laptop · 6.159× on A6000</text>
+
+        <!-- ===== AI for Science ===== -->
+        <rect x="306" y="406" width="288" height="142" rx="8" fill="#FFFDF8" stroke="#287D70" stroke-width="1.3"/>
+        <rect x="306" y="406" width="288" height="22" rx="8" fill="#287D70"/>
+        <rect x="306" y="420" width="288" height="8" fill="#287D70"/>
+        <text x="318" y="422" font-size="11.5" font-weight="bold" fill="#FFFDF8">AI for SCIENCE</text>
+        <text x="584" y="422" text-anchor="end" font-size="9" fill="#D8E0E8">materials · mathematics</text>
+
+        <text x="318" y="444" font-size="10.5" font-weight="bold" fill="#173B70">MOF chemical control</text>
+        <text x="584" y="444" text-anchor="end" font-size="10" font-weight="bold" fill="#287D70">92.5 / 100 / 74.5%</text>
+        <text x="318" y="455" font-size="9.5" fill="#66717D">metal · node nuclearity · ligand family, from 3,300 requests</text>
+        <text x="318" y="465" font-size="9.5" fill="#66717D">only 16.7% of parameters trained; 4/8×B200 run by Argus</text>
+
+        <line x1="318" y1="471" x2="582" y2="471" stroke="#D8E0E8" stroke-width="0.8"/>
+        <text x="318" y="484" font-size="10.5" font-weight="bold" fill="#173B70">Structure judgment — AUC</text>
+        <text x="584" y="484" text-anchor="end" font-size="10" font-weight="bold" fill="#287D70">0.594 → 0.833</text>
+        <text x="318" y="495" font-size="9.5" fill="#66717D">a simpler sampler beat the published one at equal compute,</text>
+        <text x="318" y="505" font-size="9.5" fill="#66717D">admitted only after removing a confound from the comparison</text>
+
+        <line x1="318" y1="511" x2="582" y2="511" stroke="#D8E0E8" stroke-width="0.8"/>
+        <text x="318" y="524" font-size="10.5" font-weight="bold" fill="#173B70">Erd&#337;s–Gy&#225;rf&#225;s campaign</text>
+        <text x="584" y="524" text-anchor="end" font-size="10" font-weight="bold" fill="#287D70">6 updates</text>
+        <text x="318" y="535" font-size="9.5" fill="#66717D">six proof-backed frontier updates; one falsified route kept</text>
+        <text x="318" y="545" font-size="9.5" fill="#66717D">with its evidence, so later work need not re-enter it</text>
+
+        <!-- ===== AI for Silicon ===== -->
+        <rect x="604" y="406" width="288" height="142" rx="8" fill="#FFFDF8" stroke="#C38A20" stroke-width="1.3"/>
+        <rect x="604" y="406" width="288" height="22" rx="8" fill="#C38A20"/>
+        <rect x="604" y="420" width="288" height="8" fill="#C38A20"/>
+        <text x="616" y="422" font-size="11.5" font-weight="bold" fill="#FFFDF8">AI for SILICON</text>
+        <text x="882" y="422" text-anchor="end" font-size="9" fill="#FBF7EE">ACE-2 accelerator</text>
+
+        <text x="616" y="444" font-size="10.5" font-weight="bold" fill="#173B70">Functional closure</text>
+        <text x="882" y="444" text-anchor="end" font-size="10" font-weight="bold" fill="#C38A20">13,914 / 13,914</text>
+        <text x="616" y="455" font-size="9.5" fill="#66717D">24-layer Qwen2.5-0.5B W4A8, 18 operators, bit-exact</text>
+        <text x="616" y="465" font-size="9.5" fill="#66717D">certified by a Reviewer that did not do the work</text>
+
+        <line x1="616" y1="471" x2="880" y2="471" stroke="#D8E0E8" stroke-width="0.8"/>
+        <text x="616" y="484" font-size="10.5" font-weight="bold" fill="#173B70">Mapped SKY130 synthesis</text>
+        <text x="882" y="484" text-anchor="end" font-size="10" font-weight="bold" fill="#C38A20">0.614 mm&#178;</text>
+        <text x="616" y="495" font-size="9.5" fill="#66717D">62,283 cells at 100 MHz; WNS and TNS both 0.00 ns</text>
+        <text x="616" y="505" font-size="9.5" fill="#66717D">the certificate publishes its exclusions, not just passes</text>
+
+        <line x1="616" y1="511" x2="880" y2="511" stroke="#D8E0E8" stroke-width="0.8"/>
+        <text x="616" y="524" font-size="10.5" font-weight="bold" fill="#173B70">Human involvement</text>
+        <text x="882" y="524" text-anchor="end" font-size="10" font-weight="bold" fill="#C38A20">8 days · 6 asks</text>
+        <text x="616" y="535" font-size="9.5" fill="#66717D">roughly one interruption every 32 hours; 2 of the 6</text>
+        <text x="616" y="545" font-size="9.5" fill="#66717D">were the server dying, not the runtime asking</text>
+      </g>
   </g>
 </svg>
