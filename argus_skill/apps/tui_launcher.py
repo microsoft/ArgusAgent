@@ -150,6 +150,30 @@ def _run_python_admin(argv: list[str]) -> int:
     return cli_main(argv)
 
 
+def _headless_stdin_error() -> str:
+    """Explain that the cockpit needs a terminal, or ``""`` when it has one.
+
+    Ink puts stdin in raw mode, so a piped, redirected or cron-launched
+    `argus` used to die inside the bundle with a JavaScript stack trace and a
+    link to Ink's README — after already announcing that it was starting the
+    backend. The surfaces that do work without a terminal are named here
+    because that is the question the operator actually has.
+    """
+    if os.environ.get("ARGUS_SKILL_ALLOW_HEADLESS_TUI", "").strip() == "1":
+        return ""
+    try:
+        if sys.stdin is not None and sys.stdin.isatty():
+            return ""
+    except (AttributeError, OSError, ValueError):
+        pass
+    return (
+        "argus: the cockpit needs an interactive terminal and stdin is not "
+        "one. Use `argus --web` for the browser cockpit, `argus --watch` for "
+        "a live read-only view, `argus --status` for a one-shot summary, or "
+        "`argus --daemon` to run unattended."
+    )
+
+
 def _uses_python_admin(argv: list[str]) -> bool:
     # `argus --web` is a cockpit surface: it needs the TUI's automatic port
     # selection and browser launch. Keep the legacy raw WebAPI spelling on the
@@ -255,6 +279,10 @@ def main(argv: list[str] | None = None) -> int:
     if _uses_python_admin(forwarded):
         return _run_python_admin(forwarded)
     forwarded = _configure_tui_life_dir(forwarded)
+    headless = _headless_stdin_error()
+    if headless:
+        sys.stderr.write(f"{headless}\n")
+        return 2
     from ..life.special_prompts import describe_special_prompt_gate
 
     ok, detail = describe_special_prompt_gate()
