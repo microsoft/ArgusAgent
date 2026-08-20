@@ -114,7 +114,6 @@
         <text x="220" y="57" font-size="10" font-weight="bold" fill="#315BCE">Argus 78</text>
         <rect x="275" y="49" width="100" height="7" rx="3" fill="#D8E0E8"/>
         <rect x="275" y="49" width="78" height="7" rx="3" fill="#315BCE"/>
-        <text x="424" y="52" text-anchor="end" font-size="10" font-weight="bold" fill="#C38A20">1.41×</text>
       </g>
 
       <g id="result-aarri" data-pptx-bounds="465 8 225 56">
@@ -130,25 +129,30 @@
 
       <g id="result-interrupt" data-pptx-bounds="8 88 170 87">
         <rect x="8" y="88" width="170" height="87" rx="8" fill="#FFFDF8" stroke="#315BCE" stroke-width="1.2"/>
-        <text x="18" y="106" font-size="12" font-weight="bold" fill="#173B70">Unattended ↑</text>
-        <text x="18" y="129" font-size="15" font-weight="bold" fill="#315BCE">40.7 h</text>
-        <text x="152" y="129" text-anchor="end" font-size="10" fill="#66717D">per ask</text>
-        <rect x="18" y="136" width="140" height="8" rx="3" fill="#D8E0E8"/>
-        <rect x="18" y="136" width="138" height="8" rx="3" fill="#315BCE"/>
-        <text x="18" y="158" font-size="10" fill="#66717D">Turn-by-turn ≈1 h</text>
-        <rect x="18" y="164" width="140" height="7" rx="3" fill="#D8E0E8"/>
-        <rect x="18" y="164" width="3.4" height="7" rx="3" fill="#66717D"/>
+        <text x="18" y="105" font-size="11.5" font-weight="bold" fill="#173B70">How often it needs you</text>
+        <text x="18" y="117" font-size="8" fill="#66717D">longer bar is better</text>
+        <text x="18" y="136" font-size="15" font-weight="bold" fill="#315BCE">40.7 h</text>
+        <text x="152" y="136" text-anchor="end" font-size="9" fill="#66717D">Argus</text>
+        <rect x="18" y="141" width="140" height="8" rx="3" fill="#D8E0E8"/>
+        <rect x="18" y="141" width="138" height="8" rx="3" fill="#315BCE"/>
+        <text x="18" y="163" font-size="10" font-weight="bold" fill="#66717D">≈1 h</text>
+        <text x="152" y="163" text-anchor="end" font-size="9" fill="#66717D">a chat-style agent</text>
+        <rect x="18" y="167" width="140" height="7" rx="3" fill="#D8E0E8"/>
+        <rect x="18" y="167" width="3.4" height="7" rx="3" fill="#66717D"/>
       </g>
 
       <g id="result-duty" data-pptx-bounds="8 191 170 87">
         <rect x="8" y="191" width="170" height="87" rx="8" fill="#FFFDF8" stroke="#287D70" stroke-width="1.2"/>
-        <text x="18" y="209" font-size="12" font-weight="bold" fill="#173B70">Duty cycle ↑</text>
-        <text x="18" y="232" font-size="10" font-weight="bold" fill="#287D70">Argus 95–98.7%</text>
-        <rect x="18" y="238" width="140" height="8" rx="3" fill="#D8E0E8"/>
-        <rect x="18" y="238" width="138" height="8" rx="3" fill="#287D70"/>
-        <text x="18" y="261" font-size="10" fill="#66717D">Degraded infra 45%</text>
-        <rect x="18" y="267" width="140" height="7" rx="3" fill="#D8E0E8"/>
-        <rect x="18" y="267" width="63" height="7" rx="3" fill="#66717D"/>
+        <text x="18" y="208" font-size="11.5" font-weight="bold" fill="#173B70">Share of time working</text>
+        <text x="18" y="220" font-size="8" fill="#66717D">while it has a task in hand</text>
+        <text x="18" y="239" font-size="15" font-weight="bold" fill="#287D70">95–98.7%</text>
+        <text x="152" y="239" text-anchor="end" font-size="9" fill="#66717D">normal</text>
+        <rect x="18" y="244" width="140" height="8" rx="3" fill="#D8E0E8"/>
+        <rect x="18" y="244" width="138" height="8" rx="3" fill="#287D70"/>
+        <text x="18" y="266" font-size="10" font-weight="bold" fill="#66717D">45%</text>
+        <text x="152" y="266" text-anchor="end" font-size="9" fill="#66717D">when the GPU broke</text>
+        <rect x="18" y="270" width="140" height="7" rx="3" fill="#D8E0E8"/>
+        <rect x="18" y="270" width="63" height="7" rx="3" fill="#66717D"/>
       </g>
 
       <g id="result-nanogpt" data-pptx-bounds="722 88 170 87">
