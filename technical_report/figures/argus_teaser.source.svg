@@ -28,10 +28,11 @@
     <text x="380" y="115" font-size="12" font-weight="bold" fill="#173B70">Manager I/O</text>
     <rect x="380" y="121" width="95" height="17" rx="3" fill="#FBF7EE" stroke="#D8E0E8" stroke-width="1"/>
     <rect x="481" y="121" width="95" height="17" rx="3" fill="#FBF7EE" stroke="#D8E0E8" stroke-width="1"/>
-    <rect x="582" y="121" width="101" height="17" rx="3" fill="#FBF7EE" stroke="#D8E0E8" stroke-width="1"/>
+    <rect x="582" y="121" width="101" height="17" rx="3" fill="#FBF7EE" stroke="#B5713A" stroke-width="1"/>
     <text x="427.5" y="133" text-anchor="middle" font-size="10" fill="#24465D">Task + review</text>
     <text x="528.5" y="133" text-anchor="middle" font-size="10" fill="#24465D">Vertical + stage</text>
-    <text x="632.5" y="133" text-anchor="middle" font-size="10" fill="#24465D">Advance · hold · back</text>
+    <text x="632.5" y="133" text-anchor="middle" font-size="9" fill="#B5713A">keep · revise · replace</text>
+    <text x="380" y="145" font-size="7.5" fill="#66717D">the Reviewer may challenge the plan; the Manager decides whose authority it touches</text>
 
     <line x1="277" y1="147" x2="277" y2="157" stroke="#24465D" stroke-width="1.3"/>
     <polygon points="277,160 273,154 281,154" fill="#24465D"/>
@@ -40,24 +41,34 @@
     <circle cx="219" cy="178" r="8" fill="#287D70"/>
     <text x="219" y="182" text-anchor="middle" font-size="10" font-weight="bold" fill="#FFFDF8">P</text>
     <text x="233" y="178" font-size="12" font-weight="bold" fill="#173B70">Planner</text>
-    <text x="233" y="196" font-size="10" fill="#66717D">schedule</text>
+    <rect x="284" y="164" width="24" height="12" rx="3" fill="#287D70"/>
+    <text x="296" y="173" text-anchor="middle" font-size="8" font-weight="bold" fill="#FFFDF8">Q2</text>
+    <text x="233" y="192" font-size="8" fill="#66717D">what is worth</text>
+    <text x="233" y="202" font-size="8" fill="#66717D">doing next</text>
 
     <rect x="326" y="160" width="126" height="52" rx="7" fill="#FFFDF8" stroke="#24465D" stroke-width="1.2"/>
     <circle cx="343" cy="178" r="8" fill="#24465D"/>
     <text x="343" y="182" text-anchor="middle" font-size="10" font-weight="bold" fill="#FFFDF8">E</text>
     <text x="358" y="178" font-size="12" font-weight="bold" fill="#173B70">Engineer</text>
-    <text x="358" y="196" font-size="10" fill="#66717D">research · build</text>
+    <text x="336" y="192" font-size="7.5" fill="#66717D">research · build · measure</text>
+    <text x="336" y="202" font-size="7.5" fill="#66717D">may self-review low-risk work</text>
 
     <rect x="464" y="160" width="128" height="52" rx="7" fill="#FFFDF8" stroke="#C38A20" stroke-width="1.2"/>
     <circle cx="481" cy="178" r="8" fill="#C38A20"/>
     <text x="481" y="182" text-anchor="middle" font-size="10" font-weight="bold" fill="#FFFDF8">R</text>
     <text x="496" y="178" font-size="12" font-weight="bold" fill="#173B70">Reviewer</text>
-    <text x="496" y="196" font-size="10" fill="#66717D">validate</text>
+    <rect x="562" y="164" width="24" height="12" rx="3" fill="#C38A20"/>
+    <text x="574" y="173" text-anchor="middle" font-size="8" font-weight="bold" fill="#FFFDF8">Q1</text>
+    <text x="472" y="192" font-size="7.5" fill="#66717D">read-only · cannot edit evidence</text>
+    <text x="472" y="202" font-size="7.5" fill="#24465D">done·continue·blocked·replan</text>
 
-    <rect x="604" y="160" width="94" height="52" rx="7" fill="#FFFDF8" stroke="#315BCE" stroke-width="1.2"/>
-    <text x="651" y="174" text-anchor="middle" font-size="10" font-weight="bold" fill="#173B70">CONTROL</text>
-    <text x="651" y="188" text-anchor="middle" font-size="10" fill="#315BCE">Review</text>
-    <text x="651" y="200" text-anchor="middle" font-size="10" fill="#287D70">Stage · Mission</text>
+    <rect x="604" y="160" width="94" height="52" rx="7" fill="#FFFDF8" stroke="#B5713A" stroke-width="1.3" stroke-dasharray="4 2"/>
+    <rect x="612" y="163" width="24" height="12" rx="3" fill="#B5713A"/>
+    <text x="624" y="172" text-anchor="middle" font-size="8" font-weight="bold" fill="#FFFDF8">Q3</text>
+    <text x="690" y="172" text-anchor="end" font-size="9" font-weight="bold" fill="#B5713A">OPERATOR</text>
+    <text x="611" y="186" font-size="8" fill="#66717D">credentials · budget</text>
+    <text x="611" y="196" font-size="8" fill="#66717D">publish · irreversible</text>
+    <text x="611" y="206" font-size="8" font-weight="bold" fill="#24465D">only these stop</text>
 
     <line x1="314" y1="186" x2="326" y2="186" stroke="#24465D" stroke-width="1.3"/>
     <polygon points="326,186 320,182 320,190" fill="#24465D"/>
@@ -67,6 +78,11 @@
     <polygon points="604,186 598,182 598,190" fill="#24465D"/>
     <path d="M528 212 V220 H389 V212" fill="none" stroke="#C38A20" stroke-width="1.3"/>
     <polygon points="389,212 385,218 393,218" fill="#C38A20"/>
+    <text x="459" y="219" text-anchor="middle" font-size="7.5" fill="#C38A20">revision</text>
+
+    <path d="M598 160 V152 H548" fill="none" stroke="#B5713A" stroke-width="1.3" stroke-dasharray="3 2"/>
+    <polygon points="544,152 552,148 552,156" fill="#B5713A"/>
+    <text x="600" y="157" font-size="7.5" font-weight="bold" fill="#B5713A">reconsider</text>
 
     <rect x="202" y="222" width="496" height="22" rx="5" fill="#FBF7EE" stroke="#315BCE" stroke-width="1.2"/>
     <text x="450" y="237" text-anchor="middle" font-size="12" font-weight="bold" fill="#173B70">SHARED WORKSPACE</text>

@@ -268,12 +268,18 @@ once completion has an owner other than the executor.
   \centering
   \includegraphics[width=\linewidth]{figures/argus_teaser.pdf}
   \caption{\systemname runtime, autonomy profile, and delivered work. The central
-  diagram shows Manager authority over tasks, research verticals, and Stage
-  transitions; Planner, Engineer, and Reviewer operate over a shared workspace whose
-  knowledge, event log, artifacts, backlog, budget, daemon, and memory persist across
-  bounded missions. Together these roles occupy the Driver's seat: the Reviewer
-  decides whether work is done, the Planner and Manager decide what comes next, and
-  an authority boundary decides what still belongs to a person. The cards immediately
+  diagram shows how the three Driver questions are distributed. The Reviewer answers
+  Q1 and runs read-only, so it cannot edit the evidence it judges; its four verdicts
+  include \code{blocked}, which withholds completion outright. The Planner answers Q2
+  under a Manager that holds sole authority over Stage transitions. Q3 is an explicit
+  boundary: credentials, budget, publication, and irreversible actions stop for the
+  operator, while ordinary technical failure does not. The dashed return path is the
+  plan-challenge channel---a Reviewer holding disconfirming evidence may mark the plan
+  for reconsideration, and the Manager decides whether to keep, revise, or replace it,
+  which prevents an early decision from binding better-informed rounds
+  (Section~\ref{sec:endogenous-harness}). All roles operate over a shared workspace
+  whose knowledge, event log, artifacts, backlog, budget, daemon, and memory persist
+  across bounded missions. The cards immediately
   surrounding it report task-native benchmark outcomes together with the two
   measurements of unattended operation---hours per human request, and duty cycle with
   work in hand. Bars use independent scales and indicate comparison direction with
