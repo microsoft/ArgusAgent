@@ -54,6 +54,39 @@ def _continuous_contract_error(
     return continuous_mode_error(backend, continuous, objective)
 
 
+def _missing_web_dependency() -> str | None:
+    """Name the first absent web dependency, without importing it.
+
+    `webapi.server` imports uvicorn lazily inside `serve()`, so a guard on the
+    module import alone never fired: the pairing banner offered a URL and a
+    bare ImportError then escaped as a traceback. Probing the spec is cheap and
+    has no import side effects, so it can run before anything is promised.
+    """
+    from importlib.util import find_spec
+
+    for module in ("fastapi", "uvicorn"):
+        try:
+            if find_spec(module) is None:
+                return module
+        except (ImportError, ValueError):
+            return module
+    return None
+
+
+def _report_missing_web_dependency(missing: str) -> int:
+    """Explain a broken web install instead of raising through the CLI.
+
+    fastapi and uvicorn are required dependencies, not an extra, so the old
+    advice to install `argus-skill[web]` named an extra that does not exist.
+    """
+    sys.stderr.write(
+        f"argus-skill: --web cannot start because {missing} is missing. It "
+        "ships as a required dependency, so this is a broken install: "
+        "`pip install --force-reinstall argus-skill`.\n"
+    )
+    return 2
+
+
 def _resolve_global_root(args: argparse.Namespace) -> Path:
     return resolve_life_root(args.life_dir)
 
@@ -498,14 +531,15 @@ def main(argv: list[str] | None = None) -> int:
         if entry_error:
             sys.stderr.write(f"argus-skill: {entry_error}\n")
             return 2
+        # Nothing may promise a URL before the stack that serves it is known
+        # to be present.
+        missing = _missing_web_dependency()
+        if missing:
+            return _report_missing_web_dependency(missing)
         try:
             from ...webapi.server import serve as serve_web
-        except ImportError:
-            sys.stderr.write(
-                "argus-skill: --web needs the web extra — install it with "
-                "`pip install 'argus-skill[web]'` (fastapi + uvicorn).\n"
-            )
-            return 2
+        except ImportError as exc:
+            return _report_missing_web_dependency(exc.name or "a web dependency")
         from ...webapi.pairing import pairing_plan
 
         host = str(getattr(args, "web_host", "127.0.0.1") or "127.0.0.1")
@@ -517,12 +551,15 @@ def main(argv: list[str] | None = None) -> int:
         if plan.banner:
             sys.stderr.write(f"{plan.banner}\n")
             sys.stderr.flush()
-        return serve_web(
-            host=host,
-            port=port,
-            global_root=_resolve_global_root(args),
-            auth_token=plan.token or None,
-        )
+        try:
+            return serve_web(
+                host=host,
+                port=port,
+                global_root=_resolve_global_root(args),
+                auth_token=plan.token or None,
+            )
+        except ImportError as exc:
+            return _report_missing_web_dependency(exc.name or "a web dependency")
     if args.notify:
         return _run_with_path_resolution_errors(lambda: _cmd_notify(args))
     if args.init_identity:

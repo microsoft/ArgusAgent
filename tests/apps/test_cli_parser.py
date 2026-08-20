@@ -725,3 +725,64 @@ def test_top_level_abbreviation_is_disabled():
     p = build_parser()
     with pytest.raises(SystemExit):
         p.parse_args(["--objec", "x"])
+
+
+def test_public_help_names_the_browser_cockpit() -> None:
+    """`--web` is a first-class human surface, so it must be discoverable.
+
+    The flag, its host/port options and a doctor check (ARGUS-WEB-001) all
+    existed while the product-facing help never mentioned it, so the only way
+    to learn the web UI exists was to read the source or set a debug env var.
+    """
+    help_text = build_parser().format_help()
+    assert "argus --web" in help_text
+    assert "argus --watch" in help_text
+
+
+def test_every_supported_backend_is_selectable_and_documented() -> None:
+    """One list, three renderings.
+
+    The backend set was written out by hand in the `--backend` choices, the
+    `--advisor` choices, the readiness check and the operator knob help. The
+    knob help had drifted to five of the eight, so `argus --config-help` — the
+    documented operator control surface — hid three backends the CLI accepts.
+    """
+    from argus_skill.agent_cli.runner_backend import SUPPORTED_BACKENDS
+    from argus_skill.core.backend_readiness import _SUPPORTED_BACKENDS
+    from argus_skill.core.knobs import format_config_help
+
+    assert set(SUPPORTED_BACKENDS) == set(_SUPPORTED_BACKENDS)
+
+    actions = {action.dest: action for action in build_parser()._actions}
+    assert set(actions["backend"].choices) == set(SUPPORTED_BACKENDS)
+
+    backend_line = next(
+        line for line in format_config_help().splitlines()
+        if "agent backend:" in line
+    )
+    for backend in SUPPORTED_BACKENDS:
+        assert backend in backend_line, f"{backend} is selectable but undocumented"
+
+
+def test_a_missing_web_dependency_is_reported_not_raised(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The guard must fire before anything claims the server is up.
+
+    `webapi.server` imports uvicorn lazily inside `serve()`, so guarding only
+    the `webapi.server` import let the pairing banner print a URL and then a
+    bare ImportError escape as a traceback — the message the guard exists to
+    print was unreachable.
+    """
+    from argus_skill.apps.cli import _core
+
+    monkeypatch.setattr(
+        _core, "_missing_web_dependency", lambda: "uvicorn"
+    )
+
+    assert main(["--web"]) == 2
+    err = capsys.readouterr().err
+    assert "uvicorn is missing" in err
+    assert "Traceback" not in err
+    assert "http://" not in err, "no URL may be offered when the server cannot start"

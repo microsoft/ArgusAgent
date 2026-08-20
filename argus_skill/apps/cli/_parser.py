@@ -6,10 +6,14 @@ import argparse
 import os
 from pathlib import Path
 
+from ...agent_cli.runner_backend import SUPPORTED_BACKENDS
+
 _PUBLIC_HELP = """usage: argus [mode]
 
 Human cockpit:
   argus
+  argus --web          browser cockpit on http://127.0.0.1:8799
+  argus --watch        live read-only view of the running mission
 
 First-time setup and diagnostics:
   argus --setup
@@ -248,7 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
     cockpit_grp.add_argument(
         "--web",
         action="store_true",
-        help="serve the web/TUI backend API (argus-skill[web] extra) — the "
+        help="serve the web/TUI backend API — the "
              "shared API that the React web UI (frontend/web) and the Ink "
              "terminal UI (frontend/tui) both talk to. Binds 127.0.0.1 by "
              "default; set ARGUS_SKILL_WEB_TOKEN to require a bearer token.",
@@ -326,7 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     capability_grp.add_argument(
         "--backend",
-        choices=("copilot", "codex", "claude", "opencode", "pi", "grok", "qoder", "dsh"),
+        choices=SUPPORTED_BACKENDS,
         default=None,
         help="backend selected by --setup, --doctor, or this daemon launch",
     )
@@ -505,18 +509,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor_parser.add_argument(
         "--advisor",
-        choices=(
-            "auto",
-            "none",
-            "copilot",
-            "codex",
-            "claude",
-            "opencode",
-            "pi",
-            "grok",
-            "qoder",
-            "dsh",
-        ),
+        choices=("auto", "none", *SUPPORTED_BACKENDS),
         default="auto",
         help="ask an installed Code Agent to inspect and repair Argus (default: auto)",
     )

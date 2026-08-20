@@ -10,7 +10,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
-from ..agent_cli.runner_backend import normalize_runner_backend, resolve_runner_bin
+from ..agent_cli.runner_backend import (
+    SUPPORTED_BACKENDS,
+    normalize_runner_backend,
+    resolve_runner_bin,
+)
 from .knob_store import read_persisted_knobs, write_persisted_knobs
 from .knobs import resolve_runner_bin_setting
 
@@ -29,9 +33,7 @@ SETUP_EXIT_USAGE = 2
 SETUP_EXIT_NOT_READY = 3
 SETUP_EXIT_PERSISTENCE = 4
 
-_SUPPORTED_BACKENDS = frozenset(
-    {"codex", "copilot", "claude", "opencode", "pi", "grok", "qoder", "dsh"}
-)
+_SUPPORTED_BACKENDS = frozenset(SUPPORTED_BACKENDS)
 _VERSION_RE = re.compile(
     r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?:[-+]([0-9A-Za-z.-]+))?"
 )

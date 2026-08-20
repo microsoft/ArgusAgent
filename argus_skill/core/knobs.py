@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass
 from typing import Mapping
 
+from ..agent_cli.runner_backend import SUPPORTED_BACKENDS
+
 
 @dataclass(frozen=True)
 class Knob:
@@ -63,7 +65,9 @@ KNOBS: tuple[Knob, ...] = (
     Knob(
         "ARGUS_SKILL_LIFE_BACKEND",
         "codex",
-        "agent backend: codex | copilot | claude | opencode | pi | memory (test only)",
+        "agent backend: "
+        + " | ".join(SUPPORTED_BACKENDS)
+        + " | memory (test only)",
         "backend",
     ),
     Knob("ARGUS_SKILL_RUNNER_BIN", "(agent CLI on PATH)", "absolute path to the agent CLI binary", "backend"),
