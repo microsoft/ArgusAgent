@@ -114,20 +114,6 @@ def test_noninteractive_setup_validates_then_persists_without_global_mutation(
         "argus_skill.agent_cli.runner_backend.resolve_runner_bin",
         lambda name, _configured=None: "/usr/bin/copilot" if name == "copilot" else None,
     )
-    monkeypatch.setattr(
-        setup,
-        "_apply_git_identity",
-        lambda *_args: (_ for _ in ()).throw(
-            AssertionError("global Git must remain untouched")
-        ),
-    )
-    monkeypatch.setattr(
-        setup,
-        "_seed_codex_config",
-        lambda *_args: (_ for _ in ()).throw(
-            AssertionError("backend auth files must remain untouched")
-        ),
-    )
 
     rc = setup.run_setup(
         backend="copilot",
@@ -399,3 +385,23 @@ def test_daemon_readiness_failure_prevents_spawn(monkeypatch, capsys) -> None:
     assert "failed capability: authentication" in err
     assert "configuration source" in err
     assert "copilot login" in err
+
+
+def test_setup_cannot_mutate_global_git_or_backend_auth() -> None:
+    """Setup configures Argus; it does not reach into the machine.
+
+    This used to be asserted by monkeypatching `_apply_git_identity` and
+    `_seed_codex_config` to raise if setup ever called them. Both helpers were
+    left behind by an earlier rewrite of `run_setup` and were unreachable from
+    any entry point, so the tripwires guarded code that could not fire. The
+    guarantee now holds by construction, and this pins it there: writing the
+    machine's Git identity or a backend's auth file belongs to the tools that
+    own those files, not to setup.
+    """
+    import inspect
+
+    source = inspect.getsource(setup)
+    for capability in ("git", "config", "user.name", "user.email"):
+        assert f"_apply_{capability}_identity" not in source
+    assert "_seed_codex_config" not in source
+    assert "user.email" not in source

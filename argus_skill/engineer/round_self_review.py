@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from ..core.models import ReviewDecision
-from ..core.role_handoff import parse_engineer_handoff
+from ..core.role_handoff import (
+    EngineerHandoff,
+    decision_engineer_handoff,
+    parse_engineer_handoff,
+)
 from .round_state import (
     EngineerTurnOutcome,
     RoundControl,
@@ -27,8 +31,25 @@ def _control_line(line: str) -> str:
     return text
 
 
-def _engineer_operator_question(message: str) -> str:
-    return parse_engineer_handoff(message).operator_question
+def _round_handoff(outcome: EngineerTurnOutcome) -> EngineerHandoff:
+    """Who owns the work next, read from the decision the Engineer recorded.
+
+    Falling back to the round message is for a turn that recorded no decision
+    at all. When one exists it is the answer, so a sentence in the narrative
+    cannot nominate a different owner than the Engineer chose.
+    """
+    if isinstance(outcome.decision, dict):
+        return decision_engineer_handoff(outcome.decision)
+    return parse_engineer_handoff(outcome.engineer_message)
+
+
+def _milestone_is_done(outcome: EngineerTurnOutcome) -> bool:
+    if isinstance(outcome.decision, dict):
+        return str(outcome.decision.get("status") or "").strip().lower() == "done"
+    return any(
+        _control_line(line).casefold() == "milestone_status=done"
+        for line in outcome.engineer_message.splitlines()
+    )
 
 
 class RoundSelfReviewMixin:
@@ -55,11 +76,8 @@ class RoundSelfReviewMixin:
             state.no_progress_streak = 0
         else:
             state.no_progress_streak += 1
-        milestone_done = any(
-            _control_line(line).casefold() == "milestone_status=done"
-            for line in outcome.engineer_message.splitlines()
-        )
-        handoff = parse_engineer_handoff(outcome.engineer_message)
+        milestone_done = _milestone_is_done(outcome)
+        handoff = _round_handoff(outcome)
         if handoff.waits_for_operator:
             return self._settle_round(
                 review=ReviewDecision(
@@ -111,4 +129,4 @@ class RoundSelfReviewMixin:
         return control_proceed()
 
 
-__all__ = ["RoundSelfReviewMixin", "_engineer_operator_question"]
+__all__ = ["RoundSelfReviewMixin"]

@@ -1,13 +1,28 @@
-\subsection{Simplifying a Published Method: Materials Generation}
+\subsection{AI for Science: Simplifying a Published Method in Materials Generation}
 \label{sec:materials-vertical}
 
 The verticals above are evaluated by a proof checker, a venue format, and a
 synthesis toolchain. This one is evaluated by an external chemistry validator that
 the runtime does not own, against two published models it did not write. The
-campaign targets metal--organic framework (MOF) generation, and its outcome is the
-sharpest instance in this report of the pattern Section~\ref{sec:method} describes:
-the admitted result is \emph{simpler} than the method it replaces, and it was
-admitted only after a confound in the original comparison was removed.
+campaign targets metal--organic framework (MOF) generation---a setting where
+generative models have advanced quickly for inorganic crystals through equivariant
+diffusion and property-conditioned sampling
+~\citep{jiao2023diffcsp,zeni2023mattergen}, and flow matching has been extended to
+metal--organic frameworks specifically~\citep{kim2024mofflow}, but where chemical
+composition, building units, and three-dimensional structure remain tightly coupled, so progress requires both materials-chemistry understanding and the
+engineering capacity to run training, inference, and evaluation at scale. \systemname
+organized its own training and large-scale inference on four- and eight-GPU NVIDIA
+B200 nodes across this campaign, reproducing two published models, diagnosing their
+capability gaps, running the experiments, and revising its route when the evidence
+demanded it.
+
+The outcome is the sharpest instance in this report of the pattern
+Section~\ref{sec:method} describes: the admitted result is \emph{simpler} than the
+method it replaces, and it was admitted only after a confound in the original
+comparison was removed. It is also the clearest case of a research campaign in which
+no benchmark score was available to steer by---the objective was to understand why a
+generator fails, and the right measurement had to be constructed before the question
+could be asked.
 
 \paragraph{Adding a control the base model lacked.} MOFFlow-2 generates
 building-block sequences with an autoregressive language model and then places them

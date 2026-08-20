@@ -1,0 +1,200 @@
+\subsection{Frontier Infrastructure: Working Where the Verifier Is Unforgiving}
+\label{sec:infra-vertical}
+
+The campaigns above are evaluated by a proof checker, a venue format, and an
+official benchmark harness. This subsection covers the vertical where we have the
+most external evidence and where an unsupported claim has the shortest life: GPU
+kernel and serving-infrastructure engineering. A kernel is either bit-accurate
+against a reference or it is not; it is either faster on the same hardware with the
+same shapes or it is not---the pairing of correctness and speedup that
+KernelBench formalizes as an evaluation target~\citep{ouyang2025kernelbench}; and when the work is submitted upstream, the party
+deciding whether it is acceptable is a maintainer with no stake in this report.
+
+The vertical spans both ends of the hardware range: datacenter accelerators where
+the constraint is throughput, and consumer devices where the constraint is whether
+the model fits at all.
+
+This domain is also the sharpest test of the Driver framing, because it is where the
+objective moves the most. None of the campaigns below could state their target
+precisely at the start. The FlashAttention-4 adaptation did not know which of six
+mask families would fit the tile scheduler, and spent its first several rounds
+discovering that its initial data path was catastrophically wrong. The SGLang
+integration did not know that a cross-batch determinism defect existed until
+batch size eight produced drifting images. The correctness fix described below began
+as a performance investigation and became a correctness one. Each is a
+dense-intelligence task in the sense of Section~\ref{sec:problem}: invention rather
+than retrieval, many dependent iterations, and a task-native verifier strong enough
+that the runtime can judge itself without appeal to its own narrative.
+
+\subsubsection{Diffusion-LLM Masks on FlashAttention-4}
+
+Diffusion language models do not use causal attention. They require block-causal,
+prefix-full, prefix-causal, prefix-hole, sliding-window, and cache-only mask
+families, plus compositions such as prefix-full with holes under a sliding window.
+The task was to carry all of them into a current-generation FlashAttention-4 CuTe
+DSL kernel across both Ampere SM80 and Hopper SM90 paths, with paged and dense KV
+layouts, without surrendering the performance that motivated using FA4 in the first
+place.
+
+The result is \FlashDAMissions{} missions and \FlashDACalls{} calls over
+\FlashDACompute{} hours of model compute, producing 36 changed files
+(\code{+5,814/-14}). All 19 parity cases pass across both architectures, paged and
+dense dispatch, composed masks, and cache-only inputs, with maximum deviation of
+$3.9\times10^{-3}$ at bf16 rounding scale and cosine similarity at or above
+$0.9999994$; CUDA Graph replay is bit-identical to direct invocation. Against the
+production Triton path the adaptation is $2.5$--$4.2\times$ faster end to end, or
+$1.6$--$2.6\times$ when both sides enable CUDA Graph. Against upstream native FA4 it
+is slower by only \FlashDAGapLow--\FlashDAGapHigh\%, and that residual is almost
+entirely a fixed 3.6--5\,\textmu s Python wrapper cost: the attention kernel itself
+runs within 2--4\,\textmu s of native.
+
+Two facts about the process matter more than the endpoint. First, the campaign's
+early dense-plus-block-sparsity route was not slightly worse but $4.9$--$29.6\times$
+slower than native, with dense KV gather alone reaching 884.5\,\textmu s at decode.
+The final result came from recognising that this data path was wrong and abandoning
+it, not from optimising within it---and the rejected route, with its evidence, is
+retained in the skill library rather than discarded. Second, the entire campaign
+cost under \FlashDACostCNY{} CNY of model spend, distributed across three vendors by
+role: an open-weight model carried 82\% of Engineer compute while separate models
+served Manager triage and Planner decomposition, all under one role contract. A
+specialist infrastructure team had previously worked this direction for over three
+months; that figure comes from a practitioner interview covering work of different
+scope, not a matched trial.
+
+\subsubsection{A Unified Model into a Production Serving Stack}
+
+Integrating SenseNova U1 into SGLang required five workstreams that are usually
+staffed separately: architecture and weight mapping for language and multimodal
+understanding; native bounded flow-matching image generation; scheduler-owned
+text-to-image-to-text interleaving with correct KV lifecycle; CUDA Graph
+flow-prefill with concurrency determinism; and an OpenAI-compatible API with
+cancellation, disconnect, and multipart limits.
+
+The delivered change is 36 files and \code{+11,263/-72} lines across 14 commits.
+Acceptance was established on real hardware rather than by structural review: 1,116
+tensors load with zero missing or unknown, visual question answering is exact on
+160 of 160 generated tokens, concurrency-8 is exact on 8 of 8, and throughput
+improves $5.108\times$ at batch size 8 with $2.276\times$ on text-to-image and
+$3.618\times$ on image-conditioned generation. A cross-batch determinism defect that
+caused image drift at batch size 8 was found, localised, and fixed, with the
+invariant then holding across all batch sizes.
+
+The comparison in Section~\ref{sec:delivery} is against this task: one engineer
+working with a turn-by-turn coding agent invested over \SGLangHumanHours{} hours
+without completing it, while a blind agent run stopped after roughly 1 hour 21
+minutes with a CPU-oriented draft carrying no real weights, no GPU parity, and no
+benchmarks. \systemname{} completed it within a \SGLangArgusHours{}-hour envelope
+under an operator who was not an infrastructure specialist. What separates the
+outcomes is not the ability to write plausible integration code but the willingness
+to keep going through the expensive second half: real checkpoint loading, exact
+parity, concurrency determinism, service-level safety, and the revisions that
+external review demands.
+
+\subsubsection{Upstream Review by Maintainers Who Owe Us Nothing}
+
+Kernels authored by \systemname{} were submitted to
+\code{flash-linear-attention}, a widely used implementation library for
+linear-attention architectures. Two properties make this the strongest external
+evidence in this report: the acceptance standard is written by someone else---the
+repository requires dependent-test discovery and same-hardware before-and-after
+benchmarks---and the reviewers had no involvement in producing the work.
+
+Four submissions are recorded here, spanning performance work and correctness
+repair. A TileLang RWKV6 forward-intra backend (PR~\#1045) improved forward latency from 0.199\,ms to
+0.168\,ms ($1.18\times$) and forward-plus-backward from 0.900\,ms to 0.747\,ms
+($1.21\times$) on an H100 NVL at $B{=}8$, $T{=}1024$, $H{=}8$, $D{=}64$, gated by 14
+backend tests and a 13-case frozen verification gate, with unsupported dtypes,
+dimensions, and layouts rejected by a backend verifier rather than silently
+mishandled. Its submission states plainly that the implementation, optimisation
+loop, correctness validation, and performance evidence were completed autonomously
+by \systemname{}, with only the target and hardware constraint chosen by the
+operator. That sentence was reviewed and accepted along with the code by an outside
+maintainer, which is a different kind of claim from one asserted in a report about
+oneself. It received no inline change requests.
+
+A second submission (PR~\#1128) accelerates \code{chunk\_kda} training with four TileLang
+kernels covering intra forward, $dAv$, fused $dq/kg$, and intra backward, reaching
+$1.29\times$ over Triton across the four stages on B200. The instructive detail is
+what was not claimed: the best single stage reached $1.541\times$, but automatic
+dispatch was enabled only for the one workload with both verified correctness and a
+repeatable end-to-end gain, which measures $1.078$--$1.099\times$. The larger number
+was available and was not used to characterise the result.
+
+The third (PR~\#1109) is two lines. On SM100, \code{chunk\_kda} backward autotuning triggered an
+illegal memory access that poisoned the CUDA context, so the test file could not run
+to completion; excluding \code{BK==32} configurations at 4 and 8 warps restores a
+full pass at 76 tests. There is no speedup to report, because before the fix nothing
+could be measured at all. The reviewing maintainer independently re-derived that 24
+autotune candidates survive the filter, confirmed no empty-configuration risk,
+verified that the described scope matched the diff, and diagnosed two red CI checks
+as infrastructure flakes rather than test failures, then approved with two
+non-blocking suggestions and no required changes. The fix had also been narrowed by
+its author from all Blackwell devices to the measured SM100 target---the same
+discipline of publishing the perimeter of a claim that appears in the ACE-2
+certificate of Section~\ref{sec:silicon-vertical}.
+
+A fourth submission (PR~\#1114) parallelizes the long-sequence \code{AttnRes}
+reduction, specializing forward and backward kernels on the exact residual count and
+distributing the $dq$, $dw$, and optional $dow$ reductions across the flattened token
+dimension for $N\geq16384$. Across five bfloat16 shapes on B200 it reaches a
+geometric-mean speedup of $1.102\times$, best case $1.237\times$. The submission
+reports its worst row, $1.033\times$, alongside the mean, and states that no broader
+hardware coverage or end-to-end model speedup is claimed.
+
+\subsubsection{The Same Discipline at the Other End of the Hardware Range}
+\label{sec:local-deployment}
+
+The campaigns above optimize kernels on datacenter accelerators. This one inverts
+the constraint: the model is fixed, and the hardware is what an individual actually
+owns. MiniMax-H3 is an audio-video generation
+model whose BF16 diffusion transformer alone occupies roughly 62\,GiB, well beyond
+the memory of the two targets below. The task was not to quantize or distill it into
+something smaller, but to make the original weights run.
+
+\paragraph{Apple M4 Pro, 24\,GB unified memory.}
+\systemname{} adapted the upstream inference path to Apple MLX with block-wise
+streaming load and prompt release, so the full BF16 diffusion transformer and BF16
+text encoder are never resident at once. The system produces
+$1344\times768$ video, 124 frames at 24\,FPS with 5.17 seconds of stereo audio, in
+47\,minutes 58.7\,seconds end to end at a peak memory footprint of approximately
+15.8\,GB---roughly a quarter of the model's nominal size, on a laptop-class device.
+
+\paragraph{One RTX A6000, 48\,GB.}
+The same model was brought to a single Ampere-class workstation GPU at full FL2VA
+checkpoint fidelity, $1344\times768$, 124 frames, 24\,FPS, 32\,kHz stereo. The
+campaign then optimized it under measurement discipline. A BF16 dense warm baseline
+over $N{=}10$ runs establishes 1{,}792.202\,s. An eight-step Turbo route reaches
+290.998\,s, a $6.159\times$ speedup, and is adopted as the practical default. A
+sparse-attention route at $r{=}8$ is reported separately at a formal $N{=}10$
+HTTP-time improvement of 15.203\%, and a matched formal $N{=}10$ comparison on
+30-second final audio-video yields $+4.326\%$.
+
+\paragraph{What makes this a runtime result rather than a port.}
+Both targets are public repositories, and both record what was rejected as well as
+what was kept. Candidates that degraded output quality, produced no gain on the
+critical path, or rested on $N{=}1$ evidence are marked rejected rather than folded
+into the headline number, and quality failures are published alongside the speedups.
+The distinction matters because the two accepted routes are not equivalent: the
+Turbo path is an approximate decoding schedule and is labeled as such, not presented
+as lossless BF16 acceleration. Acceptance ran through paired $N{=}10$ comparisons on
+the same physical GPU, a 24-case quality suite, and memory and audio-video integrity
+checks.
+
+This campaign exercises a different part of the runtime than kernel optimization.
+There is no leaderboard and no official verifier; it had to construct its own
+measurement protocol, decide which improvements were real, and publish the boundary
+of each claim. That is the same discipline the ACE-2 certificate applies to hardware
+and the materials campaign applies to chemistry, in a setting where the deliverable
+is simply that a model too large for the device runs on it.
+
+\subsubsection{Why This Vertical Is Evidence About the Runtime}
+
+These campaigns share a shape that a score-climbing system does not produce. One
+result is a rejected route retained as reusable knowledge. One is a deliberate
+choice to report the smaller honest number over the larger available one. One is a
+correctness fix with no performance story, whose entire value is that a test suite
+that could not finish now finishes. Together with three merged or reviewed upstream
+submissions and a serving integration validated on real hardware, they indicate that
+the unattended hours produce work that survives contact with people who did not
+write it---which is the property that distinguishes delegated autonomy from
+generated volume.

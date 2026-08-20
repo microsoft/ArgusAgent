@@ -33,6 +33,35 @@ shared repository of prior work~\citep{schmidgall2025agentrxiv}, while Arbor use
 persistent hypothesis tree and isolated executors to refine long-running research
 programs~\citep{jin2026arbor}.
 
+Read together, this literature supports a blunter characterization than the label
+suggests. These systems are genuinely strong at retrieving literature, writing code,
+executing experiments, and producing reports; they are not, on demonstrated evidence,
+strong at producing the idea that makes a result matter. Ideation components exist and
+run---\systemname{} has one---but on present evidence they function closer to a
+placeholder in the pipeline than to a source of scientific advance. \textbf{Most of
+what is currently called auto research is auto execution}, and we include our own
+system in that assessment.
+
+We state it plainly because it locates what this literature actually delivers, which
+is substantial and different from how it is usually framed. What is being automated
+is not invention. It is the human attention that invention has historically been
+bundled with: a researcher with a good idea spends the overwhelming majority of their
+time not having it, but configuring environments, debugging harnesses, waiting on
+runs, rerunning with a corrected parameter, and formatting results. Removing that
+bundle changes the unit of collaboration rather than the source of ideas---from a
+person supervising a loop step by step, toward agents dividing work and accepting or
+rejecting each other's output while the human sets the objective and inspects the
+result. That shift is what Section~\ref{sec:duty-cycle} measures, and it is why we
+treat duty cycle and interruption rate as load-bearing rather than supplementary.
+
+Nothing in this argument is specific to science. Software engineering is the nearest
+adjacent case: an industry with extraordinary tooling that still coordinates through
+documents, meetings, and manual handoffs, and still writes programs a line at a time.
+The plausible endpoint is the same in both---humans define objectives, design
+systems, start them, and repair them, while execution, verification, and acceptance
+are divided among agents. Auto research is the first instance of that pattern rather
+than its extent.
+
 \systemname belongs to this autonomous-research family but targets the runtime
 layer beneath any single scientific workflow. It maintains a durable campaign,
 assigns separate authority to Manager, Planner, Engineer, and Reviewer, and carries
@@ -73,12 +102,103 @@ and Agent Lightning converts existing agent trajectories into reinforcement-lear
 transitions~\citep{mitra2024agentinstruct,chen2024agentflan,luo2025agentlightning}.
 Test-time-compute studies further show that search and verification should be
 allocated according to task difficulty rather than by a fixed sampling rule
-~\citep{snell2024testtime}.
+~\citep{snell2024testtime}. A parallel line closes this loop inside the agent
+scaffold rather than the weights, and is now large enough to have been surveyed
+~\citep{gao2025selfevolvingsurvey}. Voyager accumulates an executable skill library
+as procedural memory~\citep{wang2023voyager}, ExpeL extracts reusable natural-language
+insights from prior attempts~\citep{zhao2024expel}, Agentic Context Engineering
+evolves a structured context of accumulated strategies~\citep{zhang2025ace}, and the
+Darwin G\"odel Machine rewrites its own agent code under empirical benchmark feedback
+~\citep{zhang2025darwingodel}. \systemname{} differs from these in what gates
+admission: an update becomes reusable only after a role that did not produce it
+checks it against task-native evidence, rather than after an aggregate benchmark
+score moves. Purpose-built corpora for training
+software agents---SWE-Gym and SWE-smith---show that trajectory data is now a
+first-class engineering artifact rather than a byproduct
+~\citep{pan2024swegym,yang2025swesmith}.
 
 The trajectories retained by \systemname connect model outputs to concrete states,
 tool actions, measurements, artifacts, review decisions, and runtime updates. They
 therefore serve two purposes: coordinating the next mission online and forming a
 structured corpus for later supervised, preference-based, or reinforcement learning.
+
+\subsection{Recursive Self-Improvement and Where It Meets Auto Research}
+\label{sec:rsi-related}
+
+The prospect that AI systems might contribute to building better AI systems is
+usually stated as ``AI that improves itself,'' which is vague enough to resist
+evaluation. The substantive version is narrower: \emph{AI participating materially in
+the development of the next generation of AI, such that the improved system
+contributes to the following round}. The loop, not the self-modification, is what
+makes it recursive. Four directions are pursued in practice: models that study AI and
+propose algorithms~\citep{lu2024aiscientist,novikov2025alphaevolve}; models that keep
+evolving at test time, at parameter and non-parameter levels
+~\citep{snell2024testtime}; AI that generates, filters, and cleans the data training
+its successor~\citep{mitra2024agentinstruct}; and AI acting as a model-training
+engineer inside pretraining, post-training, evaluation, and experimental iteration.
+
+The fourth is the one this report addresses, because its causal path to a better
+model is the shortest and the most checkable. A system that writes a paper about
+training has not necessarily improved anything; a system that cleans the data,
+modifies the training code, designs the ablation, reads the loss curve, and changes
+the schedule has intervened on the actual determinants of model quality. The bar this
+sets is concrete: baseline competence must approach, and eventually exceed, that of a
+strong model-training engineer.
+
+Two routes lead there, and they differ in what they assume. The first is recursive
+in the original sense---have the system research how to improve AI, then use the
+improved capability for the next round---and it is currently not demonstrable, since
+no system has been shown to conduct complex training research end to end without
+human involvement. The second builds the pipeline first and replaces the humans in it
+progressively: data cleaning, training, post-training, evaluation, and analysis are
+constructed by people, then handed over stage by stage until the entity operating the
+code and running the experiments is no longer a person. \textbf{The second route is a
+legitimate and checkable form of recursive self-improvement}: one can ask which
+stages are automated, how often a human intervenes, and whether the resulting models
+are better. \systemname{} pursues it, and Sections~\ref{sec:results}
+and~\ref{sec:rsi-vertical} report its position along that transfer rather than
+asserting a loop.
+
+The relationship to the preceding subsections is containment. Auto research is the
+general machinery for converting intelligence into results wherever invention is
+required; recursive self-improvement is that machinery pointed at the production of
+AI itself, so that the output re-enters the system that produced it. Two consequences
+follow. Recursive self-improvement inherits every constraint of the general case: a
+runtime that cannot run unattended, judge its own completion, or choose its next step
+does not become a loop when aimed at AI development---it becomes a supervised
+pipeline with additional steps. And the coupling runs through the trajectory record
+described above, which is simultaneously the mechanism by which a fixed-backbone
+runtime improves its own state and the raw material a training stage would consume. A
+system doing auto research under verification accumulates, as a byproduct, what the
+third and fourth directions require.
+
+\subsection{Why Verification Must Be Independent}
+
+The design choice this report treats as load-bearing---that the party judging
+completion must not be the party that produced the work, and must not be able to edit
+the evidence it judges---is supported by a converging body of negative results. Large
+language models do not reliably repair their own reasoning when asked to reconsider
+without external signal~\citep{huang2024selfcorrect}, and models acting as judges
+exhibit measurable self-preference: they recognize their own outputs and score them
+above equivalent alternatives, with the bias tracking self-recognition ability
+~\citep{panickssery2024selfrecognition,wataoka2024selfpreference}. Surveys of the
+LLM-as-judge literature catalogue position, verbosity, and leniency biases alongside
+it~\citep{gu2024judgesurvey}. Where an explicit objective is
+available, optimizing against an imperfect proxy invites the failure mode formalized
+as reward hacking, in which the measured score improves while the intended property
+does not~\citep{skalse2022rewardhacking}. Empirical study of multi-agent LLM systems
+finds that a substantial share of failures are organizational rather than
+cognitive---unclear role boundaries, unverified handoffs, and premature
+termination---rather than reasoning errors by any single
+component~\citep{cemri2025multiagentfail}.
+
+These results motivate three properties of the runtime described in
+Section~\ref{sec:method}: the Reviewer runs read-only, so self-preference cannot be
+converted into edited evidence; the four-state evidence model refuses to let an
+environment failure count as a refuted hypothesis; and the proof ledger caps
+model judgement below mechanical verification regardless of how many judgements
+agree. None of these eliminate the underlying biases. They constrain what those
+biases can do to persistent state.
 
 \subsection{Evaluation of Research Agents}
 
@@ -91,7 +211,16 @@ machine-learning engineering tasks~\citep{chan2024mlebench}; RE-Bench compares A
 agents with human experts in open-ended research engineering
 ~\citep{wijk2024rebench}; AARRI-Bench evaluates granular tasks from the research
 lifecycle~\citep{wang2026aarri}; and AIRS-Bench targets frontier research-science
-agents across multiple disciplines~\citep{lupidi2026airsbench}. Together they
+agents across multiple disciplines~\citep{lupidi2026airsbench}. Domain-specific
+harnesses sharpen this further: KernelBench measures whether generated GPU kernels
+are both correct and faster than a reference~\citep{ouyang2025kernelbench},
+VerilogEval evaluates hardware description code~\citep{liu2023verilogeval}, and
+Terminal-Bench evaluates agents on realistic command-line work where the environment
+rather than a prompt defines success~\citep{merrill2026terminalbench}. Follow-up work
+on MLE-bench analyzes how search and exploration strategy determine agent
+performance on machine-learning engineering~\citep{toledo2025mlebenchagents}, and
+MLGym packages full ML research cycles---model design, training, optimization, and
+dataset curation---as agent tasks~\citep{nathani2025mlgym}. Together they
 motivate evaluation in task-native units, with explicit resource accounting and
 trajectory-level analysis.
 
@@ -99,3 +228,26 @@ This report combines that benchmark view with a continuous system trace. The
 benchmark suite measures outcomes across seven arenas, while the SWE-Bench Pro and
 mathematical studies expose runtime evolution, review-driven correction, and
 cross-mission research progress.
+
+\subsection{What Is Not Measured: the Cost of Human Supervision}
+
+Across this literature, evaluation is reported in outcomes---resolved issues, medals,
+scores, accepted papers---and increasingly in Tokens and wall-clock time. What is
+almost never reported is how much human attention the run consumed. RE-Bench is the
+closest, comparing agents against human experts on matched research-engineering
+tasks~\citep{wijk2024rebench}, but it measures humans as an alternative to the agent
+rather than as a resource the agent consumes while running. A system requiring an
+operator every few minutes and a system running unattended for two days can post
+identical benchmark numbers.
+
+This omission is understandable, because for most of this literature the answer is
+structurally the same: a person supervises the loop. It nonetheless hides the
+constraint that binds long-horizon deployment. An agent whose effective operating
+window is bounded by its operator's attention cannot exceed that operator's waking
+hours regardless of its accuracy, and horizon-scaling studies show task success
+degrading precisely as horizons grow past that window~\citep{kwa2025longtasks}. We
+therefore report duty cycle and interruption rate alongside task outcomes
+(Section~\ref{sec:duty-cycle}). We are not aware of prior agent systems reporting
+either, and we suggest both belong in evaluations of long-horizon autonomy: an
+outcome obtained under continuous supervision and the same outcome obtained
+unattended are different results.

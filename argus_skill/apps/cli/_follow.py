@@ -234,25 +234,6 @@ def _format_follow_mission_context(
     return bits
 
 
-def _clip_follow_summary(text: str, limit: int = 240) -> str:
-    """Collapse whitespace and clip a long one-line summary cleanly: cut on a
-    word boundary and append a ``… (+N chars)`` hint instead of slicing a word
-    in half. ``ARGUS_SKILL_FOLLOW_FULL`` disables clipping (verbose/expand)."""
-    text = " ".join(str(text or "").split())
-    if os.environ.get("ARGUS_SKILL_FOLLOW_FULL", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    ):
-        return text
-    if len(text) <= limit:
-        return text
-    cut = text[:limit]
-    sp = cut.rfind(" ")
-    if sp > int(limit * 0.6):
-        cut = cut[:sp]
-    remaining = len(text) - len(cut)
-    return cut.rstrip() + f" … (+{remaining} chars)"
-
-
 class _FollowCoalescer:
     """Collapse streamed ``replace``+``message_id`` agent_message beats into a
     single committed render — the standalone-``--follow`` counterpart of the

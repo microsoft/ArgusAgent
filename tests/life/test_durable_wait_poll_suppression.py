@@ -347,6 +347,7 @@ def test_unchanged_live_job_skips_planner_across_restart(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    monkeypatch.setenv("ARGUS_SKILL_DAEMON_IDLE_EXIT_MIN", "0.001")
     project = tmp_path / "project"
     project.mkdir()
     life = tmp_path / "life"
@@ -376,10 +377,16 @@ def test_unchanged_live_job_skips_planner_across_restart(
     assert first._plan_next_work() == PLAN_AWAITING
     assert first._plan_next_work() == PLAN_AWAITING
     assert calls == 1
+    assert first._consecutive_idle_planner_cycles == 2
+    assert first._idle_since is None
+    assert first._maybe_idle_timeout() == ""
 
     restarted = _supervisor(project, life)
     assert restarted._plan_next_work() == PLAN_AWAITING
     assert calls == 1
+    assert restarted._consecutive_idle_planner_cycles == 1
+    assert restarted._idle_since is None
+    assert restarted._maybe_idle_timeout() == ""
 
     wait_state = json.loads(
         next(life.glob("planner-waiting-contract-*.json")).read_text(encoding="utf-8")

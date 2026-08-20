@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from argus_skill.core.pipeline_state import read_pipeline_state, write_pipeline_state
 from argus_skill.life.supervisor import LifeSupervisor
 from argus_skill.planner import Planner
 from argus_skill.skills.vertical_select import persist_vertical
@@ -165,6 +166,37 @@ def test_bounded_planner_rejects_tautological_acceptance_checks() -> None:
 
     assert "must fail when its claimed requirement is violated" in prompt
     assert "never emit `or True`, `|| true`, unconditional success" in prompt
+
+
+def test_research_submission_prompt_prescribes_final_submission_scope(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    persist_vertical(
+        tmp_path,
+        "research",
+        research_target_level="publishable",
+    )
+    state = read_pipeline_state(tmp_path)
+    state["current_stage"] = "submission"
+    write_pipeline_state(tmp_path, state)
+    monkeypatch.setenv("ARGUS_SKILL_PROJECT_ROOT", str(tmp_path))
+
+    prompt = Planner._build_planner_prompt(
+        continuous_objective=(
+            "Obtain final independent certification for the research submission."
+        ),
+        journal_tail="(empty)",
+        planning_cycle=0,
+        project_root=tmp_path,
+        state_root=tmp_path,
+        open_ended=True,
+    )
+
+    assert "## Final-submission task scope" in prompt
+    assert '`scope:"final_submission"`' in prompt
+    assert "`TASK_SCOPE=final_submission`" in prompt
+    assert "verticals without a final-submission or research-target gate" in prompt
 
 
 def test_mature_math_prompt_keeps_only_bounded_terminal_history(

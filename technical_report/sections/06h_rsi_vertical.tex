@@ -1,0 +1,71 @@
+\subsection{AI for AI: The Second Axis of Self-Improvement}
+\label{sec:rsi-vertical}
+
+Every campaign so far produces something outside the runtime: a kernel, a manuscript,
+a crystal structure, a chip. This one points inward. The artifact is the machinery
+that produces models, which is the machinery that produces \systemname{} itself.
+
+Self-improvement comes in two kinds, and conflating them is why claims in this area
+are hard to evaluate. \emph{Parameter-invariant} self-improvement changes what the
+system knows, retrieves, and obeys while the weights stay fixed: memories, skills,
+procedures, verifiers, routing decisions, and retained failures. This report measures
+it directly---Section~\ref{sec:method} specifies the admission gate, and
+Section~\ref{sec:results} shows mature waves using \SWEProTokenReduction\% fewer
+solve input Tokens and \SWEProTimeReduction\% less active time per task than startup,
+under a backbone that never changed. Systems in this family evolve their
+context, their retained experience, or their own scaffolding code under empirical
+feedback~\citep{zhang2025ace,yin2025godelagent,zhang2025darwingodel}. \emph{Parameter-changing}
+self-improvement alters the weights themselves. The two are complementary rather than competing: the
+first compounds within a fixed capability ceiling, and the second is what moves the
+ceiling.
+
+\systemname{} operates on the first axis today, and that is the axis where evidence
+is actually obtainable, because a state update has an owner, a precondition, and an
+audit trail. But the ceiling is real. No amount of accumulated skill makes a frozen
+backbone reason better than it can, and a system confined to that axis improves
+asymptotically toward its own limit. Reaching the second axis requires participating
+in the production of weights, which means owning a pretraining stack: data pipeline,
+training loop, stability, throughput, failure recovery, and the judgement to decide
+which of those is the current bottleneck.
+
+\systemname{} built and ran that stack. On an eight-GPU B200 node, the runtime took a
+1B-parameter model from scratch through data-quality and pipeline construction,
+training stability and speed, GPU utilization and bottleneck analysis, engineering
+quality and failure recovery, and successive optimization rounds---with the operator
+driving it having prior experience only in post-training, not in pretraining
+infrastructure. The pipeline runs end to end and continues under the runtime's own
+supervision.
+
+\paragraph{What this is evidence for, and what it is not.}
+The claim here is deliberately narrow, because the interesting failure would be to
+overstate it. Building a pretraining stack is not yet parameter-changing
+self-improvement; it is the entry condition for it. Until a system can produce
+weights, the second axis is unavailable in principle, not merely unattempted.
+
+Three steps remain, and each is genuinely hard. The trained model is not yet good
+enough to serve as a role backbone. The training data is a public corpus rather than
+the runtime's own retained trajectories, which
+Section~\ref{sec:runtime-to-training} argues is the natural source and which the
+first axis has been accumulating all along. And no model produced this way has been
+placed into a role and measured for whether the runtime that built it improved. Only
+that last measurement would demonstrate a closed loop rather than a capability.
+
+The two axes are not independent, which is the point of reporting them together. The
+trajectories that parameter-invariant self-evolution retains---objectives, actions,
+measurements, revisions, verdicts, and the routes that were refuted---are exactly the
+supervision a training stage would consume. A runtime that improves its own state
+while producing a structured record of how it did so is, in effect, generating its
+own training corpus as a side effect of operating. Owning the stack that could
+consume it is what makes that observation more than rhetorical.
+
+\paragraph{Why this vertical is a hard test of unattended operation.}
+Pretraining is the least forgiving setting in this report for a Driver that cannot
+judge its own progress. A multi-day run commits resources irreversibly, and its
+characteristic failures---a data pipeline defect, a silent throughput regression, an
+instability that only manifests after a loss curve has looked healthy for
+hours---surface long after the decision that caused them. There is no fast verifier
+to consult, no test that turns green, and the cost of noticing late is measured in
+GPU-days. This is precisely the regime in which Question~Q1 of
+Section~\ref{sec:introduction}---is this actually working---cannot be answered by
+checking an exit code, and where a runtime that persists without judging is worse
+than one that stops.

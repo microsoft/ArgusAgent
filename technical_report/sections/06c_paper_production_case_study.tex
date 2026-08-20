@@ -39,7 +39,7 @@ uncertainty-aware leaderboard reporting, a failed compositional gate, an
 over-restrictive adaptation controller, a narrow GUI reliability gain, a
 failure-mode audit of multimodal wrappers, and a negative result for static
 quantization proxies. Several projects therefore become diagnostic or negative
-results after their original positive hypothesis fails. Verification-gated state makes
+results after their original positive hypothesis fails. Reviewed Stage state makes
 that scientific pivot explicit instead of silently replacing the failed branch.
 
 Figure~\ref{fig:paper-case-trajectory} resolves the multimodal-hallucination
@@ -75,10 +75,11 @@ academic, layout, and infrastructure histories contain
 \PaperCaseReviewSnapshots{} automated review snapshots. These are process records
 rather than external assessments of paper quality.
 
-The case study also exposes a consistency failure. The compositional-matching
-pipeline reaches a complete submission Stage and produces its final PDF, while the
-last stored assurance object remains \code{BLOCKED} on a Manager-stage authority
-check. This discrepancy does not change the paper artifact, but it shows that
+The case study also exposes a consistency failure. \PaperCaseAssurancePass{} of the
+six projects close with a passing final assurance snapshot; the sixth, the
+compositional-matching pipeline, reaches a complete submission Stage and produces its
+final PDF while its last stored assurance object remains \code{BLOCKED} on a
+Manager-stage authority check. This discrepancy does not change the paper artifact, but it shows that
 derived certification state can lag the canonical pipeline state. Public release
 automation should reconcile those two views before presenting assurance as a final
 verdict.

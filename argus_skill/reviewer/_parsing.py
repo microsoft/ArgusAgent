@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Mapping
 
 from ..core.model_visible_text import (
     contains_integrity_judgment,
@@ -66,7 +66,7 @@ def _planner_report(
     return report
 
 
-def _planner_report_from_payload(parsed: dict[str, Any]) -> dict[str, Any]:
+def _planner_report_from_payload(parsed: Mapping[str, Any]) -> dict[str, Any]:
     """Read the plan fields from either shape the Reviewer has been shown.
 
     The decision event documented in the prompt is flat — ``plan_signal``,
@@ -272,39 +272,55 @@ def parse_decision_text(
     if named is not None:
         return named
     for parsed in _candidate_json_objects(cleaned):
-        status = str(parsed.get("status") or "").strip().lower()
-        reason = parsed.get("reason")
-        next_action = parsed.get("next_action")
-        operator_question = parsed.get("operator_question")
-        if status not in _STATUSES:
-            continue
-        if not isinstance(reason, str) or not reason.strip():
-            continue
-        if not isinstance(next_action, str):
-            continue
-        if operator_question is not None and not isinstance(operator_question, str):
-            continue
-        return _apply_model_judgment_policy(
-            ReviewDecision(
-                status=status,
-                reason=reason.strip(),
-                next_action=next_action.strip(),
-                operator_question=str(operator_question or "").strip(),
-                operator_options=normalize_agent_options(
-                    option
-                    for option in (parsed.get("operator_options") or [])
-                    if isinstance(option, dict)
-                ),
-                checkpoint_recommended=bool(parsed.get("checkpoint_recommended", False)),
-                research_result=normalize_research_result(
-                    parsed.get("research_result")
-                ),
-                planner_report=_planner_report_from_payload(parsed),
-                frontier_report=_frontier_report(parsed.get("frontier_report")),
-                session_signal=_session_signal(parsed.get("session_signal")),
-            )
-        )
+        decision = decision_from_payload(parsed)
+        if decision is not None:
+            return decision
     return None
+
+
+def decision_from_payload(payload: Mapping[str, Any]) -> ReviewDecision | None:
+    """Build a verdict from an already-structured Reviewer payload.
+
+    This is what the Reviewer's decision event carries, so the runtime reads it
+    here rather than serialising it back to JSON text and parsing that. The
+    round trip was how the flat event shape came to be dropped: the reader on
+    the far side only ever looked for a nested ``planner_report``.
+
+    ``None`` when a control field is missing or invalid; the caller then treats
+    the turn as having produced no verdict rather than inventing one.
+    """
+    status = str(payload.get("status") or "").strip().lower()
+    reason = payload.get("reason")
+    next_action = payload.get("next_action")
+    operator_question = payload.get("operator_question")
+    if status not in _STATUSES:
+        return None
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    if not isinstance(next_action, str):
+        return None
+    if operator_question is not None and not isinstance(operator_question, str):
+        return None
+    return _apply_model_judgment_policy(
+        ReviewDecision(
+            status=status,
+            reason=reason.strip(),
+            next_action=next_action.strip(),
+            operator_question=str(operator_question or "").strip(),
+            operator_options=normalize_agent_options(
+                option
+                for option in (payload.get("operator_options") or [])
+                if isinstance(option, dict)
+            ),
+            checkpoint_recommended=bool(payload.get("checkpoint_recommended", False)),
+            research_result=normalize_research_result(
+                payload.get("research_result")
+            ),
+            planner_report=_planner_report_from_payload(payload),
+            frontier_report=_frontier_report(payload.get("frontier_report")),
+            session_signal=_session_signal(payload.get("session_signal")),
+        )
+    )
 
 
 _VERDICT_KEYS = (
@@ -473,6 +489,7 @@ def _find_decision_in_messages(
 
 __all__ = [
     "_find_decision_in_messages",
+    "decision_from_payload",
     "describe_unparsed_verdict",
     "parse_decision_text",
 ]

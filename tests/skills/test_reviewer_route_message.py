@@ -87,7 +87,7 @@ def test_http_capable_backends_keep_the_original_message(
 
 def test_secrets_in_the_underlying_error_are_redacted(tmp_path: Path) -> None:
     secret = "-".join(("sk", "live", "abcd1234efgh5678"))
-    leaked = RuntimeError(f"401 from https://api.example.invalid key={secret}")
+    leaked = RuntimeError(f"401 from https://api.example.invalid api_key={secret}")
     message = describe_reviewer_route_unavailable(
         leaked,
         _env(tmp_path, backend="copilot"),
@@ -130,6 +130,10 @@ def test_the_gate_stays_blocking_regardless_of_the_message() -> None:
 
 
 @pytest.mark.parametrize(
+    "label",
+    ["api_key", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "x-api-key"],
+)
+@pytest.mark.parametrize(
     "secret",
     [
         "-".join(("sk", "proj", "AbCd1234EfGh5678IjKl")),
@@ -139,15 +143,36 @@ def test_the_gate_stays_blocking_regardless_of_the_message() -> None:
 )
 def test_provider_key_formats_never_reach_the_operator(
     tmp_path: Path,
+    label: str,
     secret: str,
 ) -> None:
     # This message is written into paper/ACADEMIC_LANGUAGE_REVIEW.json, so a key
-    # that survives it lands in the paper workspace. The local redactor used to
-    # match `sk-[A-Za-z0-9]{12,}`, which stops at the first hyphen — exactly the
-    # shape of every key OpenAI and Anthropic issue today.
+    # that survives it lands in the paper workspace.
+    #
+    # Redaction is keyed to the LABEL, never to the shape of the value: guessing
+    # a secret from a `sk-`-like prefix was deliberately removed. So the
+    # guarantee under test is that no key shape survives a name that announces
+    # one, including the prefixed environment-variable forms a provider error or
+    # shell trace actually carries.
     message = describe_reviewer_route_unavailable(
-        RuntimeError(f"401 from https://api.example.invalid key={secret}"),
+        RuntimeError(f"401 from https://api.example.invalid {label}={secret}"),
         _env(tmp_path, backend="copilot"),
     )
 
     assert secret not in message
+
+
+def test_an_unlabelled_token_shape_is_left_alone(tmp_path: Path) -> None:
+    """Shape-based guessing was removed on purpose; pin that it stays removed.
+
+    An identifier is not a credential because it starts with `sk-`. Redacting
+    one costs an operator the very string they need to diagnose the failure, so
+    the value is carried through untouched when nothing names it as a secret.
+    """
+    opaque = "-".join(("sk", "abcdefghijkl123456"))
+    message = describe_reviewer_route_unavailable(
+        RuntimeError(f"401 from https://api.example.invalid/{opaque}"),
+        _env(tmp_path, backend="copilot"),
+    )
+
+    assert opaque in message

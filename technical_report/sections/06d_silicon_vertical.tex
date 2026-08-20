@@ -4,6 +4,11 @@
 The campaigns above produce software, proofs, and manuscripts. ACE-2 asks whether
 the same runtime holds when the artifact is hardware, where an unverified claim
 survives exactly as long as it takes someone to run the tool that contradicts it.
+Prior work on language models for hardware has concentrated on generating and
+evaluating RTL at the module level~\citep{liu2023verilogeval} and on adapting models
+to chip-design corpora~\citep{liu2023chipnemo}; the question here is different,
+namely whether a runtime can carry an accelerator from model structure through
+functional closure and mapped synthesis as one continuous campaign.
 \systemname specified ACE-2, wrote its RTL, built its verification environment,
 and drove it through mapped synthesis and static timing without a human author of
 record for any of those artifacts. The result is an inference accelerator that

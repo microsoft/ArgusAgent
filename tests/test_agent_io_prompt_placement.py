@@ -142,6 +142,12 @@ def test_the_prompt_is_redacted_on_its_way_to_the_raw_transcript(
     ``redact_secrets_record``, but that is exactly the kind of thing worth
     asserting rather than assuming: the new write is the one that carries the
     verbatim prompt, so it is the one a leaked key would ride out on.
+
+    The secret is supplied as a *known* value, which is how production reaches
+    this path: `known_secret_values()` collects the configured environment and
+    vault credentials and redacts them by exact match. Guessing a credential
+    from the shape of its value was deliberately removed, so a bare token shape
+    is no longer what proves the guard runs — an actual known secret is.
     """
     from argus_skill.adapters.agent_cli_backend._exec_spawn import log_start_record
     from argus_skill.adapters.agent_cli_backend._io_log import AgentIOLogger
@@ -153,7 +159,7 @@ def test_the_prompt_is_redacted_on_its_way_to_the_raw_transcript(
         def __init__(self) -> None:
             self._runner = SimpleNamespace(backend="copilot")
             self._io_logger = AgentIOLogger()
-            self._known_secret_values = ()
+            self._known_secret_values = (secret,)
 
         def _log_agent_io(self, path, row) -> None:
             self._io_logger.log(path, row, known_secret_values=self._known_secret_values)

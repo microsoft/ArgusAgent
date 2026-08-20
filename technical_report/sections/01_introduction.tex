@@ -1,156 +1,260 @@
 \section{Introduction}
 \label{sec:introduction}
 
-Self-improving agents work today wherever the supervision signal is dense. Give a
-system a kernel to make faster, a leaderboard to climb, or a unit test to turn green,
-and iteration has something to optimize: every attempt returns a number, and the
-number says whether to keep going. Progress under those conditions is real, and it is
-also narrow. It describes a student who has become excellent at answering questions
-someone else has already written down.
+A language model is an engine and tokens are its working fluid, but an engine is not
+a factory. What made the steam engine consequential was not the discovery that steam
+carries energy; it was the century of machinery built to convert that energy into
+rotation, and rotation into manufactured goods. Intelligence is at the equivalent
+stage. Capability is abundant, and the machinery that converts it reliably into
+delivered value is not. \emph{Auto research} is our name for that machinery when the
+work requires invention rather than recall---not automated science in the sense of a
+machine that discovers unaided, but the pipeline that turns tokens into intelligence
+and intelligence into artifacts worth having. Intelligence is not the terminal good;
+value is.
+
+An agent harness is the part of that machinery that lets a language model touch the
+real world: files, shells, compilers, GPUs, test suites. Building good harnesses is
+most of what the last two years of agent engineering produced, and the results are
+real. But a harness only executes. Something else has to decide what to attempt,
+judge whether the attempt worked, and choose whether the next step is another
+attempt, a different route, or a question for a human. We call that role the
+\emph{Driver}. In every deployed agent system we know of, the answer to who drives
+the harness is: a person does.
+
+This is why agent progress is bounded by a resource that cannot be scaled. The
+operator reads the diff, decides it is not what they meant, types the correction,
+and the loop advances one step. When the operator goes to dinner, the project stops.
+Not because the model is out of capacity, and not because the machine is tired, but
+because the only component authorized to say ``that is not right, do this instead''
+has gone home. \emph{Human intelligence therefore arrives in discrete bursts},
+and every long-horizon agent trajectory is stitched together from the waking hours of
+whoever is babysitting it. Measured on the systems available today, that stitching is
+dense: a strong coding agent driven turn by turn sustains roughly
+\CodexEndurance{} hour before it needs its operator back.
+
+We report what happens when the Driver's seat is handed to the machine. The task the
+seat performs is not monolithic, and separating it is the first contribution of this
+report. A Driver answers exactly three questions, over and over:
+
+\begin{enumerate}[label=\textbf{Q\arabic*.}]
+  \item \textbf{Is this actually done?} Not whether a command exited zero, but
+    whether the artifact discharges the obligation that motivated it.
+  \item \textbf{What is worth doing next?} Given everything now known, including
+    what just failed, where should the next unit of effort go?
+  \item \textbf{Does this need a person?} Which of the remaining obstacles are the
+    machine's to resolve, and which belong to someone with authority it does not
+    have?
+\end{enumerate}
+
+It is worth noticing when these questions are hard. Given a dense reward---a test to
+turn green, a leaderboard to climb, a latency to halve---all three collapse. Q1 is
+answered by reading the number, Q2 by whatever raises it, and Q3 never arises because
+nothing is ambiguous enough to escalate. This is why recursive self-improvement has
+progressed fastest exactly where such signals exist, and why that progress has not
+transferred: \textbf{the Driver's seat is not a separate problem from the missing
+score. It is what the missing score leaves behind.}
 
 The tasks that motivate this report supply no such signal. A mathematical campaign
-rarely terminates in the theorem it set out to prove: intermediate bounds,
-counterexamples, and reformulations are the normal output, and they carry real value.
-A software request is often underspecified until a candidate implementation exposes
-what was missing. In system verification, the specification and the implementation may
-both be wrong, and deciding which one to change is itself part of the work. In chip
-design and in materials research, the measurement that would settle the question is
-frequently the thing under construction. What these share is not difficulty but
-\emph{underdefinition}: at the moment work starts, nobody, human or machine, can state
-the objective precisely enough to optimize against it.
+rarely terminates in the theorem it set out to prove, and its intermediate bounds and
+counterexamples have no natural numeric value. A kernel rewrite that turns out to be
+architecturally wrong yields a large negative number that is nonetheless the most
+valuable output of the week. In materials research the measurement that would settle
+the question is frequently the thing under construction. Under those conditions an
+agent has nothing to hill-climb, and the standard remedy---have a model score its own
+progress---reintroduces the problem, since the same class of system produces both the
+work and the grade. Section~\ref{sec:no-score} describes what \systemname{} does
+instead: rather than manufacture a score, it replaces the scalar with a typed
+vocabulary of state transitions in which an informative failure is recorded as
+forward motion, and it makes certain readings of the evidence mechanically
+impossible---most importantly, that an experiment which never ran can never be
+recorded as a refuted idea.
 
-This changes what a runtime is for. If the score cannot be trusted to steer, the
-system's job is not to climb it but to hold a campaign together long enough for the
-objective itself to become clear, and to route the specific contradictions it cannot
-resolve to the human expert who can. We call this \emph{expert--agent co-evolution}:
-the standing intent stays stable while the operational objective, constraints, and
-verification criteria are refined by evidence produced along the way, and the moments
-that require human authority are surfaced explicitly rather than guessed past.
+Automating Q2 alone yields an agent that confidently executes a plan nobody checked.
+Automating Q1 and Q2 without Q3 yields an agent that spends a credential or force
+pushes a branch because no rule told it that this class of decision is not its to
+make. The three have to be answered together, by different parties, or the seat
+cannot be delegated safely.
 
-Permitting that revision is difficult because it is externally indistinguishable from
-failure. A system that abandons its stated target may have discovered that the target
-was misspecified, or it may have failed and then rationalized. Nothing in the final
-artifact separates the two. A runtime that allows objective revision without resolving
-this ambiguity invites \emph{goal drift}: the objective degrades toward whatever the
-executor happens to be able to finish. The standard response is to remove the choice,
-fixing the objective and optimizing execution toward it.
+\systemname answers them with four model-driven roles over durable state. A
+\emph{Reviewer} answers Q1 and is deliberately weak: it runs read-only, so it
+\emph{cannot} repair the evidence it is judging even if that would make the round
+look better, and it can return \code{blocked}, refusing to certify work rather than
+manufacturing a completion. A \emph{Planner} answers Q2 by decomposing the current
+research state into bounded tasks, while a \emph{Manager} holds sole authority over
+campaign stage transitions so that a single round cannot quietly redefine the
+campaign. Q3 is answered by an explicit authority boundary: credentials, payment,
+irreversible actions, and publication stop for a human in every autonomy mode, while
+an ordinary timeout, failed test, or unavailable backend does not.
 
-Prior work follows that response. ReAct, SWE-agent, and OpenHands established
-practical interfaces between models and external environments
+This inverts the usual reading of verification. Independent review is normally
+presented as a quality filter: run the work, then check it. Here it is structural.
+The reason a person must watch a conventional agent is that the component doing the
+work is also the component declaring it finished, and no one should accept a
+self-certified result on a task that matters. Separate those two, give the certifying
+party no ability to edit what it certifies, and let it refuse---and the human can
+leave the room. \textbf{Verification is not a quality feature. It is the load-bearing
+wall that makes unattended operation possible at all.}
+
+The seat also could not be delegated earlier for a reason specific to research work:
+the objective itself moves. A mathematical campaign rarely ends in the theorem it set
+out to prove; intermediate bounds, counterexamples, and reformulations are the normal
+output. A software request is often underspecified until a candidate implementation
+exposes what was missing. In chip design and materials research, the measurement that
+would settle the question is frequently the thing under construction. What these
+share is \emph{underdefinition}: when work starts, nobody, human or machine, can state
+the objective precisely enough to optimize against it. The objective a domain expert
+writes at the outset is not a specification handed down to be obeyed; it is their best
+hypothesis about what should be built, formed with the least information anyone will
+ever have about the problem.
+
+This changes what the Driver must do with it. Prior systems treat departure from the
+stated objective as \emph{goal drift}---a failure mode to be detected and suppressed,
+on the reasoning that a system allowed to revise its target will degrade it toward
+whatever is easiest to finish. That reasoning is sound as far as it goes, but it
+assumes the target was right. When it was not, suppressing the departure preserves
+the error, and the system spends its budget executing faithfully toward a destination
+the evidence has already refuted. \textbf{If the objective is wrong, drifting from it
+is the correct behavior.} The genuine difficulty is not that objectives change; it is
+that a principled revision and a rationalized failure look identical in the final
+artifact.
+
+\systemname{} is therefore \emph{evidence-driven} rather than goal-driven: the
+current objective is held as a revisable hypothesis, and what decides whether it
+stands is the evidence, not its own authority as the thing that was written down
+first. Revision is admitted when it is backed by evidence, crosses an explicit role
+boundary, and is recorded with its justification---which is what separates it from
+rationalization, since a rationalizing system can produce the narrative but not the
+refuting measurement. In practice the runtime carries the framing forward on its own
+authority while the evidence supports it, and escalates only when the contradiction
+it has surfaced would change something the operator owns---at which point the expert
+decides what replaces it and the campaign resumes.
+Section~\ref{sec:problem} formalizes this as a working contract
+$K_t=(\iota,o_t,c_t,v_t)$, separating standing user intent $\iota$---which is
+stable---from the operational objective, constraints, and verification criteria that
+evidence may refine, with user-visible decisions tracked in $X_t$.
+
+Prior work has built the harness layer thoroughly. ReAct, SWE-agent, and OpenHands
+established practical interfaces between models and external environments
 ~\citep{yao2023react,yang2024sweagent,wang2024openhands}. The AI Scientist,
 CycleResearcher, AutoSci, FARS, and Arbor extend this interaction into iterative
 research programs covering planning, experiments, review, memory, and scientific
 communication~\citep{lu2024aiscientist,weng2025cycleresearcher,qian2026autosci,
 tang2026fars,jin2026arbor}. These systems differ in how they search, remember, and
-review, but they share the assumption that the objective is given. Their reported
-progress makes the remaining problem visible: agent success declines as software-task
-horizons grow~\citep{kwa2025longtasks}, and the horizons that matter most are those
-over which the objective is least likely to survive unchanged.
+review, but a person remains in the loop as the party who decides when a result is
+acceptable and where to go next. Their reported progress makes the boundary visible:
+agent success declines as software-task horizons grow~\citep{kwa2025longtasks}, and
+the horizons that matter most are exactly the ones a human cannot sit through.
 
-We take the opposite position: pivoting should be permitted and made safe by
-verification. An admissible pivot is supported by evidence that the previous route
-or objective was unreachable or misspecified, admitted through an explicit role
-boundary, and recorded so that later missions inherit both the change and its
-justification. Verification is therefore not a quality filter applied after
-execution. It is the mechanism that makes pivoting distinguishable from drift.
-
-Three properties must hold before any such certification is possible, and each fails
-in long-running agents. \emph{Continuity} fails when a growing transcript is compacted
+Three properties must hold before the seat can change hands, and each fails in
+long-running agents. \emph{Continuity} fails when a growing transcript is compacted
 or dropped, so the evidence that motivated a revision no longer exists when the
 revision is proposed. \emph{Acceptance} fails when the component that performs the
-work also declares it complete, so a revision is certified by the party with the
-strongest incentive to accept it. \emph{Experience} fails when only the final artifact
+work also declares it complete. \emph{Experience} fails when only the final artifact
 survives, so refuted routes cannot later be cited as evidence that an objective is
 unreachable. Hierarchical and workflow-oriented memory systems address parts of this
 problem~\citep{packer2023memgpt,wang2024workflowmemory,xu2025amem}. A larger context
-window extends session continuity; certifying a change of objective additionally
+window extends session continuity; taking over the Driver's seat additionally
 requires explicit state, ownership, and update rules.
 
-We present \systemname (Autonomous Research Generation and Understanding System), a
-general-purpose agentic runtime for long-horizon reasoning. Its central abstraction
-is a sequence of \emph{bounded missions} executed against a durable project state.
-Four model-driven roles divide authority: a Manager anchors the objective and
-campaign state, a Planner selects the next units of work, an Engineer implements
-and evaluates them, and a Reviewer inspects artifacts and run outputs before issuing
-the completion verdict when independent review is required or requested. Allowed
-low-risk tasks may instead use recorded Engineer self-review. These roles operate across three planes---control,
-execution, and records---so that scheduling, work, and record keeping remain
-separable even though they participate in one continuous loop.
+\systemname (Autonomous Research Generation and Understanding System) implements
+this as a sequence of \emph{bounded missions} executed against durable project state.
+Roles operate across three planes---control, execution, and records---so that
+scheduling, work, and record keeping remain separable even though they participate in
+one continuous loop. Admitted Stages retain attempted routes, measurements, verdicts,
+accepted and rejected results, reusable skills, verifiers, and routing decisions.
+Candidate updates enter persistent state only after the authorized role checks the
+relevant artifacts and task-native evidence. Model parameters remain fixed, but later
+missions therefore begin from a changed search policy rather than merely a longer
+transcript. We call this \emph{verification-gated fixed-model runtime
+self-evolution}: gated because a candidate becomes reusable only with task-native
+evidence and an authorized commit, fixed-model because the weights never move.
 
-At the report level, we summarize the evolving working contract as
-$K_t=(\iota,o_t,c_t,v_t)$. Here $\iota$ is the standing user intent that the campaign
-must preserve; $o_t$ is the current operational objective; $c_t$ is the set of known
-constraints; and $v_t$ specifies the verification criteria at mission $t$. We use
-$X_t$ for user-visible clarifications, priorities, and unresolved questions. This
-notation separates an evidence-backed refinement of the operational contract from a
-silent change of intent. Section~\ref{sec:problem} formalizes how evidence, recorded
-verdicts, and the required user or Manager authority admit a material update.
+\paragraph{Does the seat stay empty?}
+The claim is measurable, so we measure it. Across \DutyCampaigns{} campaigns
+spanning \DutyWallHours{} wall-clock hours and \DutyEvents{} logged events,
+\systemname raised \DutyInterruptions{} requests for a human: one every
+\DutyInterval{} hours. Classifying all \DutyInterruptions{} by what they asked for is
+more informative than the rate itself. \DutyInfraPercent\% reported broken
+infrastructure---a failed GPU driver, corrupted container storage, an authentication
+outage. \DutyAuthorityPercent\% requested credentials, budget, or authorization,
+which is the boundary behaving as designed. \DutyContextPercent\% reported missing
+context files. Only \DutyJudgmentPercent\%---\DutyJudgmentCount{} requests in
+\DutyWallHours{} hours---were research judgment, the case where the system had work
+available and could not decide how to proceed. With work in hand, duty cycle runs
+\DutyCycleLow--\DutyCycleHigh\%. The lowest observed campaign,
+\DutyDegradedCycle\%, is the one whose GPU driver and container storage failed
+repeatedly: \textbf{the binding constraint on unattended operation is infrastructure
+availability, not agent autonomy.}
 
-Deployment provides qualitative motivation for this design. Expert users of \systemname
-report that a substantial part of its practical value lies in where it stops: the
-system declines to continue on an underspecified objective, and that refusal surfaces
-constraints the user had not stated. Related internal system-verification cases
-involve real researchers and project-specific details that cannot be disclosed in
-this report; we therefore record the observed use as qualitative motivation rather
-than a public prospective user-study result. After initial assignment, the current runtime can execute
-ordinary rounds unattended and pause explicitly for operator-owned decisions; the
-public traces do not provide a measured zero-touch rate.
+\paragraph{Do the unattended hours produce anything?}
+Duty cycle alone would only prove an expensive idle loop, so we pair it with
+delivery. On an SGLang unified-model integration, one engineer working with a
+turn-by-turn coding agent invested over \SGLangHumanHours{} hours of human time
+without completing the task; \systemname completed the same integration within a
+\SGLangArgusHours{}-hour wall-clock envelope and submitted it upstream. On a
+FlashAttention-4 adaptation carrying six diffusion-LLM mask families across two GPU
+architectures---a direction that had occupied a specialist infrastructure team for
+over three months---\systemname landed within \FlashDAGapLow--\FlashDAGapHigh\% of
+the native kernel across \FlashDAMissions{} missions and \FlashDACalls{} calls, for
+under \FlashDACostCNY{} CNY of model spend, requesting a human
+\FlashDAInterrupts{} times in \FlashDASpan{} hours. Kernels authored by
+\systemname{} were reviewed by outside maintainers of \code{flash-linear-attention}
+and merged with no blocking changes requested---an external check on whether
+unattended output arrives as reviewed work or as review debt handed back to a human.
 
-A pivot should not reset the campaign. The runtime self-evolves the approach between
-the standing intent and the current operational contract: admitted Stages retain
-attempted routes, measurements, verdicts, accepted and rejected results, reusable
-skills, verifiers, and routing decisions. Candidate updates enter persistent state
-only after the authorized role checks the relevant artifacts and task-native evidence;
-the gate may include an official verifier, independent Reviewer, or explicitly allowed
-Engineer self-review according to task policy. Model parameters remain fixed, but
-later missions therefore begin from a changed search policy rather than merely a
-longer transcript. We call this mechanism \emph{verification-gated fixed-model runtime
-self-evolution}. Section~\ref{sec:results} reports its longitudinal evidence as
-observational rather than a controlled learning ablation.
+Across seven benchmark arenas the same runtime reaches approximately
+\SWEProArgusAccuracy\% on SWE-Bench Pro against \SWEProDirectAccuracy\% for direct
+Copilot, 76.8\% on AARRI-Bench, and a 28.0 gap on mathematical data synthesis. It
+also declares \ReviewerFirstBlocked{} SWE-Bench Pro tasks blocked rather than
+reporting an unsupported success, which is the same gate viewed from the other side:
+a system that can leave the room is a system that can also refuse to claim it
+finished.
 
-We sharpen this design language into a process-to-capability theory. The final
-artifact is a projection of a richer typed trajectory; reviewed compression retains
-the parts needed for later decisions; and an accepted update counts as compounding
-only when it reduces future task risk or resource cost. This separates three claims
-that are often conflated: more process information is available, a review gate
-improves admission quality, and retained state actually helps later work.
-
-Overall, the evaluation asks whether one self-evolving runtime can combine broad
-task capability, verified accumulation across missions, and sustained research
-delivery. The evidence is organized in three parts. First, seven benchmark arenas
-cover software repair, GPU kernels, language-model training, training speed,
-research-assistant tasks, and mathematical data synthesis. Beyond SWE-Bench Pro,
-the suite includes 76.8\% on AARRI-Bench and a 28.0 mathematical-data gap, both above
-their reported references; a de-duplicated inventory separately records 41 research
-artifacts across six programs. Second, the 731-task SWE-Bench Pro trajectory supports
-longitudinal analyses of Skill/Wiki evolution, verifier recovery, Reviewer
-intervention, and mature-stage operating cost. Third, vertical evidence tests whether
-retained state changes later research: one mathematical campaign preserves a
-falsified route and six proof-backed theorem-frontier updates, while six
-paper-production campaigns span \PaperCaseMissions{} missions and
-\PaperCaseRollbacks{} Stage rollbacks before producing final AAAI- and ACL-formatted
-manuscripts. Two further verticals carry the same discipline into domains with
-unforgiving external checkers: a chip certified for its demonstrated scope through
-mapped synthesis and static timing, and a materials campaign that replaces a
-published sampling method with a simpler one after removing a confound in the
-original comparison.
-
-This report makes seven contributions:
+This report makes eleven contributions:
 
 \begin{enumerate}[label=\textbf{C\arabic*.}]
-  \item We formulate long-horizon research as verified pivoting over a compact
-    report-level contract $K_t=(\iota,o_t,c_t,v_t)$ and explicit user decision state
-    $X_t$, with each variable defined above. The analytical \code{ManagerAdmit}
-    operator makes evidence, authority, and
+  \item We frame \emph{auto research} as the machinery converting tokens into
+    intelligence and intelligence into value, argue that what current systems---ours
+    included---actually automate is execution and the human attention bundled with
+    invention rather than invention itself, and fix its relationship to
+    \emph{recursive self-improvement} as containment: RSI is auto research pointed at
+    the production of AI, and inherits every constraint of the general case.
+  \item We show how a runtime can iterate and self-improve where no dense reward,
+    well-formed objective, or reliable numeric feedback exists---the regime in which
+    recursive self-improvement has previously stalled---by replacing the scalar with
+    a typed vocabulary of frontier transitions in which informative failure counts as
+    progress, separating execution failure from hypothesis refutation so that a run
+    which never executed cannot refute an idea, naming the honest non-terminal
+    outcomes, and scaling the evidence bar to the maturity of the claim.
+  \item We identify the \emph{Driver} as a distinct, previously unautomated role
+    sitting above the harness, and decompose it into three separable questions---is
+    this done, what is next, does this need a person---each of which must be owned by
+    a different party for the seat to be delegated safely.
+  \item We show that independent verification is the enabling condition for
+    unattended operation rather than a quality feature added after it. A read-only
+    Reviewer that cannot edit the evidence it judges, and that may return
+    \code{blocked}, is what makes it acceptable for the operator to be absent.
+  \item We introduce two paired metrics for unattended operation and report them
+    from runtime ledgers: \emph{duty cycle}, the fraction of available time in which
+    the system is producing, and \emph{interruption rate}, how often a human is
+    required. Neither is meaningful alone; together they separate a productive
+    unattended system from both an idle loop and a babysat one.
+  \item We measure both across \DutyCampaigns{} campaigns, \DutyWallHours{}
+    wall-clock hours, and \DutyEvents{} events: \DutyInterruptions{} human requests,
+    one every \DutyInterval{} hours, of which only \DutyJudgmentPercent\% are
+    research judgment; duty cycle of \DutyCycleLow--\DutyCycleHigh\% with work in
+    hand. We further show the residual gap is dominated by infrastructure failure
+    rather than agent hesitation.
+  \item We argue that long-horizon research requires evidence-driven rather than
+    goal-driven control---since an objective written before the work begins can
+    itself be wrong, and suppressing departure from it preserves the error---and
+    formulate this as evidence-admitted revision over a compact report-level contract
+    $K_t=(\iota,o_t,c_t,v_t)$ with explicit user decision state $X_t$. The analytical \code{ManagerAdmit} operator makes evidence, authority, and
     provenance requirements explicit without claiming one atomic implementation API.
-  \item We present a runtime in which contract refinement is represented through
-    typed, logged, role-owned surfaces rather than one atomic operation or an implicit
-    consequence of replanning. \code{GoalContract} revisions, Manager stage
-    transitions, abandoned approaches, and recorded verdict sources give material changes
-    an author, a precondition, and an audit trail. The same admission discipline
-    gates fixed-model runtime self-evolution: generated memories, skills, verifiers,
-    routing decisions, and rejected routes become reusable only after evidence checks
-    and an authorized commit.
+    Contract refinement is represented through typed, logged, role-owned surfaces:
+    \code{GoalContract} revisions, Manager stage transitions, abandoned approaches,
+    and recorded verdict sources give material changes an author, a precondition, and
+    an audit trail.
   \item We measure where the runtime spends verification and where it refuses to
     terminate. Of \ReviewerTasks{} SWE-Bench Pro tasks, \ReviewerInvoked{} invoke an
     independent Reviewer and \ReviewerSkipped{} use Engineer self-review. The Reviewer
@@ -158,35 +262,39 @@ This report makes seven contributions:
     \ReviewerVerifierRecovered{} later pass the official verifier and
     \ReviewerStrictRescues{} complete the strict review loop; a further
     \ReviewerFirstBlocked{} tasks are declared blocked rather than reported complete.
-    A longitudinal view of the same run shows mature Waves using
-    \SWEProTokenReduction\% fewer solve input Tokens and \SWEProTimeReduction\% less
-    active workflow time per task than startup.
-  \item We present a six-project autonomous paper-production case study covering
-    \PaperCaseCampaignHours{} campaign-hours, \PaperCaseMissions{} bounded missions,
-    \PaperCaseRounds{} Engineer rounds, \PaperCaseContinues{} Reviewer revisions,
-    \PaperCaseSessionRolls{} session rolls, and \PaperCaseRollbacks{} Stage rollbacks,
-    with all six canonical pipelines reaching submission completion. A representative
-    campaign drops seven weak approaches before reframing a failed method search as a
-    4,500-row negative-results study, then repairs two late submission defects
-    without resetting the research state.
-  \item We reconstruct one mathematical campaign as a role-resolved Agent trace,
-    making the Manager, Planner, Engineer, and Reviewer actions visible across
-    multiple bounded missions, and retaining one falsified route alongside six
+  \item We report delivery from the unattended hours against human effort on the same
+    work. One engineer with a turn-by-turn coding agent spent over
+    \SGLangHumanHours{} hours on an SGLang integration without completing it, which
+    \systemname finished within a \SGLangArgusHours{}-hour envelope; a
+    FlashAttention-4 diffusion-LLM mask adaptation reached
+    \FlashDAGapLow--\FlashDAGapHigh\% of native kernel performance for under
+    \FlashDACostCNY{} CNY of model spend. We additionally present a six-project paper
+    case study spanning \PaperCaseMissions{} missions and \PaperCaseRollbacks{} Stage
+    rollbacks, and a mathematical campaign retaining one falsified route alongside six
     accepted theorem-frontier updates.
-  \item We report a capability floor across seven benchmark arenas in one unified
-    table that preserves each benchmark's backbone, backend, protocol, native metric,
-    and reference, establishing that the verification machinery does not cost
-    end-task performance: on SWE-Bench Pro, \systemname reaches approximately
-    \SWEProArgusAccuracy\% accuracy versus \SWEProDirectAccuracy\% for Direct Copilot
-    at \SWEProTokenRatio$\times$ aggregate Tokens.
-  \item We report external adoption of an \systemname-produced artifact: a TileLang
-    \code{RWKV6} kernel reviewed by an outside maintainer and merged into
-    \code{fla-org:main}.
+  \item We separate self-improvement into a parameter-invariant axis, which
+    compounds retained state under a fixed backbone and which this report measures,
+    and a parameter-changing axis, which moves the capability ceiling itself. We
+    report the runtime building and running a from-scratch 1B pretraining stack on an
+    eight-GPU B200 node as the entry condition for the second axis, and state
+    precisely what remains: training on its own retained trajectories rather than a
+    public corpus, and measuring whether a model produced this way improves the
+    runtime that built it.
+  \item We present frontier GPU and serving infrastructure as the vertical with the
+    least forgiving verifier and the most external scrutiny: six diffusion-LLM mask
+    families carried into a FlashAttention-4 CuTe DSL kernel within
+    \FlashDAGapLow--\FlashDAGapHigh\% of native across two architectures for under
+    \FlashDACostCNY{} CNY; a unified-model integration into SGLang validated on real
+    hardware; and TileLang and correctness-fix kernels reviewed by outside
+    maintainers of \code{flash-linear-attention} and accepted with no blocking
+    changes requested. We report this alongside a capability floor across seven
+    benchmark arenas showing that the verification machinery does not cost end-task
+    performance.
 \end{enumerate}
 
 The remainder of the report follows a conventional research-paper organization.
-Section~\ref{sec:related} positions the system against prior agent and autonomous
-research work. Section~\ref{sec:problem} formalizes the operating problem;
+Section~\ref{sec:related} positions the system against prior agent and
+autonomous research work. Section~\ref{sec:problem} formalizes the operating problem;
 Section~\ref{sec:method} presents the runtime; Sections~\ref{sec:methodology} and
 \ref{sec:results} describe the evaluation protocol and results; and
 Sections~\ref{sec:discussion}--\ref{sec:conclusion} discuss interpretation,
