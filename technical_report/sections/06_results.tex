@@ -141,6 +141,19 @@ penalised, because they fall into neither subtracted term. Interruption rate cou
 only system-initiated requests for a human; an operator who volunteers a status
 question does not count, because the system was not waiting for them.
 
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{figures/autonomy_profile.pdf}
+  \caption{Unattended operating profile. Panel (a) gives duty cycle per campaign
+  under Equation~\ref{eq:duty-cycle}; the two lower bars are annotated with why they
+  sit lower, and neither reason is agent hesitation. Panel (b) classifies every
+  human request raised across the \DutyCampaigns{} campaigns by what it asked for.
+  The two metrics are reported together because neither is interpretable alone: a
+  system that does nothing has a perfect interruption rate, and a system that loops
+  uselessly has a perfect duty cycle.}
+  \label{fig:autonomy-profile}
+\end{figure}
+
 \begin{table}[H]
 \centering
 \small

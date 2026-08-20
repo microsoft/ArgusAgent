@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="300" viewBox="0 0 900 300" font-family="Arial, Microsoft YaHei, sans-serif">
+  <rect x="0" y="0" width="900" height="300" fill="#FBF7EE"/>
+
+  <!-- ============ Panel (a): duty cycle per campaign ============ -->
+  <text x="20" y="24" font-size="13" font-weight="bold" fill="#173B70">(a) Duty cycle with work in hand</text>
+  <text x="20" y="40" font-size="10" fill="#66717D">union of model-call intervals / (wall clock − backlog-empty and unusable time)</text>
+
+  <!-- axis -->
+  <line x1="150" y1="56" x2="150" y2="248" stroke="#D8E0E8" stroke-width="1"/>
+  <line x1="150" y1="248" x2="430" y2="248" stroke="#D8E0E8" stroke-width="1"/>
+  <text x="150" y="262" text-anchor="middle" font-size="9" fill="#66717D">0</text>
+  <text x="290" y="262" text-anchor="middle" font-size="9" fill="#66717D">50%</text>
+  <text x="430" y="262" text-anchor="middle" font-size="9" fill="#66717D">100%</text>
+  <line x1="430" y1="56" x2="430" y2="248" stroke="#D8E0E8" stroke-width="1" stroke-dasharray="3 3"/>
+
+  <!-- bars: x = 150 + pct*2.8 -->
+  <text x="144" y="72" text-anchor="end" font-size="10" fill="#24465D">Research A</text>
+  <rect x="150" y="63" width="276.4" height="13" rx="3" fill="#287D70"/>
+  <text x="432" y="73" font-size="10" font-weight="bold" fill="#287D70">98.7%</text>
+
+  <text x="144" y="97" text-anchor="end" font-size="10" fill="#24465D">Research B</text>
+  <rect x="150" y="88" width="273.0" height="13" rx="3" fill="#287D70"/>
+  <text x="432" y="98" font-size="10" font-weight="bold" fill="#287D70">97.5%</text>
+
+  <text x="144" y="122" text-anchor="end" font-size="10" fill="#24465D">Mathematics</text>
+  <rect x="150" y="113" width="269.1" height="13" rx="3" fill="#287D70"/>
+  <text x="432" y="123" font-size="10" font-weight="bold" fill="#287D70">96.1%</text>
+
+  <text x="144" y="147" text-anchor="end" font-size="10" fill="#24465D">Retrieval agent</text>
+  <rect x="150" y="138" width="266.8" height="13" rx="3" fill="#287D70"/>
+  <text x="432" y="148" font-size="10" font-weight="bold" fill="#287D70">95.3%</text>
+
+  <text x="144" y="172" text-anchor="end" font-size="10" fill="#24465D">Presentation</text>
+  <rect x="150" y="163" width="266.3" height="13" rx="3" fill="#287D70"/>
+  <text x="432" y="173" font-size="10" font-weight="bold" fill="#287D70">95.1%</text>
+
+  <text x="144" y="197" text-anchor="end" font-size="10" fill="#24465D">FlashAttention-4</text>
+  <rect x="150" y="188" width="234.4" height="13" rx="3" fill="#315BCE"/>
+  <text x="432" y="198" font-size="10" font-weight="bold" fill="#315BCE">83.7%</text>
+
+  <text x="144" y="222" text-anchor="end" font-size="10" fill="#24465D">Local inference</text>
+  <rect x="150" y="213" width="126.0" height="13" rx="3" fill="#C38A20"/>
+  <text x="432" y="223" font-size="10" font-weight="bold" fill="#C38A20">45.0%</text>
+
+  <!-- annotations -->
+  <rect x="150" y="234" width="8" height="8" rx="2" fill="#315BCE"/>
+  <text x="163" y="241" font-size="9" fill="#66717D">one assignment at a time</text>
+  <rect x="286" y="234" width="8" height="8" rx="2" fill="#C38A20"/>
+  <text x="299" y="241" font-size="9" fill="#66717D">GPU driver and container storage failed</text>
+
+  <!-- ============ Panel (b): interruption composition ============ -->
+  <text x="480" y="24" font-size="13" font-weight="bold" fill="#173B70">(b) What the 38 interruptions asked for</text>
+  <text x="480" y="40" font-size="10" fill="#66717D">27 campaigns · 1,548 wall-clock hours · one request every 40.7 h</text>
+
+  <!-- stacked bar -->
+  <rect x="480" y="56" width="400" height="30" rx="4" fill="#D8E0E8"/>
+  <rect x="480" y="56" width="136.8" height="30" fill="#C38A20"/>
+  <rect x="616.8" y="56" width="105.3" height="30" fill="#B5713A"/>
+  <rect x="722.1" y="56" width="73.7" height="30" fill="#8A94A0"/>
+  <rect x="795.8" y="56" width="52.6" height="30" fill="#287D70"/>
+  <rect x="848.4" y="56" width="31.6" height="30" fill="#66717D"/>
+  <text x="548" y="76" text-anchor="middle" font-size="11" font-weight="bold" fill="#FFFDF8">34%</text>
+  <text x="669" y="76" text-anchor="middle" font-size="11" font-weight="bold" fill="#FFFDF8">26%</text>
+  <text x="759" y="76" text-anchor="middle" font-size="11" font-weight="bold" fill="#FFFDF8">18%</text>
+  <text x="822" y="76" text-anchor="middle" font-size="11" font-weight="bold" fill="#FFFDF8">13%</text>
+
+  <!-- legend rows -->
+  <rect x="480" y="104" width="11" height="11" rx="2" fill="#C38A20"/>
+  <text x="498" y="114" font-size="10" fill="#24465D">Broken infrastructure — driver, storage, auth outage, GPU window</text>
+  <text x="880" y="114" text-anchor="end" font-size="10" font-weight="bold" fill="#24465D">13</text>
+
+  <rect x="480" y="126" width="11" height="11" rx="2" fill="#B5713A"/>
+  <text x="498" y="136" font-size="10" fill="#24465D">Credentials, budget, authorization</text>
+  <text x="880" y="136" text-anchor="end" font-size="10" font-weight="bold" fill="#24465D">10</text>
+
+  <rect x="480" y="148" width="11" height="11" rx="2" fill="#8A94A0"/>
+  <text x="498" y="158" font-size="10" fill="#24465D">Missing context files</text>
+  <text x="880" y="158" text-anchor="end" font-size="10" font-weight="bold" fill="#24465D">7</text>
+
+  <rect x="480" y="170" width="11" height="11" rx="2" fill="#287D70"/>
+  <text x="498" y="180" font-size="10" font-weight="bold" fill="#173B70">Research judgment</text>
+  <text x="880" y="180" text-anchor="end" font-size="10" font-weight="bold" fill="#173B70">5</text>
+
+  <rect x="480" y="192" width="11" height="11" rx="2" fill="#66717D"/>
+  <text x="498" y="202" font-size="10" fill="#24465D">Framework defect</text>
+  <text x="880" y="202" text-anchor="end" font-size="10" font-weight="bold" fill="#24465D">3</text>
+
+  <!-- key takeaway box -->
+  <rect x="480" y="216" width="400" height="46" rx="6" fill="#FFFDF8" stroke="#C38A20" stroke-width="1.2"/>
+  <text x="492" y="233" font-size="10" fill="#24465D"><tspan font-weight="bold" fill="#173B70">60%</tspan> report a broken machine or ask for authority the system</text>
+  <text x="492" y="247" font-size="10" fill="#24465D">should not grant itself. Only <tspan font-weight="bold" fill="#287D70">13%</tspan> are cases where work was available</text>
+  <text x="492" y="256" font-size="10" fill="#24465D">and the runtime could not decide how to proceed.</text>
+</svg>
