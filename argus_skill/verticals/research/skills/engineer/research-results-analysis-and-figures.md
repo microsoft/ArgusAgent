@@ -76,8 +76,9 @@ artifact. Do not force a cross-benchmark matrix when the scientific design has a
 different natural evidence shape.
 
 Map every planned claim to `supported`, `weak`, `rejected`, `missing`, or
-`contradicted`. Missing evidence becomes a named experiment, ablation, robustness
-slice, or claim downgrade—not an estimate.
+`contradicted`. Missing evidence becomes a named experiment, ablation, or
+robustness slice — never an estimate. Downgrade a claim only when none of those
+is affordable, and record which one you could not run.
 
 For a selected idea, weak core evidence first triggers diagnosis and improvement,
 not paper writing. Audit whether the mechanism received a faithful implementation
@@ -97,10 +98,34 @@ chronological experiment report:
   an appendix when useful;
 - return to research/plan if no independently valuable thesis survives.
 
+For publishable/doctoral targets, write
+`paper/PUBLICATION_SCALE_ASSESSMENT.json` before drafting. Use official
+acceptance pages and full papers for recent same-area comparators, then compare
+the executed local evidence across models/systems, public sources, evaluation
+units, repeats or proof obligations, strongest comparisons, and
+uncertainty/formal guarantees. These dimensions calibrate the claim; they are
+not universal numeric quotas. Mark `pilot_only` or `proxy_only` truthfully. If either is
+true, the paper needs a bigger run, not a smaller sentence: return to run/plan
+and get the evidence the claim deserves. Retitling, relabelling the result a
+boundary, or writing a fuller limitations section leaves the evidence exactly
+where it was.
+
 ## 4. Route and build figures
 
 For every figure write a brief: claim, reader takeaway, role, canonical inputs,
 final physical size, uncertainty, editability, and forbidden invention.
+
+Before analysis handoff, render the paper's Figure 1 teaser/framework overview.
+For a method or system paper it should show the problem/input, the load-bearing
+mechanism or architecture, and the output/evidence path. For a theory or survey
+paper use an explanatory geometry, taxonomy, or conceptual map. Preserve an
+editable source and export a real SVG/PDF/PNG that the draft embeds. A LaTeX
+table, boxed paragraph, or `\rule` bar display inside a `figure` environment is
+not Figure 1. If no image route exists, deterministic rendering is mandatory,
+not a blocker: use PPT Master, browser-rendered HTML, FigureSpec, Draw.io,
+Mermaid/Graphviz, or another route selected below.
+Run the renderer-neutral `Paper Framework Figure Studio` S0-S7 workflow before
+authoring the chosen renderer's source; the Router alone is not a design brief.
 
 Then use `Research Visualization Router`:
 

@@ -1,6 +1,13 @@
 \section{Problem Formulation}
 \label{sec:problem}
 
+The hard part of this task class is not executing the work. It is that there is no
+number to steer by. Everything that makes the Driver's seat automatable under an
+explicit numeric reward---rank the options, check the score, stop when it
+plateaus---is unavailable
+exactly where research begins. This section states the task shape that creates that
+condition, and the quantities a runtime can still act on once the scalar is gone.
+
 \subsection{Dense-Intelligence Tasks}
 
 The public \systemname formulation defines a \emph{dense-intelligence task} as one that
@@ -13,15 +20,18 @@ Three conditions determine whether a task has this shape:
     database; it must be discovered through search and feedback.
   \item \textbf{Long horizon.} One pass is insufficient. Progress requires many
     dependent iterations over hours or days.
-  \item \textbf{Verifiability.} A task-native evaluator can distinguish genuine
-    improvement from a persuasive but incorrect claim.
+  \item \textbf{Constructible verification.} Evidence that discriminates a genuine
+    result from a persuasive but incorrect one can be \emph{obtained}---by running
+    something, measuring something, or checking something against the world. It need
+    not exist when the campaign starts.
 \end{enumerate}
 
 The defining loop is therefore proposal $\rightarrow$ execution $\rightarrow$
 measurement $\rightarrow$ revised proposal. Performance engineering, security
 research, scientific search, and quantitative research differ in domain but share
-this operational structure. The task definition excludes both open-ended ideation
-without an evaluator and fixed workflows that require time but no new decisions.
+this operational structure. The task definition excludes ideation that no
+evidence could ever settle, and fixed workflows that require time but no new
+decisions.
 
 Two of these conditions explain why such tasks have historically required a human in
 the loop. Because the answer must be invented rather than retrieved (T1), no fixed
@@ -29,15 +39,59 @@ plan survives contact with the evidence, so someone must keep deciding what to
 attempt next. Because progress spans many dependent iterations (T2), that someone
 must keep deciding for hours or days. The result is a supervision load that scales
 with the horizon precisely where the horizon matters most. Condition T3 is what makes
-the load transferable: a task-native evaluator gives the runtime a basis for judging
-its own output that does not reduce to self-assertion. \emph{Dense-intelligence tasks
+the load transferable: if discriminating evidence can be obtained, the runtime has a
+basis for judging its own output that does not reduce to self-assertion.
+
+T3 is deliberately weaker than the requirement of a ready evaluator, because that
+requirement would exclude most research. A campaign frequently opens with a question
+that is not yet well posed---which mask families a kernel must carry, whether an
+open conjecture admits a proof at all, what property of a candidate material would
+even settle the matter---and the first several missions do not optimize anything.
+They establish what would count as an answer. \emph{Constructing the evaluator is
+part of the work, not a precondition for starting it}, and this is the sharpest
+reason control must be evidence-driven rather than goal-driven: a goal-driven system
+needs its target specified in advance, which is exactly what an underdefined problem
+cannot supply. An evidence-driven one can begin with a premise, discover in week two
+that the question was wrong, and revise the objective on the record---which is what
+the campaigns in Section~\ref{sec:results} repeatedly do. What T3 rules out is not
+the underdefined problem; it is the problem where no amount of work could ever
+produce discriminating evidence, since there the runtime's only remaining basis for a
+completion claim is its own assertion. \emph{Dense-intelligence tasks
 are therefore both the tasks that most demand a Driver and the only tasks where the
-seat can responsibly be delegated.} Sections~\ref{sec:method} and \ref{sec:results}
+seat can responsibly be delegated.}
+
+The name states a requirement, not a preference. A task defined by continuity cannot
+be discharged by a supply that is not continuous: run a dense task off a discrete
+source and what actually gets executed is a sequence of restarts, each paying again
+for context the previous burst had already earned. This is why the duty cycle of
+Section~\ref{sec:duty-cycle} is a correctness property of the arrangement rather than
+an efficiency statistic. It reports whether the intelligence supplied to the task
+had the shape the task requires. Sections~\ref{sec:method} and \ref{sec:results}
 develop that delegation and measure whether the seat stays empty.
 
-We model a campaign by an objective $o$, an initial artifact $y_0$, an evaluation
-procedure $f$, and a resource budget $B$. The artifact may be code, a model, a
-dataset, an experimental harness, a proof, or a manuscript. The campaign is divided
+This section separates two kinds of formal statement, and the distinction matters
+more than any individual equation. Equations~\ref{eq:duty-cycle},
+\ref{eq:interruption-rate}, \ref{eq:interruption-partition},
+\ref{eq:progress-set}, \ref{eq:refutation-invariant}, and \ref{eq:review-funnel}
+define quantities and invariants this report measures or mechanically enforces;
+every term in them is reported in Section~\ref{sec:results}. Equation~\ref{eq:process-data} is measured in
+one direction---how much of what the runtime did leaves no trace in what it
+produced---while its decision-theoretic strengthening is not. The remainder---density,
+research value, typed compression, reuse value---are definitions that make claims
+falsifiable without yet being tested here, and we mark each as such at the point it
+appears. A reader who wants only what we can defend with
+data should read the first group and skip the second.
+
+We model a campaign by an objective $o$, an initial artifact $y_0$, a resource budget
+$B$, and an evidence structure $\mathcal{E}$. The artifact may be code, a model, a
+dataset, an experimental harness, a proof, or a manuscript. We write $\mathcal{E}$
+rather than an evaluation function deliberately. A scalar evaluator $f:y\mapsto
+\mathbb{R}$ is available in some campaigns---a benchmark verifier, a latency
+measurement---and absent in most of the ones this report is about, where the right
+measurement is itself under construction. The formalism must therefore not presume
+one. $\mathcal{E}$ is whatever the task natively supports: a scalar where one exists,
+and otherwise a typed record of what each attempt established, which
+Section~\ref{sec:no-score} specifies and Section~\ref{sec:evidence-order} orders. The campaign is divided
 into bounded missions indexed by $t$, each producing
 
 \begin{equation}
@@ -67,6 +121,25 @@ decision. \code{ManagerAdmit} is a normative operator, not one atomic production
 API: it projects over current \code{GoalContract} revisions, persisted operator
 questions, Planner replanning, Manager Stage/routing transitions, and append-only
 provenance.
+
+Two conditions distinguish this from an ordinary goal-update rule, and they are what
+the word \emph{evidence-driven} is meant to carry. First, authority may refuse a
+revision but may not erase what prompted it: for all inputs, $e_t$ appears in the
+record of round $t$ regardless of the value of $u_t$. A contradiction that has been
+observed cannot be made to un-exist by declining to act on it, so a rejected
+revision leaves a standing obligation rather than nothing. Second, the standing
+intent is the only fixed point. Writing $o_{t+1}$ for the objective component of
+$K_{t+1}$,
+\[
+  e_t \text{ refutes } o_t \ \wedge\ \iota \text{ preserved by } o'
+  \ \Longrightarrow\ o_{t+1}\neq o_t \text{ is admissible},
+\]
+whereas no evidence licenses a change to $\iota$. A goal-driven system is the
+special case in which the left conjunct is never allowed to fire; it defends $o_t$
+because $o_t$ was written down first. The asymmetry between $\iota$ and $o_t$ is
+therefore the formal content of the distinction: what the user wants is stable, and
+what the campaign is currently trying to build is a hypothesis that evidence may
+overturn.
 \end{paperbox}
 
 Figure~\ref{fig:horizon-mountain} contrasts a session-limited trajectory with the
@@ -83,7 +156,7 @@ rejected branches change the route taken by later missions.
   shows a session-limited route ending in reset. The central recurrent role loop is
   reused across eight Manager-controlled research Stages, while the blue route,
   orange rollback, and red rejected branches show that progress need not be
-  monotone. Reviewed memory, Skills, tools, verifiers, and routing persist across
+  monotone. Certified knowledge, tools, verifiers, and routing persist across
   missions. The purple path to future supervised fine-tuning and reinforcement
   learning (SFT/RL) is a research hypothesis; the current
   runtime changes persistent state while keeping model parameters fixed. Geometry
@@ -103,7 +176,14 @@ campaign repeatedly applies the transition relation
 
 where $M$, $P$, $E$, and $R$ denote Manager, Planner, Engineer, and Reviewer.
 Reviewer continuation returns work to Engineer; an accepted or blocked verdict
-returns control to Manager; and a Manager hold or rollback reopens planning. The
+returns control to Manager; and a Manager hold or rollback reopens planning. One
+further edge matters for the argument of Section~\ref{sec:endogenous-harness}: a
+Reviewer may return \code{replan\_requested} rather than a verdict on the work,
+which routes to the Manager as a challenge to the mission itself rather than to its
+execution. The Manager then keeps, revises, or replaces the plan, and the Planner
+authors any replacement. Without that edge the relation is a cycle in which every
+later, better-informed role can only accept or reject work performed under an
+earlier decision it cannot question. The
 relation is an explanatory state-machine model of the implemented control flow, not
 a claim that every transition must invoke a fresh model session.
 
@@ -127,7 +207,7 @@ each transition.
 
 \subsection{Dense-Intelligence Density}
 
-The website expresses useful intelligence per unit wall-clock time as
+We express useful intelligence per unit wall-clock time as
 
 \begin{equation}
   \rho_I(T)
@@ -185,8 +265,8 @@ Appendix~\ref{app:formula-instantiation} gives the full calculation.
 
 \subsection{Online Life and Runtime Evolution}
 
-The second website object separates model parameters from the operating state
-around the model:
+The second object of the public formulation separates model parameters from the
+operating state around the model:
 
 \begin{equation}
   \begin{aligned}
@@ -196,13 +276,32 @@ around the model:
   \label{eq:runtime-update}
 \end{equation}
 
-with the public state definition
+with the state definition
 
 \begin{equation}
-  H_t=\left\{\text{Memory},\text{Skills},\text{Tools},
-  \text{Verifiers},\text{Routing}\right\}.
+  H_t=\left\{\underbrace{\text{Knowledge}}_{\text{wiki}\,+\,\text{skills}},
+  \text{Memory},\text{Tools},\text{Verifiers},\text{Routing}\right\}.
   \label{eq:website-state}
 \end{equation}
+
+\emph{Knowledge} and \emph{Memory} are separated deliberately, and this report
+treats the distinction as load-bearing. \textbf{Knowledge} is what the runtime has
+established and may reuse: a wiki of source-linked pages recording what a domain
+turned out to be like, and a versioned library of executable skills. It is admitted
+only through certification, it is scoped to where it was shown to hold, and it is
+intended to outlive the campaign that produced it. \textbf{Memory} is what the
+runtime needs in order to keep working: the append-only event journal, the mission
+backlog, durable artifacts and files on disk, and the per-role session context
+carried across a rolling window. Memory is written as a byproduct of running and is
+not certified, because it records what happened rather than what is true.
+
+The separation matters because the two fail differently. Memory loss is an
+availability failure---a lost context file costs a mission its bearings, which
+Section~\ref{sec:duty-cycle} shows as interruptions and lost duty cycle---while
+uncertified knowledge is a correctness failure that propagates into every later
+campaign that reuses it. They therefore warrant different gates: memory must be
+durable, and knowledge must be earned. A system that conflates them either certifies
+its scratch space or trusts its conclusions the way it trusts a log line.
 
 $E_t$ is the subset of results admitted from mission $t$. The equality for
 $\theta$ is a scope condition: online evolution does not require a gradient update
@@ -210,30 +309,35 @@ to the underlying model. Section~\ref{sec:method} refines $H_t$ into named owner
 surfaces, including task/evaluation definitions $Q_t$; subsequent updates treat
 $Q_t$ as a component of $H_t$.
 The contract argument records the admitted report-level projection. The update $U$
-is partial; many missions change only memory, and some change no reusable component.
+is partial; many missions write only memory, and some change no reusable component.
 
 \subsection{Capability-Set Expansion}
 
-Let $C_t$ denote the effective capability set available at time $t$. The website
-writes verification-gated admission and the desired breadth/depth behavior as
+Let $C_t$ denote the effective capability set available at time $t$. Admission into
+it is gated rather than automatic:
 
 \begin{equation}
-  \begin{aligned}
-    C_{t+1}
-      &= C_t\cup\{c:\operatorname{Verify}(c,E_t)\geq\epsilon\}, \\
-    W_{t+1} &\geq W_t,
-    & D_{t+1}(d) &\geq D_t(d).
-  \end{aligned}
+  C_{t+1}
+    = C_t\cup\{c:\operatorname{Verify}(c,E_t)\geq\epsilon\},
   \label{eq:ood-expansion}
 \end{equation}
 
-where $W_t$ is frontier width across domains and $D_t(d)$ is depth within domain
-$d$. The inequalities define retention desiderata over validated capability.
-Skills can become stale, verifiers can be revised, and performance can regress on
-harder instances. A negative result can still add value by excluding a failed branch even when the
-effective capability set does not grow.
+so a capability enters only with evidence $E_t$ clearing the threshold its surface
+requires. We deliberately do not accompany this with monotonicity conditions on
+frontier width or per-domain depth. Such inequalities would be false: skills go
+stale, verifiers are revised downward, and performance regresses on harder
+instances---and a formal model that asserts otherwise is contradicted by the same
+report's own longitudinal data, where a late window rebounds in both cost metrics.
+Growth of $C_t$ is a hypothesis to be measured per campaign, not a property of the
+construction. The gate in Equation~\ref{eq:ood-expansion} constrains only what may
+enter, which is the part the runtime actually controls. A negative result can still
+add value by excluding a failed branch even when $C_t$ does not grow at all.
 
 \subsection{Research Value}
+
+\emph{Not measured as defined.} The terms below are not separately estimated in
+this report; the de-duplicated artifact inventory of Section~\ref{sec:results} is a
+count, not an instantiation of this integral.
 
 Dense activity matters only when it produces new, valid, reusable information. The
 website therefore defines the accumulated research value over horizon $T$ as
@@ -253,9 +357,176 @@ Equation~\ref{eq:research-value} separates Token volume from the properties that
 make a result useful: information gain, validity, and reuse. The experiments measure
 these components in their native task units.
 
+\subsection{Unattended Operation: the Two Quantities We Measure}
+\label{sec:unattended-formal}
+
+The quantities defined below are the ones this report measures directly, from
+ledgers the runtime writes during ordinary operation. We state them here, with the
+rest of the formalism, rather than only at the point of use, because they are the
+report's primary empirical claim and because their definitions contain the choices a
+reader should be able to contest.
+
+Fix a campaign with wall-clock span $W=[w_0,w_1]$. Let $\{[s_i,c_i]\}$ be the
+model-call intervals recorded in the settled usage ledger, and let $U\subseteq W$ be
+their union. Let $G\subseteq W$ be the time in which no work was available---an empty
+backlog awaiting assignment---or the execution environment was unusable. Duty cycle
+is the occupied fraction of the time that remains:
+
+\begin{equation}
+  \mathrm{DutyCycle}=\frac{|U|}{|W|-|G|}.
+  \label{eq:duty-cycle}
+\end{equation}
+
+Three choices in Equation~\ref{eq:duty-cycle} are load-bearing and each is
+contestable. First, $U$ is a union of call \emph{intervals} rather than a count of
+log events: a single reasoning call can exceed two hours, during which the event
+stream is legitimately silent, so any silence threshold would score deep reasoning as
+idleness. Second, external work---synthesis, static timing, a training run---consumes
+no Tokens and appears in neither $U$ nor $G$, so it is neither credited nor
+penalised; a campaign dominated by external jobs will report a low duty cycle for a
+reason that has nothing to do with autonomy. Third, subtracting $G$ answers ``how
+well does it use time it could have used'' rather than ``how much of the calendar did
+it occupy''; we report the undivided form, $|U|/|W|$, alongside it, and the two
+differ substantially.
+
+Let $\mathcal{A}$ be the set of system-initiated requests for a human---events the
+runtime emits when it will not proceed without an answer. The interruption rate is
+
+\begin{equation}
+  \mathrm{IR}=\frac{|\mathcal{A}|}{|W|},
+  \qquad\text{reported as its reciprocal } |W|/|\mathcal{A}| \text{ in hours.}
+  \label{eq:interruption-rate}
+\end{equation}
+
+The membership condition is what makes $\mathrm{IR}$ meaningful. An operator who
+volunteers a status question is not in $\mathcal{A}$, because the runtime was not
+waiting on them; conversely a request that blocks progress counts even if the
+operator never answers it. This is measurable precisely because the runtime must
+already distinguish the two cases in order to decide whether to keep working.
+
+Neither quantity is interpretable alone, and the failure modes are symmetric: a
+system that does nothing achieves $\mathrm{IR}=0$, and a system looping uselessly
+achieves $\mathrm{DutyCycle}=1$. Reported together they bound the case of interest.
+We therefore also partition $\mathcal{A}$ by what was asked, since a request the
+runtime should not have needed to make and a request no autonomy improvement could
+eliminate are different facts:
+
+\begin{equation}
+  \mathcal{A}=\mathcal{A}_{\mathrm{infra}}\ \sqcup\
+  \mathcal{A}_{\mathrm{auth}}\ \sqcup\
+  \mathcal{A}_{\mathrm{ctx}}\ \sqcup\
+  \mathcal{A}_{\mathrm{judg}}\ \sqcup\
+  \mathcal{A}_{\mathrm{defect}},
+  \label{eq:interruption-partition}
+\end{equation}
+
+for broken infrastructure, operator-owned authority, missing context, research
+judgment, and framework defect respectively. Only
+$|\mathcal{A}_{\mathrm{judg}}|/|\mathcal{A}|$ measures the thing the Driver framing
+is about---work was available and the runtime could not decide how to proceed. The
+authority share is bounded below by design rather than by capability, since
+Section~\ref{sec:method} makes those escalations mandatory, and the infrastructure
+share is a property of the deployment rather than of the agent. A single aggregate
+interruption rate conceals all three distinctions, which is why we report the
+partition and not only the rate.
+
+\subsection{Ordering Progress Without a Scalar}
+\label{sec:evidence-order}
+
+If no evaluator $f$ is available, the runtime still has to answer whether the last
+round advanced the campaign. Replacing $f$ with a model-produced score reintroduces
+the party whose work is being scored; Section~\ref{sec:related} records why that is
+unreliable. We therefore give $\mathcal{E}$ the weakest structure that supports the
+decisions the loop actually makes: not a total order, but a partial one.
+
+Each round closes with a typed transition $\delta\in\Delta$ over the mission
+frontier, where $\Delta$ is the fixed vocabulary of
+Section~\ref{sec:no-score}. Write $\Delta^{+}\subset\Delta$ for the transitions that
+count as forward motion. The essential property is that $\Delta^{+}$ is
+\emph{not} the set of transitions that improve an artifact:
+
+\begin{equation}
+  \Delta^{+}=\{\,\code{artifact\_improved},\ \code{risk\_reduced},\
+  \code{uncertainty\_reduced},\ \code{information\_gain},\
+  \code{bounded\_regression},\ \code{recovered}\,\},
+  \label{eq:progress-set}
+\end{equation}
+
+so a round that refutes a route, or that accepts a bounded and budgeted cost in
+exchange for retiring a risk, advances the campaign exactly as a round that produced
+a faster kernel does. This is measurable, and the measurement is the reason the
+vocabulary exists rather than a single score. Across the campaigns of
+Section~\ref{sec:duty-cycle} the runtime recorded \FrontierTotal{} frontier
+transitions, of which \FrontierProgress{} fall in $\Delta^{+}$. Only
+\FrontierArtifact{} of those---\FrontierArtifactPct\%---are
+\code{artifact\_improved}. \textbf{The remaining \FrontierInvisiblePct\% of recorded
+progress consists of reduced uncertainty, information gained from failure, retired
+risk, and bounded repair}: real advances that a scalar objective registers as zero or
+as loss. What $\Delta^{+}$ excludes is repetition without change
+(\code{unchanged\_failure}) and regressions that are unbounded or unexplained. A
+campaign is therefore progressing when its frontier keeps moving through
+$\Delta^{+}$, whether or not any measured quantity has improved---and this is the
+ordinary case in research, not an edge case. Under a scalar objective the elements
+of $\Delta^{+}$ other than \code{artifact\_improved} are invisible, which is the
+precise sense in which a score-driven runtime is blind to most of what a campaign
+produces.
+
+\paragraph{The refutation invariant.}
+An evidence record is a triple $(x,\phi,\sigma)$: an execution status
+$x\in\{\code{completed},\code{blocked},\code{failed}\}$, a failure class $\phi$, and a
+hypothesis status $\sigma\in\{\code{untested},\code{inconclusive},
+\code{supported},\code{refuted}\}$. Each vertical declares a set $\Phi_{\lnot}$ of
+failure classes that carry no information about the premise---absent toolchains,
+unavailable devices, denied permissions, underpowered pilots. The runtime enforces
+
+\begin{equation}
+  \phi\in\Phi_{\lnot}\ \Longrightarrow\ \sigma=\code{untested},
+  \label{eq:refutation-invariant}
+\end{equation}
+
+which is checked mechanically rather than left to the judgement of whichever role
+writes the record---the validator rejects the record instead of trusting the author,
+so the invariant cannot be violated by a role that would prefer a cleaner story. We
+report it as an enforced property of the implementation rather than as a measured
+rate: the campaigns of Section~\ref{sec:duty-cycle} ran under verticals that do not
+emit the four-state record, so we have no field data on how often the invariant
+binds, only the guarantee that where it applies it cannot be bypassed. The invariant is what makes an unattended campaign safe to run
+against a flaky environment: without it, a system that cannot distinguish ``the
+experiment did not run'' from ``the idea is wrong'' will discard correct hypotheses
+at the rate its infrastructure fails, and the resulting record will be confidently
+and permanently wrong. Equation~\ref{eq:refutation-invariant} costs the runtime
+nothing when the environment is healthy and is the difference between a usable and a
+poisoned frontier when it is not.
+
+\paragraph{Evidence sufficiency is relative to the claim.}
+The bar $\mathcal{E}$ must clear is not fixed. Let $\Pi=(\code{explore},
+\code{develop},\code{certify})$ be ordered by strictness. A mission at
+\code{explore} asks only whether the premise is real and worth another probe;
+\code{certify} asks whether the result can be published as it stands. The profile is
+derived from the campaign stage, a final-submission scope forces \code{certify}, and
+any change that lowers the bar requires explicit confirmation. Formally the
+admissibility predicate is indexed by profile, $\operatorname{Adm}_{\pi}$ with
+$\pi\in\Pi$, and is monotone in strictness: $\pi\preceq\pi'$ implies
+$\operatorname{Adm}_{\pi'}\subseteq\operatorname{Adm}_{\pi}$. A single global
+threshold cannot hold both ends of a campaign---set at \code{certify} it stops
+exploration, set at \code{explore} it admits unsupported claims---which is why the
+profile is a parameter of the gate rather than a constant of the system.
+
 \subsection{The Information Advantage of Process Data}
 
-Finally, the public formalization distinguishes the accepted artifact from the
+The inclusion in Equation~\ref{eq:process-data} is strict by a measurable margin in
+these campaigns. Of \MissionTotal{} bounded missions recorded across them,
+\MissionDone{} reached a \code{done} verdict and \MissionNonDone{}---%
+\MissionNonDonePct\%---did not, including \MissionBlocked{} that the runtime
+explicitly declared blocked. Those missions produced no accepted artifact and are
+therefore absent from $D_{\mathrm{final}}$ entirely, while their objectives,
+attempts, measurements, and verdicts remain in $D_{\mathrm{process}}$. Nearly a fifth
+of what the runtime did is invisible to any record of what it produced.
+
+\emph{The decision-theoretic reading below is not measured.} It bounds what retention
+could be worth; nothing in it is an empirical claim about \systemname.
+
+Finally, we distinguish the accepted artifact from the
 trajectory that produced it:
 
 \begin{equation}
@@ -273,8 +544,9 @@ grounded material for later skill construction or evaluation. \systemname retain
 typed, privacy-preserving observations and verdicts rather than private
 chain-of-thought transcripts.
 
-The set inclusion in Equation~\ref{eq:process-data} can be strengthened into a
-decision-theoretic statement. Let $P$ denote a typed process record and let
+The set inclusion in Equation~\ref{eq:process-data} has a standard
+decision-theoretic reading, which we state because it fixes what the claim is
+\emph{not}. Let $P$ denote a typed process record and let
 $Y=g(P)$ be its final-artifact projection. For a downstream task $q$ with target
 $Z_q$, loss $\ell_q$, and decision policy $\pi$, define the minimum achievable risk
 
@@ -284,14 +556,22 @@ $Z_q$, loss $\ell_q$, and decision policy $\pi$, define the minimum achievable r
   \label{eq:downstream-risk}
 \end{equation}
 
-\begin{paperbox}{Proposition 1: process-data dominance}
-If $Y=g(P)$, then $\mathcal{R}_q(P)\leq\mathcal{R}_q(Y)$ for every downstream
-decision problem $q$. The inequality is strict for some $q$ whenever two process
-records can yield the same final artifact while implying different optimal next
-actions. The proof is immediate: every policy using $Y$ can be reproduced from
-$P$ by first applying $g$, while the reverse simulation need not exist. This is the
-Blackwell-information ordering specialized to a research trajectory
-~\citep{blackwell1953equivalent}.
+\begin{paperbox}{Remark 1: process-data dominance is an upper bound, not a result}
+If $Y=g(P)$ then $\mathcal{R}_q(P)\leq\mathcal{R}_q(Y)$ for every downstream decision
+problem $q$, since any policy using $Y$ is reproducible from $P$ by first applying
+$g$. This is the data-processing inequality under the Blackwell ordering
+~\citep{blackwell1953equivalent} and it is true by construction; we label it a remark
+rather than a proposition because nothing here is being proved about \systemname.
+Strictness is likewise not established in general---it holds for a given $q$ only
+when two records with the same projection imply different optimal actions, which is a
+statement about the task family, not about retention.
+
+What the remark does is locate the burden. Retaining the trajectory cannot hurt
+informationally, so the interesting question is entirely whether a bounded, typed
+projection of it preserves enough to change later behaviour at a cost worth paying.
+That is an empirical claim about $\psi$ below and about the retained skills,
+verifiers, and refuted routes of Section~\ref{sec:method}---not something the
+inequality settles.
 \end{paperbox}
 
 Dominance is informational, not computational. A raw trajectory can be too large,
@@ -307,13 +587,25 @@ against retrieval and validation cost:
   \label{eq:process-compression}
 \end{equation}
 
-Equation~\ref{eq:process-compression} explains why an append-only event tape and a
-bounded reviewed checkpoint serve different purposes. The tape preserves the more
-informative experiment; the checkpoint approximates a decision-useful compression
-under a finite context budget. Failed branches belong in the compression when they
-change the next optimal action, not merely because they occurred.
+Equation~\ref{eq:process-compression} is a specification, not a construction: the
+minimizer ranges over all compressions and is not computable. Its use here is to
+name the trade-off the runtime is making, and in particular to show that the two
+retention surfaces cannot be collapsed into one. The unbounded term
+$\mathcal{R}_q(\psi(P))$ is minimized by keeping everything, which the append-only
+event tape does; the bounded constraint $\operatorname{size}(\psi(P))\leq b$ together
+with the read cost $C_{\mathrm{read}}$ is what forces a second, lossy surface, which
+the reviewed checkpoint is. A system with only a tape pays unbounded read cost at
+every mission start; a system with only a checkpoint cannot recover the evidence that
+justified a past decision when a later one contradicts it. \systemname{} keeps both
+because the objective has two terms, and the selection criterion follows: a failed
+branch belongs in the bounded surface when it changes the next optimal action, not
+merely because it occurred.
 
 \subsection{Reusable State and Compounding Intelligence}
+
+\emph{Not measured as defined.} The quantity below is a counterfactual; what
+Section~\ref{sec:results} reports is a confounded observational proxy, and the two
+are kept under separate names for that reason.
 
 Process data compounds only when an admitted state update improves later work. Let
 $H_t\oplus\Delta H_t$ denote the state after accepting mission $t$, and let
@@ -326,19 +618,24 @@ $q_{t+1:t+L}$ be the next $L$ tasks. We define the discounted reuse value
     \mathcal{R}_{q_{t+j}}(H_t)
     -\mathcal{R}_{q_{t+j}}(H_t\oplus\Delta H_t)
   \right].
-  \label{eq:reuse-gain}
+  \label{eq:reuse-value}
 \end{equation}
 
-$G_L>0$ means that the accepted memory, skill, verifier, routing rule, or certified
-dead branch reduces future loss under a prespecified task distribution. $G_L<0$
+$G_L>0$ means that the accepted wiki page, skill, verifier, routing rule, or
+certified dead branch reduces future loss under a prespecified task distribution. $G_L<0$
 captures negative transfer. This definition turns ``compounding intelligence''
 from monotone rhetoric into a counterfactual claim: reuse must outperform a frozen
-state on matched future tasks. Workflow-memory experiments show that induced
+state on matched future tasks. We are explicit that this report does not measure
+it. What Section~\ref{sec:results} reports is a startup-versus-mature difference
+across waves of one sequential run, which shares a sign with $G_L$ but is confounded
+by task composition and ordering; we label that quantity
+$\hat{G}_{\mathrm{obs}}$ and keep it separate. Obtaining $G_L$ requires replaying
+matched tasks against frozen and accumulated state, which we have not run. Workflow-memory experiments show that induced
 reusable routines can improve success and reduce steps
 ~\citep{wang2024workflowmemory}. Section~\ref{sec:discussion} connects this quantity
 to the current \systemname traces.
 
-The website's density and research-value equations can then be joined into a
+The density and research-value equations can then be joined into a
 protocol-specific \emph{verified reusable yield}:
 
 \begin{equation}
@@ -362,7 +659,33 @@ reported in Appendix~\ref{app:formula-instantiation}.
 
 \subsection{Review as Selective Error Correction}
 
-Let $C$ denote whether a proposed state increment is correct, $A$ whether the
+The observable structure of review is a nested funnel, and stating it as one prevents
+a arithmetic error the counts otherwise invite. Over a task population $\mathcal{T}$,
+routing partitions it into independently reviewed and self-reviewed work,
+$\mathcal{T}=\mathcal{T}_R\sqcup\mathcal{T}_S$. The routed set partitions again by
+first verdict into accepted, revision-requested, and blocked,
+$\mathcal{T}_R=\mathcal{T}_{\mathrm{acc}}\sqcup\mathcal{T}_{\mathrm{rev}}\sqcup
+\mathcal{T}_{\mathrm{blk}}$. Recovery is then measured \emph{inside}
+$\mathcal{T}_{\mathrm{rev}}$ rather than beside it:
+
+\begin{equation}
+  \mathcal{T}_{\mathrm{strict}}\ \subseteq\
+  \mathcal{T}_{\mathrm{pass}}\ \subseteq\
+  \mathcal{T}_{\mathrm{rev}},
+  \label{eq:review-funnel}
+\end{equation}
+
+where $\mathcal{T}_{\mathrm{pass}}$ are the tasks that subsequently clear the
+official verifier and $\mathcal{T}_{\mathrm{strict}}$ those that additionally
+complete the \code{continue}$\rightarrow$revision$\rightarrow$\code{done} loop. The
+inclusions are the point: verifier pass and strict rescue are milestones within the
+revision-requested group, not sibling outcome classes, so their counts must not be
+added to the partition above. Section~\ref{sec:results} reports every term of both
+Equation~\ref{eq:review-funnel} and the partition preceding it, which is what makes
+the funnel checkable rather than a summary statistic.
+
+What the funnel cannot show is the other side of the channel. Let $C$ denote whether
+a proposed state increment is correct, $A$ whether the
 Reviewer accepts it, $p=\Pr(C=1)$ the proposal base rate,
 $\alpha=\Pr(A=1\mid C=1)$ Reviewer sensitivity, and
 $\beta=\Pr(A=1\mid C=0)$ false-acceptance rate. Bayes' rule gives
@@ -373,10 +696,18 @@ $\beta=\Pr(A=1\mid C=0)$ false-acceptance rate. Bayes' rule gives
   \label{eq:review-precision}
 \end{equation}
 
-If $\alpha>\beta$, accepted state is more precise than the proposal stream; review
-acts as a selective error-correction channel. Its operating point balances accepted
-precision, recall, and Token cost. Section~\ref{sec:results} reports the observed
-repair and recovery rates.
+If $\alpha>\beta$, accepted state is more precise than the proposal stream and review
+acts as a selective error-correction channel; its operating point trades accepted
+precision against recall and Token cost. We report the identification problem rather
+than the estimate. The observed data give the recovery side of this channel---of the
+\ReviewerRevisionRequested{} tasks on which the Reviewer withheld completion,
+\ReviewerVerifierRecovered{} subsequently passed the official verifier---which
+bounds sensitivity from below on rejected work but says nothing about $\beta$,
+because a false acceptance is by construction not re-examined. Estimating $\beta$
+requires randomized routing with an external grader applied to accepted work as well
+as rejected work, which we have not run and list in
+Section~\ref{sec:limitations}. Equation~\ref{eq:review-precision} is therefore stated
+to make explicit which term the present evidence does \emph{not} constrain.
 
 \subsection{Role-Resolved Vertical Traces}
 
@@ -404,5 +735,6 @@ A vertical trace is useful when these tuples remain linked across many missions.
 It shows whether the objective survived failures, whether the Planner consumed
 previously accepted state, whether the Engineer changed real artifacts, whether
 the Reviewer rejected or redirected incomplete work, and which decisions became
-inputs to the next mission. This explanatory model organizes the Agent workflow;
-Section~\ref{sec:vertical-trace} applies it to one mathematical campaign.
+inputs to the next mission. None of it reduces to a single number, which is the
+condition this section began from; Section~\ref{sec:vertical-trace} follows one
+mathematical campaign through it, decision by decision.

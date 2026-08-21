@@ -1,21 +1,26 @@
 \section{Analysis and Discussion}
 \label{sec:discussion}
 
-\subsection{What the Duty-Cycle Result Does and Does Not Show}
+\subsection{Reading the Duty-Cycle Result}
 
 The central measurement of this report is that the Driver's seat stayed empty:
 \DutyInterruptions{} human requests across \DutyWallHours{} hours, one every
 \DutyInterval{} hours, at \DutyCycleLow--\DutyCycleHigh\% duty cycle with work in
-hand. Three readings of that result are worth separating.
+hand. What that buys, and what it does not, is worth separating.
 
-It does \emph{not} show that the runtime never needs a person. It shows that the
-requests concentrate where a person is genuinely required. Two thirds of them report
+The requests concentrate where a person is genuinely required, which is a stronger
+result than their scarcity. Two thirds of them report
 broken infrastructure or ask for authority the machine should not grant itself, and
 both categories would survive any improvement in agent reasoning; a corrupted
 container store is not an autonomy problem, and a system that quietly provisioned its
-own credentials would be a worse system, not a better one. The
+own credentials would be a worse system, not a better one. The July 2026 Hugging Face
+intrusion is that claim demonstrated at cost: a highly capable agent, unattended and
+unbounded, spent four and a half days acquiring access it was never granted in order
+to reach a benchmark answer~\citep{huggingface2026intrusion}. Capability was not the
+missing ingredient there, and the same holds across the broader pattern of model
+capability folded into malicious operations~\citep{openai2026disrupting}. The
 \DutyJudgmentPercent\% that are research judgment is the number that would fall if
-the underlying model improved.
+the underlying model improved; the other two thirds would not.
 
 It does \emph{not} show that unattended time is free. The residual gap between the
 observed duty cycle and unity is dominated by infrastructure failure and lost context
@@ -28,9 +33,19 @@ What it does show is a change in what bounds the work. Under turn-by-turn
 supervision, the effective operating window of an agent is its operator's attention,
 and no amount of accuracy extends it. Once completion has an owner other than the
 executor, the window becomes a property of the runtime and its infrastructure.
-Sections~\ref{sec:delivery} and the benchmark results below address the obvious
-follow-up---whether the hours produce anything---because duty cycle alone would
-describe an expensive idle loop equally well.
+
+The substitution is worth stating plainly, because it is a change of regime and not
+of constant. A system bounded by operator attention scales with people: to run twice
+the research, staff twice the operators, and the second operator is as scarce and as
+non-parallel as the first. A system bounded by infrastructure scales with
+infrastructure, which is procurable. Nothing here makes research cheap, and nothing
+here removes the human from the loop---\DutyInterruptions{} requests were still made,
+and the ones that matter are exactly the ones a machine should not settle. What it
+removes is the requirement that a person be \emph{present} for the work to continue,
+and that requirement is what has kept the output of agentic systems tied to the
+length of a working day. Sections~\ref{sec:delivery} and the benchmark results below
+address the obvious follow-up---whether the hours produce anything---because duty
+cycle alone would describe an expensive idle loop equally well.
 
 \subsection{System-Level Performance}
 
@@ -75,9 +90,9 @@ gates reject seven weak method routes before they are scaled into an unsupported
 positive claim; Planner proposes reframing the accumulated failures as a diagnostic study;
 Engineer then completes the 15-cell canonical matrix; and Manager accepts two late
 rollbacks when submission checks expose scorer-provenance and telemetry defects.
-The recorded sequence is consistent with role separation redirecting the scientific
-trajectory: failure is
-retained as information, while only reviewed state controls the next Stage.
+Role separation redirected the scientific trajectory here, and the record shows
+where: failure was retained as information, and only reviewed state moved the
+campaign forward.
 
 The case also separates artifact completion from process certification. Five final
 assurance snapshots pass; the compositional-matching project retains a stale blocked
@@ -109,9 +124,8 @@ The two longitudinal views expose complementary parts of this claim. The SWE-Ben
 Pro trajectory measures how solve Tokens and active time vary as shared state
 accumulates, while the mathematical campaign shows direct semantic reuse: later
 missions consume earlier definitions, bounds, rejected routes, and bridge lemmas.
-Neither trace isolates a single update mechanism. A matched experiment that replays
-the same tasks with frozen versus accumulated runtime state would be required to
-attribute a causal gain to memory, Skills, verification, or routing separately.
+Neither isolates a single mechanism: separating wiki from skills from routing
+requires replaying matched tasks against frozen state, which we list as future work.
 
 \subsection{Endogenous Harnessing: When a Plan Becomes a Constraint}
 \label{sec:endogenous-harness}
@@ -179,8 +193,8 @@ and understood the cascading invariant; it could not act on any of them in time
 because later, better-informed roles had no authority to revise the task boundary.
 The binding constraint on this class of system is methodological rather than
 cognitive, which is also why the remedy is a change in authority routing rather than
-a stronger model. It is worth noting how this failure surfaces under unattended
-operation: with a human Driver, a badly framed plan is caught the next time the
+a stronger model. This failure is specific to the unattended
+setting. With a human Driver, a badly framed plan is caught the next time the
 operator reads the output. Once the seat is delegated, nothing catches it unless the
 runtime itself provides the channel. Longitudinal evidence on how often the reopened
 channel fires is future work; the campaign tally now reports objective-level
@@ -203,7 +217,7 @@ Section~\ref{sec:rsi-vertical} supplies the other half of that path, and the
 relationship between the two halves is the substantive point. Self-improvement
 separates into a parameter-invariant axis, which this report measures, and a
 parameter-changing axis, which it does not. The first compounds within a fixed
-capability ceiling: retained skills, verifiers, routing, and refuted routes make
+capability ceiling: retained knowledge, verifiers, routing, and refuted routes make
 later missions cheaper and better targeted, but no accumulation of state makes a
 frozen backbone reason beyond its limit. The second moves the ceiling.
 
@@ -229,7 +243,7 @@ manuscripts; that measurably improves its retained state under an unchanged back
 and that has built the pretraining stack which is the precondition for participating
 in weight production at all. The stages of the model-development pipeline it has
 taken over, and those still held by humans, are enumerated rather than asserted---and
-that enumeration is what we think an honest claim in this area currently looks like.
+that enumeration is what an honest claim in this area currently looks like.
 The useful test is not whether a system can write a paper about AI, but whether it
 can move model capability; when a system is not only the object being trained but
 also a subject doing the training, the interesting question stops being whether
@@ -282,8 +296,10 @@ underdefined at the start---no one could specify in advance which mask families 
 tile scheduler would tolerate, or that a determinism defect would appear only at
 batch size eight---and it is maximally verifiable at the end, because parity is
 bit-exact, latency is measured on the same hardware with the same shapes, and a
-compilation that crashes is not a matter of opinion. That combination is exactly the
-regime in which a Driver is both necessary and safe to delegate.
+compilation that crashes is not a matter of opinion. That combination---underdefined
+at the start, decidable at the end---is what condition T3 of
+Section~\ref{sec:problem} asks for, and it is exactly the regime in which a Driver is
+both necessary and safe to delegate.
 
 It also supplies the strongest external check available to us. Benchmarks and papers
 in this report are, ultimately, evaluated by harnesses and standards we selected.
@@ -327,8 +343,10 @@ in the other it stops at the same validator the selection optimizes against.
 
 \subsection{Connecting Theory and Results}
 
-Table~\ref{tab:theory-results} connects the process-to-capability model to the
-measurements reported in Sections~\ref{sec:results} and~\ref{sec:vertical-trace}.
+A formalism earns its place by being checkable against something. Each row of
+Table~\ref{tab:theory-results} pairs a component of the process-to-capability model
+with the measurement that bears on it, so that a reader who doubts the model knows
+which number to attack.
 
 \begin{table}[H]
 \centering

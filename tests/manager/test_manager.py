@@ -103,6 +103,55 @@ def test_contextual_route_retries_missing_standalone_execution_task(
     assert "EXECUTION_TASK is required" in runner.calls[1]["prompt"]
 
 
+def test_standalone_route_retries_project_domain_in_domain_field(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ARGUS_SKILL_MANAGER_FAST_ROUTE", "0")
+    domain_dir = tmp_path / "research" / "DOMAINS"
+    domain_dir.mkdir(parents=True)
+    (domain_dir / "apple_mlx_inference.json").write_text(
+        json.dumps({
+            "name": "apple_mlx_inference",
+            "purpose": "Apple Silicon deployment and inference optimization",
+            "status": "formal",
+            "stages": ["deploy", "profile", "benchmark"],
+        }),
+        encoding="utf-8",
+    )
+    runner = _SequenceDecisionRunner([
+        {
+            "choice": "existing",
+            "vertical": "research",
+            "domain": "apple_mlx_inference",
+            "workflow_mode": "staged",
+            "research_target_level": "publishable",
+            "research_direction_mode": "broad",
+        },
+        {
+            "choice": "existing",
+            "vertical": "research",
+            "domain": "",
+            "workflow_mode": "staged",
+            "research_target_level": "publishable",
+            "research_direction_mode": "broad",
+            "target_venue": "ICLR",
+        },
+    ])
+
+    decision = Manager(project_root=tmp_path, runner=runner).decide_vertical(
+        "Produce a complete original ICLR paper about on-device computer-use agents."
+    )
+
+    assert decision.vertical == "research"
+    assert decision.domain == ""
+    assert [call["run_label"] for call in runner.calls] == [
+        "manager-classify-grounded",
+        "manager-classify-field-retry",
+    ]
+    assert "project domain" in runner.calls[1]["prompt"]
+
+
 def test_direct_software_handoff_skips_duplicate_manager_grounding(
     tmp_path,
 ) -> None:
@@ -260,6 +309,38 @@ def test_manager_rejects_direct_alias_conflicting_with_persisted_staged_mode(
         Manager(project_root=tmp_path, runner=runner).decide_vertical(
             "repair the repository"
         )
+
+
+def test_manager_allows_new_handoff_to_raise_persisted_route_contract(
+    tmp_path,
+) -> None:
+    persist_vertical(
+        tmp_path,
+        "research",
+        workflow_mode="direct",
+        research_target_level="exploratory",
+        research_direction_mode="locked",
+    )
+    runner = _DecisionRunner({
+        "choice": "existing",
+        "name": "research",
+        "workflow_mode": "staged",
+        "research_target_level": "publishable",
+        "research_direction_mode": "broad",
+        "execution_task": "run real experiments for the stronger objective",
+        "rationale": "the new request needs dependent evidence tracks",
+    })
+
+    decision = Manager(project_root=tmp_path, runner=runner).decide_vertical(
+        "run real experiments for a submission-grade result",
+        allow_route_contract_change=True,
+    )
+
+    assert decision.vertical == "research"
+    assert decision.workflow_mode == "staged"
+    assert decision.research_target_level == "publishable"
+    assert decision.research_direction_mode == "broad"
+    assert "new operator handoff" in runner.calls[0]["prompt"]
 
 
 def test_manager_recovers_direct_mode_from_legacy_persisted_alias(
@@ -829,11 +910,11 @@ def test_empty_workspace_builtin_research_does_not_require_ceremonial_tool_use(
     )
 
     assert decision.vertical == "research"
-    assert decision.workflow_mode == "direct"
+    assert decision.workflow_mode == "staged"
     assert runner.calls == ["manager-classify-fast"]
 
 
-def test_company_due_diligence_cannot_enter_publication_workflow(
+def test_exploratory_research_keeps_manager_selected_staged_workflow(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -855,7 +936,10 @@ def test_company_due_diligence_cannot_enter_publication_workflow(
     assert decision.vertical == "research"
     assert decision.research_target_level == "exploratory"
     assert decision.target_venue == ""
-    assert decision.workflow_mode == "direct"
+    # Staged is an execution topology, not a publication claim. The exploratory
+    # target keeps venue/idea bootstraps disabled while allowing dependent
+    # evidence tracks to continue without another operator prompt.
+    assert decision.workflow_mode == "staged"
     assert "Choose workflow separately" in runner.calls[0]["prompt"]
     assert "papers and surveys are `research`" in runner.calls[0]["prompt"]
 

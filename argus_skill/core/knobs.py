@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass
 from typing import Mapping
 
+from ..agent_cli.runner_backend import SUPPORTED_BACKENDS
+
 
 @dataclass(frozen=True)
 class Knob:
@@ -61,28 +63,39 @@ DEFAULT_MAX_ACTIVE_DAEMONS = 64
 KNOBS: tuple[Knob, ...] = (
     # --- backend / runner ---
     Knob(
+        "ARGUS_SKILL_RUNNER_BACKEND",
+        "codex",
+        "shared agent backend: selected by setup; "
+        + " | ".join(SUPPORTED_BACKENDS),
+        "backend",
+        cockpit=True,
+    ),
+    Knob(
         "ARGUS_SKILL_LIFE_BACKEND",
         "codex",
-        "agent backend: codex | copilot | claude | opencode | pi | memory (test only)",
+        "legacy shared-backend fallback: "
+        + " | ".join(SUPPORTED_BACKENDS)
+        + " | memory (test only)",
         "backend",
     ),
     Knob("ARGUS_SKILL_RUNNER_BIN", "(agent CLI on PATH)", "absolute path to the agent CLI binary", "backend"),
     Knob("ARGUS_SKILL_PI_SESSION_DIR", "(~/.argus-skill/pi-sessions)", "Argus-owned Pi session storage, separate from interactive Pi history", "backend"),
     Knob("ARGUS_SKILL_PI_PROVIDER", "(unset — Pi resolves the id itself)", "provider prefix for bare model ids on the Pi backend; set it only to disambiguate an id two authenticated Pi catalogs both carry", "backend", cockpit=True),
     Knob("ARGUS_SKILL_OPENCODE_PROVIDER", "(unset — model is dropped)", "provider prefix for bare model ids on the OpenCode backend; `opencode run --model` needs provider/id, so without this the configured model has no effect", "backend", cockpit=True),
-    Knob("ARGUS_SKILL_ENGINEER_BACKEND", "(=LIFE_BACKEND)", "per-role backend override for the engineer", "backend", cockpit=True),
-    Knob("ARGUS_SKILL_REVIEWER_BACKEND", "(=LIFE_BACKEND)", "per-role backend override for the reviewer", "backend", cockpit=True),
-    Knob("ARGUS_SKILL_PLANNER_BACKEND", "(=LIFE_BACKEND)", "per-role backend override for the planner", "backend", cockpit=True),
-    Knob("ARGUS_SKILL_MANAGER_BACKEND", "(=LIFE_BACKEND)", "per-role backend override for the manager", "backend", cockpit=True),
-    Knob("ARGUS_SKILL_SUPERVISOR_BACKEND", "(=LIFE_BACKEND)", "per-role backend override for the subagent supervisor", "backend", cockpit=True),
+    Knob("ARGUS_SKILL_ENGINEER_BACKEND", "(=RUNNER_BACKEND)", "per-role backend override for the engineer", "backend", cockpit=True),
+    Knob("ARGUS_SKILL_REVIEWER_BACKEND", "(=RUNNER_BACKEND)", "per-role backend override for the reviewer", "backend", cockpit=True),
+    Knob("ARGUS_SKILL_PLANNER_BACKEND", "(=RUNNER_BACKEND)", "per-role backend override for the planner", "backend", cockpit=True),
+    Knob("ARGUS_SKILL_MANAGER_BACKEND", "(=RUNNER_BACKEND)", "per-role backend override for the manager", "backend", cockpit=True),
+    Knob("ARGUS_SKILL_SUPERVISOR_BACKEND", "(=RUNNER_BACKEND)", "per-role backend override for the subagent supervisor", "backend", cockpit=True),
     Knob("ARGUS_SKILL_ENGINEER_RUNNER_BIN", "(=RUNNER_BIN)", "per-role CLI binary for the engineer", "backend"),
     Knob("ARGUS_SKILL_REVIEWER_RUNNER_BIN", "(=RUNNER_BIN)", "per-role CLI binary for the reviewer", "backend"),
     Knob("ARGUS_SKILL_PLANNER_RUNNER_BIN", "(=RUNNER_BIN)", "per-role CLI binary for the planner", "backend"),
     Knob("ARGUS_SKILL_MANAGER_RUNNER_BIN", "(=RUNNER_BIN)", "per-role CLI binary for the manager", "backend"),
     Knob("ARGUS_SKILL_SUPERVISOR_RUNNER_BIN", "(=RUNNER_BIN)", "per-role CLI binary for the subagent supervisor", "backend"),
     # --- team Curator (resident pool + leaderboard strategy) ---
-    Knob("ARGUS_SKILL_CURATOR_BACKEND", "(=LIFE_BACKEND)", "per-role backend override for the team Curator", "backend"),
+    Knob("ARGUS_SKILL_CURATOR_BACKEND", "(=RUNNER_BACKEND)", "per-role backend override for the team Curator", "backend"),
     Knob("ARGUS_SKILL_CURATOR_RUNNER_BIN", "(=RUNNER_BIN)", "per-role CLI binary for the team Curator", "backend"),
+    Knob("ARGUS_SKILL_IDEA_PANEL", "(off)", "opt-in cross-lab ideation: models that propose research ideas in parallel, cross-examine each other, then each name the one to run. Set 'backend' or 'backend:model', comma separated (e.g. 'codex,claude' or 'copilot:gpt-5.5,copilot:gemini-3.1-pro-preview' on a single subscription). Blind scoring over 32 candidates found a panel buys spread, not level: the best candidate of the batch and twice the weak ones. Unset, or with fewer than two usable seats, ideation is unchanged", "models", cockpit=True),
     Knob("ARGUS_SKILL_CURATOR_MODEL", "auto", "model for Curator strategy distillation; auto uses the selected backend's default", "models"),
     Knob("ARGUS_SKILL_CURATOR_REASONING_EFFORT", "high", "Curator distillation reasoning effort", "reasoning"),
     Knob("ARGUS_SKILL_CURATOR_DISTILL_INTERVAL_S", "1260", "minimum seconds between Curator strategy updates", "team"),

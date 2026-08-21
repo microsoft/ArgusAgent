@@ -328,6 +328,30 @@ class _StageDecisionMixin:
 
         _completion_vertical = resolve_vertical(root)
         _research_target_level = resolve_research_target_level(root)
+        _completion_blockers = [
+            blocker
+            for blocker in (external_completion_gate_issue(self.execution_workdir),)
+            if blocker
+        ]
+        if _research_target_level in {"publishable", "doctoral"}:
+            from ..verticals._base import (
+                load_vertical,
+                vertical_stage_completion_issues,
+            )
+
+            # Final completion must re-run the active provider's own strongest
+            # stage validator, but Manager must not import a named vertical to
+            # do it. The contract keeps this path domain-blind and also lets
+            # project-local/plugin research providers enforce equivalent gates.
+            _completion_blockers.extend(
+                vertical_stage_completion_issues(
+                    load_vertical(_completion_vertical, project_root=root),
+                    stage=order[-1],
+                    project_root=self.execution_workdir,
+                    state_root=root,
+                )
+            )
+        _completion_blocker = "; ".join(_completion_blockers)
         if decision.action == "complete":
             final_decision = final_stage_completion_decision(
                 review,
@@ -338,9 +362,7 @@ class _StageDecisionMixin:
                 project_root=root,
                 research_target_level=_research_target_level,
                 checklist_contract=checklist_contract,
-                completion_blocker=external_completion_gate_issue(
-                    self.execution_workdir
-                ),
+                completion_blocker=_completion_blocker,
                 trigger_diagnostic=decision.diagnostic,
                 trigger_reason=completion_trigger_reason(
                     decision.action,
@@ -372,9 +394,7 @@ class _StageDecisionMixin:
                     project_root=root,
                     research_target_level=_research_target_level,
                     checklist_contract=checklist_contract,
-                    completion_blocker=external_completion_gate_issue(
-                        self.execution_workdir
-                    ),
+                    completion_blocker=_completion_blocker,
                     allow_early_completion=_allow_early_completion,
                 )
                 if stage_position_is_the_only_completion_blocker(blockers):

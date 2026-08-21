@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="383" viewBox="0 0 900 383" data-pptx-page-role="content" font-family="Arial, Microsoft YaHei, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="556" viewBox="0 0 900 556" data-pptx-page-role="content" font-family="Arial, Microsoft YaHei, sans-serif">
   <g id="background" data-pptx-role="background" data-pptx-bounds="0 0 900 383">
-    <rect x="0" y="0" width="900" height="383" fill="#FBF7EE"/>
+    <rect x="0" y="0" width="900" height="556" fill="#FBF7EE"/>
   </g>
 
   <g id="result-connectors" data-pptx-role="decoration" data-pptx-bounds="8 8 884 367">
@@ -10,7 +10,8 @@
     <line x1="178" y1="234" x2="198" y2="234" stroke="#287D70" stroke-width="1.5"/>
     <line x1="702" y1="131" x2="722" y2="131" stroke="#315BCE" stroke-width="1.5"/>
     <line x1="702" y1="234" x2="722" y2="234" stroke="#C38A20" stroke-width="1.5"/>
-    <line x1="450" y1="306" x2="450" y2="316" stroke="#287D70" stroke-width="1.5"/>
+    <line x1="313" y1="306" x2="313" y2="316" stroke="#287D70" stroke-width="1.5"/>
+    <line x1="587" y1="306" x2="587" y2="316" stroke="#C38A20" stroke-width="1.5"/>
   </g>
 
   <g id="argus-framework" data-pptx-bounds="188 76 524 230">
@@ -27,10 +28,11 @@
     <text x="380" y="115" font-size="12" font-weight="bold" fill="#173B70">Manager I/O</text>
     <rect x="380" y="121" width="95" height="17" rx="3" fill="#FBF7EE" stroke="#D8E0E8" stroke-width="1"/>
     <rect x="481" y="121" width="95" height="17" rx="3" fill="#FBF7EE" stroke="#D8E0E8" stroke-width="1"/>
-    <rect x="582" y="121" width="101" height="17" rx="3" fill="#FBF7EE" stroke="#D8E0E8" stroke-width="1"/>
+    <rect x="582" y="121" width="101" height="17" rx="3" fill="#FBF7EE" stroke="#B5713A" stroke-width="1"/>
     <text x="427.5" y="133" text-anchor="middle" font-size="10" fill="#24465D">Task + review</text>
     <text x="528.5" y="133" text-anchor="middle" font-size="10" fill="#24465D">Vertical + stage</text>
-    <text x="632.5" y="133" text-anchor="middle" font-size="10" fill="#24465D">Advance · hold · back</text>
+    <text x="632.5" y="133" text-anchor="middle" font-size="9" fill="#B5713A">keep · revise · replace</text>
+    <text x="380" y="145" font-size="7.5" fill="#66717D">the Reviewer may challenge the plan; the Manager decides whose authority it touches</text>
 
     <line x1="277" y1="147" x2="277" y2="157" stroke="#24465D" stroke-width="1.3"/>
     <polygon points="277,160 273,154 281,154" fill="#24465D"/>
@@ -39,24 +41,34 @@
     <circle cx="219" cy="178" r="8" fill="#287D70"/>
     <text x="219" y="182" text-anchor="middle" font-size="10" font-weight="bold" fill="#FFFDF8">P</text>
     <text x="233" y="178" font-size="12" font-weight="bold" fill="#173B70">Planner</text>
-    <text x="233" y="196" font-size="10" fill="#66717D">schedule</text>
+    <rect x="284" y="164" width="24" height="12" rx="3" fill="#287D70"/>
+    <text x="296" y="173" text-anchor="middle" font-size="8" font-weight="bold" fill="#FFFDF8">Q2</text>
+    <text x="233" y="192" font-size="8" fill="#66717D">what is worth</text>
+    <text x="233" y="202" font-size="8" fill="#66717D">doing next</text>
 
     <rect x="326" y="160" width="126" height="52" rx="7" fill="#FFFDF8" stroke="#24465D" stroke-width="1.2"/>
     <circle cx="343" cy="178" r="8" fill="#24465D"/>
     <text x="343" y="182" text-anchor="middle" font-size="10" font-weight="bold" fill="#FFFDF8">E</text>
     <text x="358" y="178" font-size="12" font-weight="bold" fill="#173B70">Engineer</text>
-    <text x="358" y="196" font-size="10" fill="#66717D">research · build</text>
+    <text x="336" y="192" font-size="7.5" fill="#66717D">research · build · measure</text>
+    <text x="336" y="202" font-size="7.5" fill="#66717D">may self-review low-risk work</text>
 
     <rect x="464" y="160" width="128" height="52" rx="7" fill="#FFFDF8" stroke="#C38A20" stroke-width="1.2"/>
     <circle cx="481" cy="178" r="8" fill="#C38A20"/>
     <text x="481" y="182" text-anchor="middle" font-size="10" font-weight="bold" fill="#FFFDF8">R</text>
     <text x="496" y="178" font-size="12" font-weight="bold" fill="#173B70">Reviewer</text>
-    <text x="496" y="196" font-size="10" fill="#66717D">validate</text>
+    <rect x="562" y="164" width="24" height="12" rx="3" fill="#C38A20"/>
+    <text x="574" y="173" text-anchor="middle" font-size="8" font-weight="bold" fill="#FFFDF8">Q1</text>
+    <text x="472" y="192" font-size="7.5" fill="#66717D">read-only · cannot edit evidence</text>
+    <text x="472" y="202" font-size="7.5" fill="#24465D">done·continue·blocked·replan</text>
 
-    <rect x="604" y="160" width="94" height="52" rx="7" fill="#FFFDF8" stroke="#315BCE" stroke-width="1.2"/>
-    <text x="651" y="174" text-anchor="middle" font-size="10" font-weight="bold" fill="#173B70">CONTROL</text>
-    <text x="651" y="188" text-anchor="middle" font-size="10" fill="#315BCE">Review</text>
-    <text x="651" y="200" text-anchor="middle" font-size="10" fill="#287D70">Stage · Mission</text>
+    <rect x="604" y="160" width="94" height="52" rx="7" fill="#FFFDF8" stroke="#B5713A" stroke-width="1.3" stroke-dasharray="4 2"/>
+    <rect x="612" y="163" width="24" height="12" rx="3" fill="#B5713A"/>
+    <text x="624" y="172" text-anchor="middle" font-size="8" font-weight="bold" fill="#FFFDF8">Q4</text>
+    <text x="690" y="172" text-anchor="end" font-size="9" font-weight="bold" fill="#B5713A">OPERATOR</text>
+    <text x="611" y="186" font-size="8" fill="#66717D">credentials · budget</text>
+    <text x="611" y="196" font-size="8" fill="#66717D">publish · irreversible</text>
+    <text x="611" y="206" font-size="8" font-weight="bold" fill="#24465D">only these stop</text>
 
     <line x1="314" y1="186" x2="326" y2="186" stroke="#24465D" stroke-width="1.3"/>
     <polygon points="326,186 320,182 320,190" fill="#24465D"/>
@@ -66,6 +78,11 @@
     <polygon points="604,186 598,182 598,190" fill="#24465D"/>
     <path d="M528 212 V220 H389 V212" fill="none" stroke="#C38A20" stroke-width="1.3"/>
     <polygon points="389,212 385,218 393,218" fill="#C38A20"/>
+    <text x="459" y="219" text-anchor="middle" font-size="7.5" fill="#C38A20">revision</text>
+
+    <path d="M598 160 V152 H548" fill="none" stroke="#B5713A" stroke-width="1.3" stroke-dasharray="3 2"/>
+    <polygon points="544,152 552,148 552,156" fill="#B5713A"/>
+    <text x="600" y="157" font-size="7.5" font-weight="bold" fill="#B5713A">reconsider</text>
 
     <rect x="202" y="222" width="496" height="22" rx="5" fill="#FBF7EE" stroke="#315BCE" stroke-width="1.2"/>
     <text x="450" y="237" text-anchor="middle" font-size="12" font-weight="bold" fill="#173B70">SHARED WORKSPACE</text>
@@ -73,15 +90,17 @@
     <rect x="202" y="250" width="151" height="35" rx="6" fill="#FFFDF8" stroke="#315BCE" stroke-width="1.1"/>
     <rect x="374" y="250" width="151" height="35" rx="6" fill="#FFFDF8" stroke="#287D70" stroke-width="1.1"/>
     <rect x="546" y="250" width="152" height="35" rx="6" fill="#FFFDF8" stroke="#24465D" stroke-width="1.1"/>
-    <text x="277.5" y="265" text-anchor="middle" font-size="10" font-weight="bold" fill="#173B70">Knowledge</text>
-    <text x="277.5" y="278" text-anchor="middle" font-size="10" fill="#66717D">Wiki · Skills</text>
-    <text x="449.5" y="265" text-anchor="middle" font-size="10" font-weight="bold" fill="#173B70">Log</text>
-    <text x="449.5" y="278" text-anchor="middle" font-size="10" fill="#66717D">Events · Decisions</text>
+    <rect x="208" y="253" width="24" height="12" rx="3" fill="#315BCE"/>
+    <text x="220" y="262" text-anchor="middle" font-size="8" font-weight="bold" fill="#FFFDF8">Q3</text>
+    <text x="283" y="265" text-anchor="middle" font-size="10" font-weight="bold" fill="#173B70">Knowledge</text>
+    <text x="277.5" y="278" text-anchor="middle" font-size="9" fill="#66717D">Wiki · Skills · project→vertical→global</text>
+    <text x="449.5" y="265" text-anchor="middle" font-size="10" font-weight="bold" fill="#173B70">Memory</text>
+    <text x="449.5" y="278" text-anchor="middle" font-size="9" fill="#66717D">Events · Backlog · Context</text>
     <text x="622" y="265" text-anchor="middle" font-size="10" font-weight="bold" fill="#173B70">Artifacts</text>
     <text x="622" y="278" text-anchor="middle" font-size="10" fill="#66717D">Code · Results</text>
 
     <rect x="202" y="291" width="496" height="13" rx="4" fill="#FFFDF8" stroke="#24465D" stroke-width="1.1"/>
-    <text x="450" y="301" text-anchor="middle" font-size="10" font-weight="bold" fill="#173B70">LifeSupervisor · Backlog · Budget · Daemon · Memory</text>
+    <text x="450" y="301" text-anchor="middle" font-size="10" font-weight="bold" fill="#173B70">LifeSupervisor · Scheduler · Budget · Daemon · Recovery</text>
   </g>
 
   <g id="results" data-pptx-bounds="8 8 884 367">
@@ -97,7 +116,6 @@
         <text x="220" y="57" font-size="10" font-weight="bold" fill="#315BCE">Argus 78</text>
         <rect x="275" y="49" width="100" height="7" rx="3" fill="#D8E0E8"/>
         <rect x="275" y="49" width="78" height="7" rx="3" fill="#315BCE"/>
-        <text x="424" y="52" text-anchor="end" font-size="10" font-weight="bold" fill="#C38A20">1.41×</text>
       </g>
 
       <g id="result-aarri" data-pptx-bounds="465 8 225 56">
@@ -111,26 +129,34 @@
         <rect x="545" y="49" width="76.8" height="7" rx="3" fill="#287D70"/>
       </g>
 
-      <g id="result-b200" data-pptx-bounds="8 88 170 87">
+      <g id="result-interrupt" data-pptx-bounds="8 88 170 87">
         <rect x="8" y="88" width="170" height="87" rx="8" fill="#FFFDF8" stroke="#315BCE" stroke-width="1.2"/>
-        <text x="18" y="106" font-size="12" font-weight="bold" fill="#173B70">nanochat B200 ↓</text>
-        <text x="18" y="129" font-size="10" font-weight="bold" fill="#315BCE">Argus .9636</text>
-        <rect x="18" y="135" width="140" height="8" rx="3" fill="#D8E0E8"/>
-        <rect x="18" y="135" width="84" height="8" rx="3" fill="#315BCE"/>
-        <text x="18" y="158" font-size="10" fill="#66717D">Human .9646</text>
-        <rect x="18" y="164" width="140" height="7" rx="3" fill="#D8E0E8"/>
-        <rect x="18" y="164" width="107.3" height="7" rx="3" fill="#66717D"/>
+        <text x="18" y="105" font-size="11.5" font-weight="bold" fill="#173B70">How often it needs you</text>
+        <text x="18" y="117" font-size="8" fill="#66717D">longer bar is better</text>
+        <text x="18" y="136" font-size="15" font-weight="bold" fill="#315BCE">40.7 h</text>
+        <text x="152" y="136" text-anchor="end" font-size="9" fill="#66717D">Argus</text>
+        <rect x="18" y="141" width="140" height="8" rx="3" fill="#D8E0E8"/>
+        <rect x="18" y="141" width="138" height="8" rx="3" fill="#315BCE"/>
+        <text x="18" y="163" font-size="10" font-weight="bold" fill="#66717D">≈1 h</text>
+        <text x="152" y="163" text-anchor="end" font-size="9" fill="#66717D">a chat-style agent</text>
+        <rect x="18" y="167" width="140" height="7" rx="3" fill="#D8E0E8"/>
+        <rect x="18" y="167" width="3.4" height="7" rx="3" fill="#66717D"/>
       </g>
 
-      <g id="result-h100" data-pptx-bounds="8 191 170 87">
-        <rect x="8" y="191" width="170" height="87" rx="8" fill="#FFFDF8" stroke="#287D70" stroke-width="1.2"/>
-        <text x="18" y="209" font-size="12" font-weight="bold" fill="#173B70">nanochat H100 ↓</text>
-        <text x="18" y="232" font-size="10" font-weight="bold" fill="#287D70">Argus .9855</text>
-        <rect x="18" y="238" width="140" height="8" rx="3" fill="#D8E0E8"/>
-        <rect x="18" y="238" width="42" height="8" rx="3" fill="#287D70"/>
-        <text x="18" y="261" font-size="10" fill="#66717D">Human .9879</text>
-        <rect x="18" y="267" width="140" height="7" rx="3" fill="#D8E0E8"/>
-        <rect x="18" y="267" width="109.2" height="7" rx="3" fill="#66717D"/>
+      <g id="result-duty" data-pptx-bounds="8 191 170 87">
+        <rect x="8" y="191" width="170" height="107" rx="8" fill="#FFFDF8" stroke="#287D70" stroke-width="1.2"/>
+        <text x="18" y="208" font-size="11.5" font-weight="bold" fill="#173B70">Share of time working</text>
+        <text x="18" y="220" font-size="8" fill="#66717D">of the hours the work was available</text>
+        <text x="18" y="239" font-size="15" font-weight="bold" fill="#287D70">95–98.7%</text>
+        <text x="152" y="239" text-anchor="end" font-size="9" fill="#66717D">Argus drives</text>
+        <rect x="18" y="244" width="140" height="8" rx="3" fill="#D8E0E8"/>
+        <rect x="18" y="244" width="138" height="8" rx="3" fill="#287D70"/>
+        <text x="18" y="266" font-size="10" font-weight="bold" fill="#66717D">≤33%</text>
+        <text x="152" y="266" text-anchor="end" font-size="9" fill="#66717D">a human drives</text>
+        <rect x="18" y="270" width="140" height="7" rx="3" fill="#D8E0E8"/>
+        <rect x="18" y="270" width="46.2" height="7" rx="3" fill="#66717D"/>
+        <text x="18" y="283" font-size="7.5" fill="#66717D">a harness stops when its operator does:</text>
+        <text x="18" y="292" font-size="7.5" fill="#66717D">8 h/day at best</text>
       </g>
 
       <g id="result-nanogpt" data-pptx-bounds="722 88 170 87">
@@ -152,27 +178,113 @@
         <rect x="732" y="243" width="140" height="13" rx="4" fill="#D8E0E8"/>
         <rect x="732" y="243" width="40" height="13" rx="4" fill="#315BCE"/>
         <rect x="772" y="243" width="100" height="13" rx="4" fill="#287D70"/>
-        <text x="732" y="272" font-size="10" font-weight="bold" fill="#315BCE">2 wins</text>
+        <text x="732" y="272" font-size="10" font-weight="bold" fill="#315BCE">beat #1 on 2</text>
         <text x="882" y="272" text-anchor="end" font-size="10" fill="#66717D">101 kernels</text>
       </g>
 
-      <g id="result-math" data-pptx-bounds="250 316 400 59">
-        <rect x="250" y="316" width="400" height="59" rx="8" fill="#FFFDF8" stroke="#287D70" stroke-width="1.2"/>
-        <text x="262" y="335" font-size="12" font-weight="bold" fill="#173B70">Math data ↑</text>
-        <line x1="345" y1="365" x2="635" y2="365" stroke="#D8E0E8" stroke-width="1"/>
-        <rect x="365" y="337" width="28" height="28" rx="3" fill="#287D70"/>
-        <rect x="435" y="344" width="28" height="21" rx="3" fill="#C38A20"/>
-        <rect x="505" y="357" width="28" height="8" rx="3" fill="#315BCE"/>
-        <rect x="575" y="359" width="28" height="6" rx="3" fill="#24465D"/>
-        <text x="379" y="333" text-anchor="middle" font-size="10" font-weight="bold" fill="#287D70">28.0</text>
-        <text x="449" y="340" text-anchor="middle" font-size="10" fill="#C38A20">20.83</text>
-        <text x="519" y="353" text-anchor="middle" font-size="10" fill="#315BCE">8.33</text>
-        <text x="589" y="355" text-anchor="middle" font-size="10" fill="#24465D">6.25</text>
-        <text x="379" y="371" text-anchor="middle" font-size="10" fill="#66717D">Argus</text>
-        <text x="449" y="371" text-anchor="middle" font-size="10" fill="#66717D">Arbor</text>
-        <text x="519" y="371" text-anchor="middle" font-size="10" fill="#66717D">Claude</text>
-        <text x="589" y="371" text-anchor="middle" font-size="10" fill="#66717D">Codex</text>
+      <g id="result-math" data-pptx-bounds="188 316 250 59">
+        <rect x="188" y="316" width="250" height="59" rx="8" fill="#FFFDF8" stroke="#287D70" stroke-width="1.2"/>
+        <text x="200" y="335" font-size="12" font-weight="bold" fill="#173B70">Math data ↑</text>
+        <line x1="278" y1="365" x2="428" y2="365" stroke="#D8E0E8" stroke-width="1"/>
+        <rect x="288" y="337" width="24" height="28" rx="3" fill="#287D70"/>
+        <rect x="326" y="344" width="24" height="21" rx="3" fill="#C38A20"/>
+        <rect x="364" y="357" width="24" height="8" rx="3" fill="#315BCE"/>
+        <rect x="402" y="359" width="24" height="6" rx="3" fill="#24465D"/>
+        <text x="300" y="333" text-anchor="middle" font-size="10" font-weight="bold" fill="#287D70">28.0</text>
+        <text x="338" y="340" text-anchor="middle" font-size="9" fill="#C38A20">20.8</text>
+        <text x="376" y="353" text-anchor="middle" font-size="9" fill="#315BCE">8.3</text>
+        <text x="414" y="355" text-anchor="middle" font-size="9" fill="#24465D">6.3</text>
+        <text x="300" y="373" text-anchor="middle" font-size="9" fill="#66717D">Argus</text>
+        <text x="338" y="373" text-anchor="middle" font-size="9" fill="#66717D">Arbor</text>
+        <text x="376" y="373" text-anchor="middle" font-size="9" fill="#66717D">Claude</text>
+        <text x="414" y="373" text-anchor="middle" font-size="9" fill="#66717D">Codex</text>
+      </g>
+
+      <g id="result-pretrain" data-pptx-bounds="462 316 250 59">
+        <rect x="462" y="316" width="250" height="59" rx="8" fill="#FFFDF8" stroke="#C38A20" stroke-width="1.2"/>
+        <text x="474" y="335" font-size="12" font-weight="bold" fill="#173B70">Pretraining stack</text>
+        <text x="700" y="335" text-anchor="end" font-size="10" font-weight="bold" fill="#C38A20">8×B200</text>
+        <text x="474" y="356" font-size="15" font-weight="bold" fill="#C38A20">1B from scratch</text>
+        <text x="474" y="371" font-size="9" fill="#66717D">data · stability · utilization · recovery</text>
+        <text x="700" y="356" text-anchor="end" font-size="9" font-weight="bold" fill="#24465D">built by Argus</text>
+        <text x="700" y="368" text-anchor="end" font-size="9" fill="#66717D">runs end to end</text>
       </g>
     </g>
+
+      <g id="delivery-band" data-pptx-role="content" data-pptx-bounds="8 388 884 160">
+        <text x="8" y="399" font-size="11" font-weight="bold" fill="#173B70">DELIVERED WORK — the same runtime, four domains, judged by tools and people it does not control</text>
+
+        <!-- ===== AI for Infrastructure ===== -->
+        <rect x="8" y="406" width="288" height="142" rx="8" fill="#FFFDF8" stroke="#315BCE" stroke-width="1.3"/>
+        <rect x="8" y="406" width="288" height="22" rx="8" fill="#315BCE"/>
+        <rect x="8" y="420" width="288" height="8" fill="#315BCE"/>
+        <text x="20" y="422" font-size="11.5" font-weight="bold" fill="#FFFDF8">AI for INFRASTRUCTURE</text>
+        <text x="286" y="422" text-anchor="end" font-size="9" fill="#D8E0E8">GPU kernels · serving · local</text>
+
+        <text x="20" y="444" font-size="10.5" font-weight="bold" fill="#173B70">flash-linear-attention</text>
+        <text x="286" y="444" text-anchor="end" font-size="10" font-weight="bold" fill="#315BCE">4 kernels</text>
+        <text x="20" y="455" font-size="9.5" fill="#66717D">RWKV6 1.21× · KDA 1.29× · AttnRes 1.10× · SM100 fix</text>
+        <text x="20" y="465" font-size="9.5" fill="#66717D">reviewed by outside maintainers; no blocking changes</text>
+
+        <line x1="20" y1="471" x2="284" y2="471" stroke="#D8E0E8" stroke-width="0.8"/>
+        <text x="20" y="484" font-size="10.5" font-weight="bold" fill="#173B70">FlashDA — dLLM masks on FA4</text>
+        <text x="286" y="484" text-anchor="end" font-size="10" font-weight="bold" fill="#315BCE">19/19</text>
+        <text x="20" y="495" font-size="9.5" fill="#66717D">6 mask families, SM80+SM90; within 5–14% of native FA4</text>
+        <text x="20" y="505" font-size="9.5" fill="#66717D">2.5–4.2× over Triton · under ¥80 of model spend</text>
+
+        <line x1="20" y1="511" x2="284" y2="511" stroke="#D8E0E8" stroke-width="0.8"/>
+        <text x="20" y="524" font-size="10.5" font-weight="bold" fill="#173B70">SGLang · MiniMax-H3</text>
+        <text x="286" y="524" text-anchor="end" font-size="10" font-weight="bold" fill="#315BCE">+11,263 ln</text>
+        <text x="20" y="535" font-size="9.5" fill="#66717D">unified model integrated: 160/160 exact, 5.108× at BS8</text>
+        <text x="20" y="545" font-size="9.5" fill="#66717D">62 GiB video model on a 24 GB laptop · 6.159× on A6000</text>
+
+        <!-- ===== AI for Science ===== -->
+        <rect x="306" y="406" width="288" height="142" rx="8" fill="#FFFDF8" stroke="#287D70" stroke-width="1.3"/>
+        <rect x="306" y="406" width="288" height="22" rx="8" fill="#287D70"/>
+        <rect x="306" y="420" width="288" height="8" fill="#287D70"/>
+        <text x="318" y="422" font-size="11.5" font-weight="bold" fill="#FFFDF8">AI for SCIENCE</text>
+        <text x="584" y="422" text-anchor="end" font-size="9" fill="#D8E0E8">materials · mathematics</text>
+
+        <text x="318" y="444" font-size="10.5" font-weight="bold" fill="#173B70">MOF chemical control</text>
+        <text x="584" y="444" text-anchor="end" font-size="10" font-weight="bold" fill="#287D70">92.5 / 100 / 74.5%</text>
+        <text x="318" y="455" font-size="9.5" fill="#66717D">metal · node nuclearity · ligand family, from 3,300 requests</text>
+        <text x="318" y="465" font-size="9.5" fill="#66717D">only 16.7% of parameters trained; 4/8×B200 run by Argus</text>
+
+        <line x1="318" y1="471" x2="582" y2="471" stroke="#D8E0E8" stroke-width="0.8"/>
+        <text x="318" y="484" font-size="10.5" font-weight="bold" fill="#173B70">Structure judgment — AUC</text>
+        <text x="584" y="484" text-anchor="end" font-size="10" font-weight="bold" fill="#287D70">0.594 → 0.833</text>
+        <text x="318" y="495" font-size="9.5" fill="#66717D">a simpler sampler beat the published one at equal compute,</text>
+        <text x="318" y="505" font-size="9.5" fill="#66717D">admitted only after removing a confound from the comparison</text>
+
+        <line x1="318" y1="511" x2="582" y2="511" stroke="#D8E0E8" stroke-width="0.8"/>
+        <text x="318" y="524" font-size="10.5" font-weight="bold" fill="#173B70">Erd&#337;s–Gy&#225;rf&#225;s campaign</text>
+        <text x="584" y="524" text-anchor="end" font-size="10" font-weight="bold" fill="#287D70">6 updates</text>
+        <text x="318" y="535" font-size="9.5" fill="#66717D">six proof-backed frontier updates; one falsified route kept</text>
+        <text x="318" y="545" font-size="9.5" fill="#66717D">with its evidence, so later work need not re-enter it</text>
+
+        <!-- ===== AI for Silicon ===== -->
+        <rect x="604" y="406" width="288" height="142" rx="8" fill="#FFFDF8" stroke="#C38A20" stroke-width="1.3"/>
+        <rect x="604" y="406" width="288" height="22" rx="8" fill="#C38A20"/>
+        <rect x="604" y="420" width="288" height="8" fill="#C38A20"/>
+        <text x="616" y="422" font-size="11.5" font-weight="bold" fill="#FFFDF8">AI for SILICON</text>
+        <text x="882" y="422" text-anchor="end" font-size="9" fill="#FBF7EE">ACE-2 accelerator</text>
+
+        <text x="616" y="444" font-size="10.5" font-weight="bold" fill="#173B70">Functional closure</text>
+        <text x="882" y="444" text-anchor="end" font-size="10" font-weight="bold" fill="#C38A20">13,914 / 13,914</text>
+        <text x="616" y="455" font-size="9.5" fill="#66717D">24-layer Qwen2.5-0.5B W4A8, 18 operators, bit-exact</text>
+        <text x="616" y="465" font-size="9.5" fill="#66717D">certified by a Reviewer that did not do the work</text>
+
+        <line x1="616" y1="471" x2="880" y2="471" stroke="#D8E0E8" stroke-width="0.8"/>
+        <text x="616" y="484" font-size="10.5" font-weight="bold" fill="#173B70">Mapped SKY130 synthesis</text>
+        <text x="882" y="484" text-anchor="end" font-size="10" font-weight="bold" fill="#C38A20">0.614 mm&#178;</text>
+        <text x="616" y="495" font-size="9.5" fill="#66717D">62,283 cells at 100 MHz; WNS and TNS both 0.00 ns</text>
+        <text x="616" y="505" font-size="9.5" fill="#66717D">the certificate publishes its exclusions, not just passes</text>
+
+        <line x1="616" y1="511" x2="880" y2="511" stroke="#D8E0E8" stroke-width="0.8"/>
+        <text x="616" y="524" font-size="10.5" font-weight="bold" fill="#173B70">Human involvement</text>
+        <text x="882" y="524" text-anchor="end" font-size="10" font-weight="bold" fill="#C38A20">8 days · 6 asks</text>
+        <text x="616" y="535" font-size="9.5" fill="#66717D">roughly one interruption every 32 hours; 2 of the 6</text>
+        <text x="616" y="545" font-size="9.5" fill="#66717D">were the server dying, not the runtime asking</text>
+      </g>
   </g>
 </svg>

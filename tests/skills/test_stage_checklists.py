@@ -178,7 +178,13 @@ def test_stage_checklist_completeness() -> None:
 
     analysis_ids = {item.id for item in STAGE_CHECKLISTS["analysis"]}
     assert "analysis.claims" in analysis_ids
+    assert "analysis.figure1" in analysis_ids
+    assert "analysis.publication_scale" in analysis_ids
     assert "analysis.thesis" in analysis_ids
+
+    plan_ids = {item.id for item in STAGE_CHECKLISTS["plan"]}
+    assert "plan.argument_organization" in plan_ids
+    assert "plan.publication_scale" in plan_ids
 
     draft_ids = {item.id for item in STAGE_CHECKLISTS["draft"]}
     assert "draft.pdf" in draft_ids
@@ -186,7 +192,6 @@ def test_stage_checklist_completeness() -> None:
 
     review_ids = {item.id for item in STAGE_CHECKLISTS["review"]}
     assert "review.infrastructure" in review_ids
-    assert "review.placeholders" in review_ids
     assert "review.publication_value" in review_ids
 
     submission_ids = {item.id for item in STAGE_CHECKLISTS["submission"]}

@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="330" viewBox="0 0 900 330" font-family="Arial, Microsoft YaHei, sans-serif">
+  <rect x="0" y="0" width="900" height="330" fill="#FBF7EE"/>
+
+  <!-- ===== left: containment ===== -->
+  <text x="20" y="24" font-size="13" font-weight="bold" fill="#173B70">(a) RSI is auto research pointed at AI itself</text>
+
+  <!-- outer set: auto research -->
+  <rect x="24" y="40" width="360" height="252" rx="12" fill="#FFFDF8" stroke="#315BCE" stroke-width="1.4"/>
+  <text x="40" y="62" font-size="12" font-weight="bold" fill="#315BCE">AUTO RESEARCH</text>
+  <text x="40" y="78" font-size="9.5" fill="#66717D">converting tokens into intelligence, and</text>
+  <text x="40" y="91" font-size="9.5" fill="#66717D">intelligence into artifacts worth having</text>
+
+  <!-- domain chips -->
+  <rect x="40" y="102" width="76" height="20" rx="4" fill="#FBF7EE" stroke="#D8E0E8"/>
+  <text x="78" y="116" text-anchor="middle" font-size="9" fill="#24465D">kernels</text>
+  <rect x="122" y="102" width="76" height="20" rx="4" fill="#FBF7EE" stroke="#D8E0E8"/>
+  <text x="160" y="116" text-anchor="middle" font-size="9" fill="#24465D">silicon</text>
+  <rect x="204" y="102" width="76" height="20" rx="4" fill="#FBF7EE" stroke="#D8E0E8"/>
+  <text x="242" y="116" text-anchor="middle" font-size="9" fill="#24465D">materials</text>
+  <rect x="286" y="102" width="82" height="20" rx="4" fill="#FBF7EE" stroke="#D8E0E8"/>
+  <text x="327" y="116" text-anchor="middle" font-size="9" fill="#24465D">mathematics</text>
+  <rect x="40" y="127" width="76" height="20" rx="4" fill="#FBF7EE" stroke="#D8E0E8"/>
+  <text x="78" y="141" text-anchor="middle" font-size="9" fill="#24465D">software</text>
+  <rect x="122" y="127" width="76" height="20" rx="4" fill="#FBF7EE" stroke="#D8E0E8"/>
+  <text x="160" y="141" text-anchor="middle" font-size="9" fill="#24465D">papers</text>
+
+  <!-- inner set: RSI -->
+  <rect x="122" y="160" width="246" height="92" rx="10" fill="#FFFDF8" stroke="#C38A20" stroke-width="1.4"/>
+  <text x="138" y="182" font-size="12" font-weight="bold" fill="#C38A20">RSI</text>
+  <text x="170" y="182" font-size="9.5" fill="#66717D">the output re-enters</text>
+  <text x="170" y="194" font-size="9.5" fill="#66717D">the system that produced it</text>
+  <rect x="138" y="204" width="100" height="20" rx="4" fill="#FBF7EE" stroke="#D8E0E8"/>
+  <text x="188" y="218" text-anchor="middle" font-size="9" fill="#24465D">training stacks</text>
+  <rect x="244" y="204" width="108" height="20" rx="4" fill="#FBF7EE" stroke="#D8E0E8"/>
+  <text x="298" y="218" text-anchor="middle" font-size="9" fill="#24465D">its own trajectories</text>
+  <text x="138" y="242" font-size="9" fill="#66717D">inherits every constraint of the outer case</text>
+
+  <text x="40" y="268" font-size="9" fill="#66717D">a runtime that cannot run unattended does not</text>
+  <text x="40" y="281" font-size="9" fill="#66717D">become a loop when aimed at AI development</text>
+
+  <!-- ===== right: the cycle ===== -->
+  <text x="424" y="24" font-size="13" font-weight="bold" fill="#173B70">(b) The loop each capability is a precondition for</text>
+
+  <!-- four nodes around a cycle -->
+  <rect x="470" y="44" width="180" height="46" rx="8" fill="#FFFDF8" stroke="#315BCE" stroke-width="1.3"/>
+  <text x="560" y="63" text-anchor="middle" font-size="11" font-weight="bold" fill="#173B70">Frontier campaigns</text>
+  <text x="560" y="79" text-anchor="middle" font-size="9" fill="#66717D">run unattended, under verification</text>
+
+  <rect x="700" y="122" width="180" height="46" rx="8" fill="#FFFDF8" stroke="#287D70" stroke-width="1.3"/>
+  <text x="790" y="141" text-anchor="middle" font-size="11" font-weight="bold" fill="#173B70">Verified process data</text>
+  <text x="790" y="157" text-anchor="middle" font-size="9" fill="#66717D">refuted routes, not just artifacts</text>
+
+  <rect x="470" y="200" width="180" height="46" rx="8" fill="#FFFDF8" stroke="#C38A20" stroke-width="1.3"/>
+  <text x="560" y="219" text-anchor="middle" font-size="11" font-weight="bold" fill="#173B70">Better research judgment</text>
+  <text x="560" y="235" text-anchor="middle" font-size="9" fill="#66717D">trained on that record</text>
+
+  <rect x="424" y="122" width="180" height="46" rx="8" fill="#FFFDF8" stroke="#8A94A0" stroke-width="1.3" stroke-dasharray="4 3"/>
+  <text x="514" y="141" text-anchor="middle" font-size="11" font-weight="bold" fill="#66717D">In-situ learning</text>
+  <text x="514" y="157" text-anchor="middle" font-size="9" fill="#66717D">knowledge made after the cutoff</text>
+
+  <!-- arrows -->
+  <path d="M 650 67 Q 720 67 760 118" fill="none" stroke="#315BCE" stroke-width="1.5"/>
+  <polygon points="762,122 754,113 763,112" fill="#315BCE"/>
+  <path d="M 790 168 Q 790 223 654 223" fill="none" stroke="#287D70" stroke-width="1.5"/>
+  <polygon points="650,223 659,218 659,227" fill="#287D70"/>
+  <path d="M 470 223 Q 400 223 400 145 Q 400 67 466 67" fill="none" stroke="#C38A20" stroke-width="1.5"/>
+  <polygon points="470,67 461,62 461,71" fill="#C38A20"/>
+  <line x1="514" y1="168" x2="514" y2="196" stroke="#8A94A0" stroke-width="1.3" stroke-dasharray="4 3"/>
+  <polygon points="514,200 510,192 518,192" fill="#8A94A0"/>
+
+  <!-- status legend -->
+  <rect x="424" y="266" width="456" height="48" rx="6" fill="#FFFDF8" stroke="#D8E0E8" stroke-width="1"/>
+  <rect x="436" y="277" width="9" height="9" rx="2" fill="#315BCE"/>
+  <text x="451" y="285" font-size="9" fill="#24465D">measured in this report</text>
+  <rect x="436" y="295" width="9" height="9" rx="2" fill="#287D70"/>
+  <text x="451" y="303" font-size="9" fill="#24465D">produced as a byproduct of operating</text>
+  <rect x="640" y="277" width="9" height="9" rx="2" fill="#C38A20"/>
+  <text x="655" y="285" font-size="9" fill="#24465D">stack built; loop not yet closed</text>
+  <rect x="640" y="295" width="9" height="9" rx="2" fill="#8A94A0"/>
+  <text x="655" y="303" font-size="9" fill="#24465D">future work</text>
+</svg>

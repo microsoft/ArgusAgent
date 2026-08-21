@@ -1,6 +1,13 @@
 \section{Results}
 \label{sec:results}
 
+The results come in that order for a reason. Seven arenas establish that the runtime
+does the work; \DutyWallHours{} wall-clock hours establish that it did so with the
+Driver's seat empty. Neither half means much alone. A capability number obtained under
+continuous supervision is a different result from the same number obtained unattended,
+and an empty seat is worth nothing if nothing came out of it. We report the floor, then
+the human cost of reaching it, then what the unattended hours delivered.
+
 \subsection{Capability Floor Across Seven Arenas}
 
 Table~\ref{tab:benchmark-results} is the primary empirical summary and reports all
@@ -17,7 +24,7 @@ the task and metric for each row.
 \textbf{Benchmark} & \textbf{Backbone} & \textbf{Backend} & \textbf{Protocol} & \textbf{\systemname result} & \textbf{Comparison} \\
 \midrule
 SWE-Bench Pro & GPT-5.5/xhigh & Copilot & 731 software-repair tasks & $\approx$78\% accuracy & Direct Copilot $\approx$59\%; 1.41$\times$ aggregate Tokens \\
-SOL-ExecBench & GPT-5.5 & Codex & B200; 101 kernels & Global \#6; 2$\times$\#1; 7 top-3 & Two head-to-head wins over Recursive \\
+SOL-ExecBench & GPT-5.5 & Codex & B200; 101 kernels & Rank \#6 globally; 7 kernels in the top 3 & Beat the \#1-ranked entrant on 2 kernels head to head \\
 nanochat B200 & GPT-5.5 & Codex & 5 min; 1$\times$B200 & 0.9636 BPB & Human best 0.9646 \\
 nanochat H100 & GPT-5.5 & Codex & 5 min; 1$\times$H100 & 0.9855 BPB & Human best 0.9879 \\
 nanoGPT speedrun & GPT-5.5 & Codex & 8$\times$H100; $N{=}10$ & 79.77 s & Same-device human 80.18 s \\
@@ -30,6 +37,15 @@ and are not cross-normalized. Backbone denotes the model driving the research
 agent; Backend denotes the execution surface.}
 \label{tab:benchmark-results}
 \end{table}
+
+Three of these arenas---nanochat, the nanoGPT speedrun, and SOL-ExecBench---are also
+run by systems purpose-built for them. Recursive reports stronger numbers than ours on
+the first two~\citep{recursive2026firststeps}. We report them anyway, and read them as
+a floor rather than a claim to the frontier: they establish that a general runtime
+carrying an independent Reviewer, an authority boundary, and a durable campaign
+contract remains competitive on tasks a specialist system optimizes directly. A
+verification-gated architecture that lost badly here would be paying for its gates in
+end-task performance, and Section~\ref{sec:limitations} would have to say so.
 
 The runtime is not bound to one backbone or one execution surface. A separate
 SWE-Bench Pro run replaces GPT-5.5 on Copilot with GLM-5.2 at a 200K-token context
@@ -48,30 +64,26 @@ merged into \code{fla-org:main}
 {commit \code{c70f11c}}); Appendix~\ref{app:upstream-kernel} records the technical
 details.
 
-An eighth arena is in progress and is reported here as a partial result. The
-MLE-Bench Lite campaign runs the official MLE-Bench Low split
-~\citep{chan2024mlebench} under a reviewer-approved medal gate: a competition counts
-as complete only when an independently reviewed submission earns a Kaggle medal, so
-the reported outcomes are medals rather than raw leaderboard positions.
-Table~\ref{tab:mle-medals} lists the competitions closed to date: \MLEMedals{}
-medals from \MLEGraded{} graded competitions, a \MLEMedalRate\% medal rate, evenly
-split into three gold, three silver, and three bronze. The gate is narrow
-rather than nominal. On \code{denoising-dirty-documents} the campaign settled
-0.00009 RMSE short of the silver band, and on
-\code{jigsaw-toxic-comment-classification-challenge} it cleared the bronze
-threshold by 0.00018 AUC; both outcomes were awarded by the external grader
-against the official Kaggle leaderboard, not by internal review. The remaining four
-graded competitions closed without a medal; two are documented in detail, with
-\code{dog-breed-identification} finishing above the median after twelve submissions
-and \code{new-york-city-taxi-fare-prediction} remaining below it after four. We
-report the denominator rather than the medal count alone because a medal rate stated
-without its graded total is not interpretable. The
-transparent-conductor result is also a verification-gated route change: the
-external grader rejected the initial approach at 0.208 RMSLE, the campaign
-replaced it with a public-state-of-the-art method, and the grader then certified
-the replacement inside the medal band at 0.06402 against a 0.06582 bronze
-threshold. The remaining competitions continue to run; we exclude this arena from
-Table~\ref{tab:benchmark-results} and will report the full split on completion.
+An eighth arena is in progress and reported as partial. The MLE-Bench Lite campaign
+runs the official Low split~\citep{chan2024mlebench} under a reviewer-approved medal
+gate: a competition closes only when an independently reviewed submission earns a
+Kaggle medal, so outcomes are medals rather than leaderboard positions.
+Table~\ref{tab:mle-medals} lists those closed to date---\MLEMedals{} medals from
+\MLEGraded{} graded competitions, a \MLEMedalRate\% rate, evenly split across gold,
+silver, and bronze. We report the denominator because a medal rate without its graded
+total is not interpretable; the remaining four closed without a medal, two of them
+documented in detail.
+
+The gate is narrow rather than nominal. On \code{denoising-dirty-documents} the
+campaign settled 0.00009 RMSE short of the silver band, and on
+\code{jigsaw-toxic-comment-classification-challenge} it cleared bronze by 0.00018
+AUC---both awarded by the external grader against the official leaderboard, not by
+internal review. The transparent-conductor result is also a route change under that
+gate: the grader rejected the initial approach at 0.208 RMSLE, the campaign replaced
+it with a published state-of-the-art method, and the grader certified the replacement
+at 0.06402 against a 0.06582 bronze threshold. Remaining competitions continue; we
+exclude this arena from Table~\ref{tab:benchmark-results} and will report the full
+split on completion.
 
 \begin{table}[H]
 \centering
@@ -114,32 +126,37 @@ Reviewer decisions.
 \subsection{Does the Driver's Seat Stay Empty?}
 \label{sec:duty-cycle}
 
-Every preceding result measures what the runtime produced. This subsection measures
-whether producing it required a person, which is the claim that distinguishes an
-unattended Driver from a well-instrumented harness.
+Every preceding result measures what the runtime produced. This one measures whether
+producing it required a person. Across \DutyCampaigns{} campaigns and
+\DutyWallHours{} wall-clock hours, \systemname{} asked for a human
+\DutyInterruptions{} times---once every \DutyInterval{} hours---and spent
+\DutyCycleLow--\DutyCycleHigh\% of its available time working. The seat stayed empty.
 
-Two metrics are needed, and neither is meaningful alone. \emph{Interruption rate}
-alone can be driven to zero by a system that does nothing; \emph{duty cycle} alone
-can be maximised by a system that burns Tokens in a loop. Reported together they
-bound the interesting case: work is being done, and nobody is being asked to
-supervise it.
+Two metrics carry that claim, and neither survives alone. \emph{Interruption rate}
+alone is minimised by a system that does nothing; \emph{duty cycle} alone is
+maximised by a system that burns Tokens in a loop. Together they pin the case that
+matters: work is being done, and nobody is being asked to supervise it.
 
-We define duty cycle by complement, which avoids the unfalsifiable question of what
-counts as productive:
-\begin{equation}
-\mathrm{DutyCycle} = \frac{\bigcup_i [\,s_i, c_i\,]}{W - G},
-\label{eq:duty-cycle}
-\end{equation}
-where $[s_i,c_i]$ are model-call intervals from the settled usage ledger, $W$ is the
-campaign wall-clock span, and $G$ is time in which no work was available or the
-execution environment was unusable. Using the union of call intervals rather than
-gaps between log events is not a detail: a single reasoning call can run for over two
-hours, during which the event stream is legitimately silent, so a silence threshold
-would systematically score deep reasoning as idleness. External jobs such as
-synthesis, timing analysis, or training runs consume no Tokens and are likewise not
-penalised, because they fall into neither subtracted term. Interruption rate counts
-only system-initiated requests for a human; an operator who volunteers a status
-question does not count, because the system was not waiting for them.
+Both quantities are defined in Section~\ref{sec:unattended-formal}: duty cycle by
+complement in Equation~\ref{eq:duty-cycle}, so that what counts as productive never
+has to be adjudicated, and interruption rate in
+Equation~\ref{eq:interruption-rate} over system-initiated requests only. We report
+the partition of Equation~\ref{eq:interruption-partition} alongside the rate, because
+a request for a credential and a request arising from indecision are different facts
+about the system.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{figures/autonomy_profile.pdf}
+  \caption{Unattended operating profile. Panel (a) gives duty cycle per campaign
+  under Equation~\ref{eq:duty-cycle}; the two lower bars are annotated with why they
+  sit lower, and neither reason is agent hesitation. Panel (b) classifies every
+  human request raised across the \DutyCampaigns{} campaigns by what it asked for.
+  The two metrics are reported together because neither is interpretable alone: a
+  system that does nothing has a perfect interruption rate, and a system that loops
+  uselessly has a perfect duty cycle.}
+  \label{fig:autonomy-profile}
+\end{figure}
 
 \begin{table}[H]
 \centering
@@ -212,6 +229,15 @@ proceed. One of those is a mathematical campaign reporting that it had exhausted
 analytic and structural bounding methods within its current scope---an escalation we
 would want a research system to make.
 
+These campaigns are also long individually, which matters for a reason separate from
+autonomy. \CampaignsOverWeek{} of the \DutyCampaigns{} exceed a week of wall-clock
+time and the longest runs \LongestCampaignDays{} days, with a single trace recording
+\LargestTraceEvents{} events. A trajectory of that span contains dependencies no
+short episode can: a premise adopted early, contradicted by a measurement days later,
+and revised with both states still on the record.
+Section~\ref{sec:limitations} returns to why that is the interesting property of this
+data.
+
 The remaining \DutyContextPercent\% are the runtime's own fault in a specific and
 fixable way: canonical handoff files went missing and the system correctly refused to
 proceed from an inferred state rather than guess. Together with the infrastructure
@@ -220,11 +246,14 @@ supervision, storage reliability, durable context---rather than in the agent loo
 
 For scale, a strong coding agent driven turn by turn sustains roughly
 \CodexEndurance{} hour of unattended operation before requiring its operator, an
-interval two orders of magnitude below the \DutyInterval{}-hour figure above. That
-comparison is not a controlled experiment, and we do not present it as one; the two
-systems differ in scaffolding, task assignment, and stopping policy. It is reported
-because the gap is large enough to be qualitative: one system's clock follows its
-operator's waking hours, and the other's does not.
+interval two orders of magnitude below the \DutyInterval{}-hour figure above. The
+consequence for duty cycle follows from arithmetic rather than measurement: a harness
+whose Driver is a person cannot exceed that person's working hours, so even an
+operator devoting eight hours a day to a single campaign bounds it at
+33\%---and that ceiling is unaffected by how capable the underlying model becomes. The part
+that matters needs no experiment at all: it is arithmetic, and no scaffolding
+difference between the two systems touches it. One system's clock follows its
+operator's waking hours; the other's does not.
 
 \subsection{What the Unattended Hours Delivered}
 \label{sec:delivery}
@@ -246,14 +275,9 @@ families across two GPU architectures, the runtime reached
 three months. Against an external reviewer, \FLAPRTotal{} kernels submitted to
 \code{flash-linear-attention} were accepted with no blocking changes requested.
 
-Each comparison is a bounding observation rather than a controlled trial, and
-Section~\ref{sec:limitations} states the specific asymmetries: the human attempt
-could consult an already-public implementation, the specialist-team figure comes from
-an interview covering different scope, and maintainer acceptance establishes that
-particular artifacts met an outside standard rather than that unattended output meets
-it in general. The distinction that matters for the argument is nonetheless
-available: the third comparison is decided by people who did not write the work and
-had no stake in its acceptance.
+The first two are bounds, not controlled trials, and Section~\ref{sec:limitations}
+sets out their asymmetries. The third answers to nobody here: it was decided by
+people who did not write the work and had no stake in its acceptance.
 
 \subsection{Knowing When to Stop: Verification Routing and Non-Termination}
 
@@ -277,24 +301,14 @@ tokens and \ReviewerTimeRatio$\times$ as much active time as self-reviewed tasks
 average, indicating that the routing policy selects a harder workload. The recovery
 funnel is therefore more interpretable than a raw group-accuracy comparison.
 
-Figure~\ref{fig:reviewer-mechanism} separates the routing population from the
-revision-recovery path. The accepted and revise branches partition outcomes after
-Reviewer invocation together with 35 blocked cases; verifier pass and strict rescue
-are nested recovery milestones among the 43 revision-requested tasks.
-
-\begin{figure}[H]
-  \centering
-  \includegraphics[width=\linewidth]{figures/reviewer_mechanism.pdf}
-  \caption{Adaptive Reviewer routing and revision recovery. Panel (a) shows that
-  466 of 731 tasks invoke an independent Reviewer, while 265 use Engineer
-  self-review; routed tasks consume 2.75$\times$ the solve input Tokens and
-  1.80$\times$ the active time on average. Panel (b) follows the routed workload:
-  388 tasks are accepted on first review, 43 receive a revision request, 34 of
-  those later pass the official verifier, and 22 complete the strict
-  review-loop rescue. Routing is task-dependent; a randomized-routing run would
-  additionally isolate the causal effect.}
-  \label{fig:reviewer-mechanism}
-\end{figure}
+The two populations should not be conflated. Of the Reviewer-routed workload,
+\ReviewerFirstAccepted{} tasks are accepted on first review and
+\ReviewerRevisionRequested{} receive a revision request, alongside
+\ReviewerFirstBlocked{} declared blocked; verifier pass
+(\ReviewerVerifierRecovered{}) and strict rescue (\ReviewerStrictRescues{}) are
+nested recovery milestones \emph{within} the revision-requested group rather than
+separate outcome classes. Panel~(a) of Figure~\ref{fig:swebench-evolution} shows
+this partition together with the accuracy comparison.
 
 \subsection{Cost of the Mechanism as State Accumulates}
 
@@ -306,9 +320,8 @@ definitions, and routing policy. These objects alter what later missions retriev
 which checks they run, and where they spend independent review.
 
 Mature operation W19--22 uses \SWEProTokenReduction\% fewer solve input Tokens and
-\SWEProTimeReduction\% less active workflow time per task than startup W1--6. This
-pattern is consistent with accumulated state reducing repeated inspection,
-rediscovery, or failed execution. The lowest-Token window, W13--18, reaches a
+\SWEProTimeReduction\% less active workflow time per task than startup W1--6. The runtime spends less to do the same
+work once it has accumulated state to spend it against. The lowest-Token window, W13--18, reaches a
 \SWEProBestTokenReduction\% reduction from startup but requires more active time,
 showing that Token efficiency and execution latency do not move together. The
 final difficult-task window rebounds in both metrics.
@@ -331,11 +344,8 @@ final difficult-task window rebounds in both metrics.
 
 The trajectories show a lower-cost mature operating window together with visible
 task-composition and late-wave difficulty effects. The rebound in W23--24 prevents
-the startup-to-mature comparison from being read as monotonic improvement. Because
-the task sequence is not replayed against a frozen runtime state, the evidence
-characterizes system-state accumulation over this sequence; attributing the
-reduction to an individual memory or Skill update calls for a matched frozen-state
-replay.
+the startup-to-mature comparison from being read as monotonic improvement, and the
+sequence characterizes state accumulation rather than isolating any single update.
 
 \subsection{Measured Process Quantities}
 
@@ -361,7 +371,7 @@ grouping is the point: the further down the table a row sits, the less the runti
 controls the standard it is judged against, and the harder it is to satisfy the gate
 with narrative.
 
-\begin{table}[H]
+\begin{table}[!t]
 \centering
 \scriptsize
 \renewcommand{\arraystretch}{1.14}
@@ -372,7 +382,7 @@ with narrative.
 \midrule
 \multicolumn{3}{@{}l}{\textit{Benchmark harnesses (Section~\ref{sec:results})}} \\
 SWE-Bench Pro & $\approx$\SWEProArgusAccuracy\% vs \SWEProDirectAccuracy\% direct; \ReviewerFirstBlocked{} declared blocked & Official verifier \\
-SOL-ExecBench & Global \#6; $2\times$ the \#1 score; 7 top-3 placements & Official scorer \\
+SOL-ExecBench & Rank \#6 globally; 7 kernels placed top-3; beat the \#1 entrant on 2 & Official scorer \\
 nanochat B200 / H100 & 0.9636 / 0.9855 BPB vs 0.9646 / 0.9879 human best & Fixed protocol \\
 nanoGPT speedrun & 79.77\,s vs 80.18\,s same-device human & Verifier runs \\
 AARRI-Bench & 63/82 (76.8\%) vs 68.3\% paper best & Task rubric \\

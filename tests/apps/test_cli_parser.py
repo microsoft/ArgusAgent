@@ -725,3 +725,127 @@ def test_top_level_abbreviation_is_disabled():
     p = build_parser()
     with pytest.raises(SystemExit):
         p.parse_args(["--objec", "x"])
+
+
+def test_public_help_names_the_browser_cockpit() -> None:
+    """`--web` is a first-class human surface, so it must be discoverable.
+
+    The flag, its host/port options and a doctor check (ARGUS-WEB-001) all
+    existed while the product-facing help never mentioned it, so the only way
+    to learn the web UI exists was to read the source or set a debug env var.
+    """
+    help_text = build_parser().format_help()
+    assert "argus --web" in help_text
+    assert "argus --watch" in help_text
+
+
+def test_every_supported_backend_is_selectable_and_documented() -> None:
+    """One list, three renderings.
+
+    The backend set was written out by hand in the `--backend` choices, the
+    `--advisor` choices, the readiness check and the operator knob help. The
+    knob help had drifted to five of the eight, so `argus --config-help` — the
+    documented operator control surface — hid three backends the CLI accepts.
+    """
+    from argus_skill.agent_cli.runner_backend import SUPPORTED_BACKENDS
+    from argus_skill.core.backend_readiness import _SUPPORTED_BACKENDS
+    from argus_skill.core.knobs import format_config_help
+
+    assert set(SUPPORTED_BACKENDS) == set(_SUPPORTED_BACKENDS)
+
+    actions = {action.dest: action for action in build_parser()._actions}
+    assert set(actions["backend"].choices) == set(SUPPORTED_BACKENDS)
+
+    backend_line = next(
+        line for line in format_config_help().splitlines()
+        if "agent backend:" in line
+    )
+    for backend in SUPPORTED_BACKENDS:
+        assert backend in backend_line, f"{backend} is selectable but undocumented"
+
+
+def test_config_help_reports_the_backend_selected_by_setup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from argus_skill.core.knob_store import write_persisted_knob
+    from argus_skill.core.knobs import format_config_help
+
+    monkeypatch.setenv("ARGUS_SKILL_HOME", str(tmp_path))
+    monkeypatch.delenv("ARGUS_SKILL_RUNNER_BACKEND", raising=False)
+    write_persisted_knob("ARGUS_SKILL_RUNNER_BACKEND", "pi")
+
+    help_text = format_config_help(env={})
+
+    assert (
+        "ARGUS_SKILL_RUNNER_BACKEND  (default: codex)  = pi (persisted)"
+        in help_text
+    )
+    assert "ARGUS_SKILL_ENGINEER_BACKEND  (default: (=RUNNER_BACKEND))" in help_text
+
+
+def test_a_missing_web_dependency_is_reported_not_raised(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The guard must fire before anything claims the server is up.
+
+    `webapi.server` imports uvicorn lazily inside `serve()`, so guarding only
+    the `webapi.server` import let the pairing banner print a URL and then a
+    bare ImportError escape as a traceback — the message the guard exists to
+    print was unreachable.
+    """
+    from argus_skill.apps.cli import _core
+
+    monkeypatch.setattr(
+        _core, "_missing_web_dependency", lambda: "uvicorn"
+    )
+
+    assert main(["--web"]) == 2
+    err = capsys.readouterr().err
+    assert "uvicorn is missing" in err
+    assert "Traceback" not in err
+    assert "http://" not in err, "no URL may be offered when the server cannot start"
+
+
+def test_a_negative_gc_window_is_refused_before_anything_moves(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The CLI must name the mistake rather than let the sweep run.
+
+    `argus --gc --gc-days -5` reached the collector, which trusted the value,
+    and 50 projects were moved to trash on a real global root — 42 of them
+    ones the same run's `--gc-dry-run` had not listed.
+    """
+    from argus_skill.core import project_gc
+
+    monkeypatch.setattr(
+        project_gc,
+        "gc_stale_projects",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not sweep")),
+    )
+
+    assert main(["--gc", "--gc-days", "-5"]) == 2
+    err = capsys.readouterr().err
+    assert "--gc-days must not be negative" in err
+    assert "every project would be trashed" in err
+
+
+@pytest.mark.parametrize("value", ["99999", "-1", "abc"])
+def test_an_unbindable_web_port_is_refused_by_the_parser(value: str) -> None:
+    """uvicorn would raise `OverflowError: bind(): port must be 0-65535`.
+
+    It raised it *after* the pairing banner had already printed a URL on that
+    port, so the operator was offered an address that could never exist and
+    then shown a traceback.
+    """
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--web", "--web-port", value])
+
+
+@pytest.mark.parametrize("value", ["0", "8799", "65535"])
+def test_a_bindable_web_port_is_accepted(value: str) -> None:
+    """Zero is legal: it asks the kernel for any free port."""
+    args = build_parser().parse_args(["--web", "--web-port", value])
+    assert args.web_port == int(value)

@@ -1,6 +1,35 @@
 \section{Limitations and Future Work}
 \label{sec:limitations}
 
+\paragraph{Everything here comes from a four-month window.}
+\systemname{} began in May 2026, and the campaigns in this report ran between then
+and August. This bounds what the report can claim in both directions, and we state it
+first because the other limitations should be read against it. It means we have no
+evidence about long-term stability: whether retained knowledge stays useful over a year,
+whether a knowledge base accumulates contradictions faster than it retires them,
+whether the duty-cycle profile holds once campaigns outlive the team's attention to
+them. Systems of this kind commonly degrade on exactly those axes, and four months is
+not long enough to observe it. It also means the runtime changed underneath its own
+evaluation---logging, verticals, and role contracts all evolved across the period, so
+the campaigns are not instances of one frozen system. Readers should treat this as a
+snapshot of a system still moving quickly rather than a characterization of a mature
+one, and should expect the specific mechanisms described in
+Section~\ref{sec:method} to keep changing.
+
+\paragraph{The model may absorb the Driver.}
+A serious counterargument holds that scaffolding is temporary: each generation of
+models absorbs what the previous generation's harness had to supply, so the model
+eats the harness~\citep{sequoia2026trainingdata}. We expect that to keep happening,
+and Section~\ref{sec:runtime-to-training} argues the runtime should feed it. But
+absorption does not settle the question this report asks. Two of the four Driver
+questions are not capability problems at all: who may certify completion is a
+question about authority, not about reasoning, and a model that judged its own work
+perfectly would still be judging its own work. The same holds for the boundary that
+stops for credentials and irreversible actions. If a future model internalizes Q2 and
+Q3 entirely, Q1 and Q4 remain structural, and the mechanisms here would become
+cheaper rather than unnecessary. What we cannot say is where that line finally
+settles.
+
 \paragraph{User-guided pivots are not publicly evaluated prospectively.}
 Internal system-verification use has produced concrete cases in which stopping or
 surfacing a contradiction helped real researchers refine the operational task.
@@ -115,6 +144,11 @@ costs in the public data exclude utility calls without a priced event.
 
 \subsection{Future Work: The Loop Between Auto Research and RSI}
 
+The preceding section lists what four months does not establish. This one states what
+we are building toward, because the items above are a route rather than a backlog:
+the runtime described here is the first version of a program, and the questions it
+leaves open are the ones the next version is designed to answer.
+
 The containment relation of Section~\ref{sec:rsi-related}---recursive
 self-improvement as auto research pointed at AI itself---is accurate but static. The
 direction we think matters is dynamic, and it runs in both directions: each capability
@@ -152,7 +186,12 @@ patch, not the four approaches abandoned before it; the published theorem, not t
 route that was falsified on the way; the accepted paper, not the reframing that
 happened after the method search failed. \textbf{Process data is the scarce
 resource}, and it is scarce for a structural reason: nobody was ever paid to write
-down the reasoning that did not work. An auto research runtime operating under
+down the reasoning that did not work. The pattern is visible in the reporting itself.
+When a frontier lab announced solutions to ten long-open mathematical problems at
+under \$2{,}000 of tokens each, the first question a careful reader
+asked was how many problems absorbed the same spend and produced
+nothing~\citep{willison2026tenadvances}---and that number is not published by anyone,
+because the incentive to publish it has never existed. An auto research runtime operating under
 verification produces exactly this, continuously and in typed form---objectives,
 actions, measurements, verdicts, the routes that were refuted, and the evidence that
 refuted them---as a byproduct of doing its job. The trajectories in this report were
@@ -168,6 +207,29 @@ outcome supervision when the intermediate steps can be
 obtained~\citep{lightman2023verify}. What has been missing is a source that generates
 such data at volume without a human authoring each example. A working auto researcher
 is that source.
+
+The property that makes it a distinctive source is not volume but \emph{span}. Agent
+corpora are assembled from short episodes, because an episode that requires a human
+to sit through it is expensive to collect and an episode that runs unattended has not
+until now been reliable enough to harvest. The campaigns in this report are
+individually days long---\CampaignsOverWeek{} exceed a week and the longest runs
+\LongestCampaignDays{} days, with a single trace reaching
+\LargestTraceEvents{} recorded events. What accumulates over that span is not more
+examples of the same kind; it is a kind that short episodes structurally cannot
+contain: a hypothesis proposed on day one, contradicted by a measurement on day
+three, and revised on day five, with every intermediate state, verdict, and discarded
+alternative recorded in between. Supervision for long-horizon judgment---when to
+persist, when to abandon a route, what evidence licenses changing the target---is
+carried by exactly those long-range dependencies, and an episode that ends in an hour
+has none of them to exhibit.
+
+This is the concrete form the second axis would take. Rather than train on a public
+corpus, train on the runtime's own multi-day traces, with the verdicts supplying
+labels the trajectories already carry: the \code{blocked} that withheld a completion,
+the transition that recorded an informative failure as progress, the plan challenge
+that overturned an earlier decision. We have not done this. We report it as the
+direction because the runtime now produces the data as a byproduct of operating, and
+because generating that data was the part that had no obvious path.
 
 The second is capability. Parameter self-evolution requires something that can
 actually train models: process the data, modify the code, design the ablation, read
@@ -193,13 +255,12 @@ That is why we regard duty cycle, interruption rate, and the willingness to retu
 \code{blocked} as foundational rather than operational metrics: they measure whether
 the cycle can turn at all.
 
-We do not claim to have closed this loop, and we are explicit that no step of it is
-demonstrated end to end here. We claim to have built a runtime that executes
-research-level work unattended, that improves its retained state under verification,
-that produces the process record such a loop would consume, and that has now built
-the training machinery such a loop would require. The remaining work is to connect
-them, and to measure honestly at each turn whether the system that comes out is
-better than the one that went in.
+The loop is not closed, and no step of it is demonstrated end to end here. What
+exists is a runtime that executes research-level work unattended, improves its
+retained state under verification, produces the process record such a loop would
+consume, and has now built the training machinery such a loop would require. What
+remains is to connect them, and to measure at each turn whether the system that
+comes out is better than the one that went in.
 
 \subsection{Work in Progress}
 

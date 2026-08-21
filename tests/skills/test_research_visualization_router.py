@@ -33,6 +33,8 @@ def test_research_vertical_bundles_visual_router_and_renderer() -> None:
     assert "ECharts" in body
     assert "Recharts" in body
     assert "PPT Master" in body
+    assert "Paper Framework Figure Studio" in body
+    assert "engineer/paper-framework-figure-studio.md" in texts
     assert "engineer/research_visual_scripts/browser_render.py" in texts
 
 
@@ -45,6 +47,24 @@ def test_router_makes_image2_capability_conditional() -> None:
     assert "never fake image-2 provenance" in content
     assert "--ppt-master-status" in content
     assert "independent of model api status" in content
+
+
+def test_router_requires_real_deterministic_figure1_fallback() -> None:
+    texts = dict(iter_vertical_skill_texts("research"))
+    _front, body = _front_and_body(texts["engineer/research-visualization-router.md"])
+    content = body.lower()
+
+    assert "figure 1 is a paper deliverable" in content
+    assert "ppt master" in content
+    assert "browser-rendered html" in content
+    assert "hand-authoring raw svg is not on this table" in content
+    assert "a latex table" in content
+    assert "\\includegraphics" in body
+    studio = texts["engineer/paper-framework-figure-studio.md"]
+    assert "S0" in studio and "S7" in studio
+    assert "Renderer-neutral design system" in studio
+    assert "PPT Master" in studio
+    assert "image-2 only when configured" in studio
 
 
 def test_results_figures_keep_claim_checks_agent_owned_and_risk_based() -> None:
@@ -71,3 +91,51 @@ def test_agents_receive_visual_library_paths_without_matcher(tmp_path: Path) -> 
     paths = [path.replace("\\", "/") for path in store.list_paths()]
     assert any(path.endswith("engineer/research-visualization-router.md") for path in paths)
     assert any(path.endswith("engineer/presentation-master.md") for path in paths)
+
+
+def test_router_points_at_a_renderer_that_exists() -> None:
+    """The published route must be runnable: a path the agent cannot resolve is
+    why figures got hand-drawn instead."""
+    texts = dict(iter_vertical_skill_texts("research"))
+    router = texts["engineer/research-visualization-router.md"]
+
+    assert "argus_builtin_skills/" not in router
+    assert "browser_render.py" in router
+
+    root = Path(__file__).resolve().parents[2]
+    skills = root / "argus_skill/verticals/research/skills/engineer"
+    assert (skills / "research_visual_scripts/browser_render.py").is_file()
+
+
+def test_router_matches_output_format_to_build_route() -> None:
+    """`--output *.svg` extracts an existing <svg>, so a CSS layout must be told
+    to ask for PDF rather than hand-writing SVG to satisfy the renderer."""
+    texts = dict(iter_vertical_skill_texts("research"))
+    router = texts["engineer/research-visualization-router.md"].lower()
+
+    assert "--output paper/figures/<id>.pdf" in router
+    assert "figure root contains no svg" in router
+
+
+def test_figure_spec_renderer_is_reachable() -> None:
+    """FigureSpec was the third broken route: its documented package path does
+    not exist, so the renderer could never be run either."""
+    texts = dict(iter_vertical_skill_texts("research"))
+    spec = texts["engineer/figure-spec.md"]
+
+    assert "argus_skill/builtin_skills/" not in spec
+
+    root = Path(__file__).resolve().parents[2]
+    skills = root / "argus_skill/verticals/research/skills/engineer"
+    assert (skills / "figure_spec_scripts/figure_renderer.py").is_file()
+
+
+def test_figure_one_never_takes_the_flat_route() -> None:
+    """A flat-fill renderer draws the boxes the paper's opening figure is judged
+    on, so Figure 1 must not qualify for the simple-topology row."""
+    router = dict(iter_vertical_skill_texts("research"))[
+        "engineer/research-visualization-router.md"
+    ].lower()
+
+    assert "a paper's figure 1 never qualifies as the simple row" in router
+    assert "simple exact topology in a supporting figure" in router

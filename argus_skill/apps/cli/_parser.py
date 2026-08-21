@@ -6,10 +6,14 @@ import argparse
 import os
 from pathlib import Path
 
+from ...agent_cli.runner_backend import SUPPORTED_BACKENDS
+
 _PUBLIC_HELP = """usage: argus [mode]
 
 Human cockpit:
   argus
+  argus --web          browser cockpit on http://127.0.0.1:8799
+  argus --watch        live read-only view of the running mission
 
 First-time setup and diagnostics:
   argus --setup
@@ -43,6 +47,24 @@ class _ArgusArgumentParser(argparse.ArgumentParser):
         if os.environ.get("ARGUS_SKILL_DEBUG_HELP", "").strip() == "1":
             return super().format_help()
         return _PUBLIC_HELP
+
+
+def _tcp_port(value: str) -> int:
+    """Reject a port the kernel can never bind, before anything offers a URL.
+
+    An out-of-range `--web-port` used to reach uvicorn, which printed the
+    pairing banner's URL first and then raised `OverflowError: bind(): port
+    must be 0-65535` as a traceback.
+    """
+    try:
+        port = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a whole number") from None
+    if not 0 <= port <= 65535:
+        raise argparse.ArgumentTypeError(
+            f"{port} is outside the TCP port range 0-65535"
+        )
+    return port
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -248,7 +270,7 @@ def build_parser() -> argparse.ArgumentParser:
     cockpit_grp.add_argument(
         "--web",
         action="store_true",
-        help="serve the web/TUI backend API (argus-skill[web] extra) — the "
+        help="serve the web/TUI backend API — the "
              "shared API that the React web UI (frontend/web) and the Ink "
              "terminal UI (frontend/tui) both talk to. Binds 127.0.0.1 by "
              "default; set ARGUS_SKILL_WEB_TOKEN to require a bearer token.",
@@ -276,7 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
     cockpit_grp.add_argument(
         "--web-port",
         "--port",
-        type=int,
+        type=_tcp_port,
         default=8799,
         help="port for --web (default 8799)",
     )
@@ -326,7 +348,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     capability_grp.add_argument(
         "--backend",
-        choices=("copilot", "codex", "claude", "opencode", "pi", "grok", "qoder", "dsh"),
+        choices=SUPPORTED_BACKENDS,
         default=None,
         help="backend selected by --setup, --doctor, or this daemon launch",
     )
@@ -505,18 +527,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor_parser.add_argument(
         "--advisor",
-        choices=(
-            "auto",
-            "none",
-            "copilot",
-            "codex",
-            "claude",
-            "opencode",
-            "pi",
-            "grok",
-            "qoder",
-            "dsh",
-        ),
+        choices=("auto", "none", *SUPPORTED_BACKENDS),
         default="auto",
         help="ask an installed Code Agent to inspect and repair Argus (default: auto)",
     )

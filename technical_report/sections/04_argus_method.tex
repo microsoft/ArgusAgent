@@ -1,18 +1,42 @@
 \section{\systemname Runtime}
 \label{sec:method}
 
+Every mechanism in this section serves one end: making it safe to leave the Driver's
+seat empty. The organizing principle is not that the executor eventually becomes
+trustworthy enough to certify its own work. It is that the executor never gets to
+decide. What follows is how that decision is routed instead---to a reviewer that
+cannot edit what it judges, to a manager that owns the campaign rather than the turn,
+and to a boundary that stops for a person on the few questions a machine should not
+settle for itself.
+
 \subsection{System Overview}
 
 \systemname is a general-purpose agentic runtime built around four model-driven roles
-and three system planes. The roles exist to answer the three Driver questions of
+and three system planes. The roles exist to answer the four Driver questions of
 Section~\ref{sec:introduction} with different parties: the Reviewer answers whether
-work is done, the Planner and Manager answer what comes next, and an explicit
-authority boundary answers what still belongs to a person. The \emph{control plane}
+work is done and good enough, the Planner and Manager answer what comes next, a
+certified promotion path answers how the system gets better at the field it is
+working in, and an explicit authority boundary answers what still belongs to a
+person. The \emph{control plane}
 anchors the campaign and schedules work; the \emph{execution plane} performs one
 bounded mission against real tools and artifacts; and the \emph{record plane} stores
 what happened without deciding whether the work is scientifically complete. The
 distinction is operational: control owns scheduling, execution owns work and mission
 review, and the record plane owns the immutable record but no completion decision.
+
+Four nested scopes recur throughout this report and are worth fixing once. A
+\emph{vertical} is a domain configuration---it declares the stage order, the evidence
+each stage requires, and what counts as completion; the runtime ships twenty-four of
+them, covering software, chip design, mathematics, materials, and others. A
+\emph{campaign} is one long-running project under a vertical, with a persistent
+identity that survives restarts; the campaigns measured in
+Section~\ref{sec:duty-cycle} run for days. A campaign advances through
+\emph{Stages}, which are the vertical's declared phases and whose transitions only
+the Manager may authorize. Work inside a Stage is divided into \emph{bounded
+missions}, each assigned singly and each ending in an explicit outcome. A mission
+runs as a sequence of \emph{rounds}, one Engineer turn plus its review. Vertical
+selects the rules, campaign is the thing that persists, Stage is where it currently
+is, mission is what it is doing now.
 
 The four roles divide research authority as summarized in
 Table~\ref{tab:roles}. The Manager spans the campaign rather than one execution
@@ -138,12 +162,64 @@ Neither the roles nor the domain logic are bound to one provider. Eight coding-a
 backends are supported, and per-role model selection is resolved at the role
 boundary, so a single campaign can run its Manager, Planner, and Engineer on
 different vendors' models. The FlashAttention-4 campaign in
-Section~\ref{sec:delivery} did exactly this. Domain behavior is likewise pluggable:
-the runtime ships twenty-four verticals defining their own stage order, evidence
-requirements, and completion gates, spanning software, chip design, mathematics,
-materials, medicine, quantitative finance, and literary work. A Manager that finds no
-suitable vertical can author a new one at runtime as an ordinary stage list, and a
-data domain that proves durable can later be promoted into a first-class package.
+Section~\ref{sec:delivery} did exactly this. Domain behavior is pluggable on the same
+principle, and the next subsection treats it as load-bearing rather than as a
+configuration detail.
+
+\subsection{Domain Depth Without Core Change}
+\label{sec:vertical-core}
+
+Being useful in a specialist field is mostly a matter of knowing what counts as
+evidence there. A kernel is fast or it is not, and a profiler settles it; a synthesis
+route is plausible only against a validator; a theorem is proved or it is not, and a
+proof assistant settles that. These standards differ completely across domains and
+have nothing to do with how a campaign should be scheduled, who may certify
+completion, or when a person must be asked. \systemname{} separates them at exactly
+that line.
+
+A \emph{vertical} is the declaration of a domain's evidence standard: its stage
+order, its checklists, what artifacts a stage must produce, what the completion gate
+demands, and whether missions require an independent Reviewer at all. The runtime
+ships \VerticalCount{} of them---software, GPU kernels, chip design, digital
+circuits, mathematics, physics, materials, medicine, quantitative finance, and
+several classes of writing. They are declarations, not forks: the shared core is
+\VerticalCoreLoc{} lines and does not change when a domain is added. What a domain
+costs is what its evidence standard actually demands, and the spread is wide---the
+software vertical is \VerticalSmallest{} lines, the median is \VerticalMedian{}, and
+mathematics and quantitative finance run past \VerticalLargest{} because Lean
+integration, citation checking, and market-data handling are genuinely that much
+machinery. Verticals need not live in this tree at all; they register through Python
+entry points against a versioned contract, and a registration that fails to declare a
+compatible version is rejected rather than loaded.
+
+The seam is asymmetric, and that asymmetry is the point. A vertical can raise the
+evidence bar---it can require independent review for every mission, add stage-closing
+checks, or demand a specific artifact before a stage closes---and the core enforces
+what it declares. A vertical cannot lower the bar. It cannot grant itself
+credentials, widen the autonomy mode, decide that an irreversible action needs no
+approval, or let an Engineer certify its own work where policy requires a Reviewer.
+This is not a convention: across all \VerticalTotalLoc{} lines of vertical code there
+are \VerticalAuthorityRefs{} references to the autonomy mode, the operator-escalation
+path, or the approval boundary, because that logic lives in the core and is not
+reachable from a domain package.
+
+Self-evolution runs along the same seam, which is why what a specialist writes is a
+seed rather than a ceiling. The declaration establishes the field's initial standard;
+the runtime then works inside it and revises it. What the runtime learns is scoped to
+where it was shown to hold: a procedure that works in one project stays
+project-local, one that proves general to a domain is promoted into that vertical's
+contract as a revised checklist under a Manager pass, and only what survives beyond a
+domain becomes global. A vertical is therefore a living object---seeded by a person
+who knows the field, then sharpened by every campaign that runs under it---while the
+core accumulates none of that knowledge.
+
+Revision is bounded in the direction that matters. A vertical may declare
+\code{PROTECTED\_ITEM\_IDS}, a floor of gates that the promotion path restores
+against later edits, so the checks a domain considers irreducible cannot be
+optimized away by the same process that adds new ones. Growth is permitted upward
+from the seed; the floor does not move. Domain expertise deepens where the evidence standard
+lives; the rules about who may decide stay where they cannot be edited by the party
+being judged.
 
 \subsection{Review and Completion}
 
@@ -167,8 +243,8 @@ credential redaction and result provenance preserve the selected verdict source.
 \subsection{Iterating Without a Score}
 \label{sec:no-score}
 
-Section~\ref{sec:introduction} observed that the Driver's three questions become
-trivial when a dense reward exists. This subsection describes what answers them when
+Section~\ref{sec:introduction} observed that the Driver's four questions become
+trivial when an explicit numeric reward exists. This subsection describes what answers them when
 one does not, because that case is the reason the seat could not be automated
 earlier.
 
@@ -237,7 +313,7 @@ default, a final-submission scope always forces \code{certify}, and lowering the
 requires an explicit confirmation. What varies is the standard of evidence demanded,
 never whether evidence is demanded.
 
-Together these four mechanisms answer the question a dense reward would otherwise
+Together these four mechanisms answer the question an explicit numeric reward would otherwise
 answer for free. The runtime knows whether the last round advanced the campaign,
 whether a negative result was about the idea or about the machine, what kind of
 finding it is holding, and how strong the evidence must be before that finding may be
@@ -248,39 +324,42 @@ grade itself.
 
 Equation~\ref{eq:runtime-update} separates the model from the state around it.
 Table~\ref{tab:runtime-ownership} identifies how each component can change and who
-owns the committed update. The ownership model is intentionally not uniform. Memory
-and skills use a work-versus-certification split: the Engineer authors a candidate
-after its own task completes, and a separate Manager pass decides whether it stays
-project-local, is promoted to a vertical, or becomes global. Tools and procedures are
+owns the committed update. The ownership model is intentionally not uniform. Both
+knowledge surfaces use a work-versus-certification split: the Engineer authors a
+candidate after its own task completes, and a separate Manager pass decides whether
+it stays project-local, is promoted to a vertical, or becomes global. Memory takes no
+such pass, because it is not a claim about the world. Tools and procedures are
 system-configured. Stage checklists belong to the vertical contract and are certified
 by the Manager stage decision, with Reviewer feedback rather than a second commit
 gate. Routing policy is Manager-committed, while task
 definitions are Planner-authored and scheduler-committed.
 
-We use \emph{evidence-driven} for the overall control policy that decides whether to
-persist, stop, or pivot, and \emph{verification-gated} for the narrower admission
-condition on reusable updates. The first term is chosen deliberately over
-goal-driven. A goal-driven controller treats the stated objective as the authority
-and every departure from it as error to be suppressed; an evidence-driven controller
-treats the objective as the current best hypothesis about what should be built, and
-allows evidence to overturn it. On tasks whose objective was underdefined at the
-start, the second is the correct posture, because the objective a human expert wrote
-before the work began is itself a claim that can be wrong. We use \emph{runtime self-evolution} in a deliberately
-narrow, fixed-model sense.
-The underlying model parameters remain unchanged; what evolves is the persistent
-state that later missions retrieve or obey. \emph{Verification-gated} is the
-umbrella term used in this report: a
-generated candidate is not reusable merely because a role produced it. Admission
-requires the task-native evidence that exists for that surface and a commit by its
-authorized owner. Depending on policy and risk, this can combine an official
-executable verifier with independent Reviewer judgment, permitted Engineer
-self-review, or a Manager, Planner, Scheduler, or system-configuration commit. It
-does not mean that every low-risk update requires an independent Reviewer. We use
-\emph{Reviewer-gated} only for the independent-Reviewer path and \emph{external
-grader} only for a task-native evaluator outside the role loop.
+Four terms recur and are used strictly.
+
+\begin{itemize}[leftmargin=1.3em,itemsep=2pt]
+  \item \emph{Evidence-driven} describes the control policy that decides whether to
+    persist, stop, or pivot. It is chosen against \emph{goal-driven}: that
+    controller treats the stated objective as authority and every departure as error
+    to suppress, whereas this one treats the objective as the current best hypothesis
+    and lets evidence overturn it. Where the objective was underdefined at the start,
+    the second is the only defensible posture, because what the expert wrote before
+    the work began is itself a claim that can be wrong.
+  \item \emph{Verification-gated} is the narrower admission condition on reusable
+    updates, and the umbrella term of this report: a candidate is not reusable
+    because a role produced it, but because the task-native evidence for that surface
+    exists and its authorized owner committed it. That gate may be an executable
+    verifier, an independent Reviewer, permitted Engineer self-review, or a
+    system-configuration commit---it does not mean every low-risk update needs a
+    Reviewer.
+  \item \emph{Reviewer-gated} is reserved for the independent-Reviewer path alone,
+    and \emph{external grader} for a task-native evaluator outside the role loop.
+  \item \emph{Runtime self-evolution} is used in a deliberately narrow, fixed-model
+    sense: parameters do not change, and what evolves is the persistent state that
+    later missions retrieve or obey.
+\end{itemize}
 
 A complete update cycle has four parts:
-(1) an execution trajectory produces a candidate memory, skill, procedure,
+(1) an execution trajectory produces a candidate wiki page, skill, procedure,
 verification rule, routing decision, or task definition; (2) the responsible role
 checks the candidate against artifacts and task-native evidence; (3) the authorized
 owner commits, revises, or rejects the update; and (4) a later mission retrieves the
@@ -295,12 +374,20 @@ does not survive this commit-and-reuse path is not counted as self-evolution.
 \rowcolor{papersand}
 \textbf{State} & \textbf{Change source} & \textbf{Commit owner} & \textbf{Persistent form} \\
 \midrule
-$M$: memory & Engineer trajectory & Reviewer & Curated checkpoint and event-derived journal \\
-$S$: skills & Engineer post-task authoring & Manager placement review & Versioned skill library \\
-$A$: tools and procedures & System configuration & System configuration & Versioned tool and procedure registry \\
-$V$: verification & Vertical stage contract & Manager stage decision & Stage checklist and certificate; Reviewer supplies feedback \\
-$R$: routing and roles & Runtime policy & Manager & Campaign routing policy \\
-$Q$: tasks and evaluations & Planner & Scheduler & Backlog task specifications and scopes \\
+\rowcolor{white}
+\multicolumn{4}{@{}l}{\emph{Knowledge}---certified, reusable, scoped} \\
+\;wiki & Engineer authoring from reviewed outcomes & Reviewer & Source-linked semantic pages \\
+\;skills & Engineer post-task authoring & Manager placement review & Versioned skill library \\
+\midrule
+\rowcolor{white}
+\multicolumn{4}{@{}l}{\emph{Memory}---durable, uncertified, campaign-scoped} \\
+\;journal and backlog & Runtime execution & Runtime (append-only) & \code{events.jsonl}, mission backlog, durable artifacts \\
+\;session context & Role invocation & Runtime & Per-role rolling window \\
+\midrule
+tools and procedures & System configuration & System configuration & Versioned tool and procedure registry \\
+verification & Vertical stage contract & Manager stage decision & Stage checklist and certificate; Reviewer supplies feedback \\
+routing and roles & Runtime policy & Manager & Campaign routing policy \\
+tasks and evaluations & Planner & Scheduler & Backlog task specifications and scopes \\
 \bottomrule
 \end{tabularx}
 \caption{Attributable ownership of fixed-model runtime evolution. A mission usually
@@ -308,11 +395,12 @@ updates only a subset of these components.}
 \label{tab:runtime-ownership}
 \end{table}
 
-Two knowledge surfaces carry reusable experience. Versioned skills store procedures
-that can be matched to later tasks. A project knowledge base stores source-linked
-records and synthesized pages derived from reviewed outcomes. Neither surface is
-treated as automatically correct: entries can be revised, archived, or retired when
-later results contradict them.
+Knowledge is the pair defined in Section~\ref{sec:problem}: a wiki recording what a
+domain turned out to be like, and a skill library holding procedures that can be
+matched to later tasks. Neither substitutes for the other---a procedure with no
+account of why it works cannot be revised when conditions change, and a finding no
+mission can act on is inert---and neither is treated as automatically correct, since
+entries can be revised, archived, or retired when later results contradict them.
 
 This mechanism can improve a later mission without changing the model itself. A
 verified retained failure can prevent a repeated dead end; an admitted procedure can shorten
@@ -356,6 +444,7 @@ Engineer-self-review or independent-Reviewer judgment path.
 
 Resource accounting is centralized at model-call and external-job boundaries.
 Budgets are checked before work begins and reconciled after completion, preventing
-individual roles from expanding their own allocation. Concrete scheduling,
-sandboxing, and deployment mechanisms are implementation choices rather than part
-of the scientific claim.
+individual roles from expanding their own allocation. Scheduling, sandboxing, and
+deployment are engineering choices, and we expect to keep changing them. What is not
+a choice is the shape they enforce: no role writes its own permission, and no role
+grades its own work.

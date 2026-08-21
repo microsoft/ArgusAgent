@@ -6,6 +6,28 @@ import pytest
 from argus_skill.apps import tui_launcher
 
 
+class _Stdin:
+    """A stand-in for ``sys.stdin`` whose tty-ness the test chooses."""
+
+    def __init__(self, tty: bool) -> None:
+        self._tty = tty
+
+    def isatty(self) -> bool:
+        return self._tty
+
+
+@pytest.fixture(autouse=True)
+def _interactive_stdin(monkeypatch):
+    """The launcher is invoked from a terminal; pytest's stdin is not one.
+
+    `main()` refuses to start the cockpit without a tty, so every test that
+    exercises a later step has to look interactive. Tests about the refusal
+    itself override this.
+    """
+    monkeypatch.delenv("ARGUS_SKILL_ALLOW_HEADLESS_TUI", raising=False)
+    monkeypatch.setattr(tui_launcher.sys, "stdin", _Stdin(tty=True))
+
+
 class _ReconfigurableStream:
     def __init__(self) -> None:
         self.calls: list[dict[str, str]] = []
@@ -310,3 +332,48 @@ def test_admin_flags_after_capability_options_stay_on_python_admin_path(
 
     assert tui_launcher.main(["--backend", "codex", "--auth-mode", "model_api", "--doctor"]) == 7
     assert seen == [["--backend", "codex", "--auth-mode", "model_api", "--doctor"]]
+
+
+def test_launcher_refuses_a_cockpit_without_a_terminal(monkeypatch, capsys) -> None:
+    """Ink puts stdin in raw mode, so no terminal means no cockpit.
+
+    A piped, redirected or cron-launched `argus` used to announce that it was
+    starting the backend and then die inside the bundle with a JavaScript
+    stack trace and a link to Ink's README. Nothing may start, and the reply
+    must name the surfaces that do work without a terminal.
+    """
+    monkeypatch.delenv("ARGUS_SKILL_ALLOW_HEADLESS_TUI", raising=False)
+    monkeypatch.setattr(tui_launcher.sys, "stdin", _Stdin(tty=False))
+    monkeypatch.setattr(
+        tui_launcher,
+        "_bundle_path",
+        lambda: (_ for _ in ()).throw(AssertionError("TUI must not launch")),
+    )
+
+    assert tui_launcher.main([]) == 2
+    err = capsys.readouterr().err
+    assert "needs an interactive terminal" in err
+    for surface in ("--web", "--watch", "--status", "--daemon"):
+        assert surface in err
+    assert "Raw mode" not in err
+
+
+def test_launcher_keeps_the_cockpit_when_stdin_is_a_terminal(monkeypatch) -> None:
+    monkeypatch.delenv("ARGUS_SKILL_ALLOW_HEADLESS_TUI", raising=False)
+    monkeypatch.setattr(tui_launcher.sys, "stdin", _Stdin(tty=True))
+    assert tui_launcher._headless_stdin_error() == ""
+
+
+def test_a_headless_cockpit_can_be_forced_for_an_embedding_host(monkeypatch) -> None:
+    monkeypatch.setenv("ARGUS_SKILL_ALLOW_HEADLESS_TUI", "1")
+    monkeypatch.setattr(tui_launcher.sys, "stdin", _Stdin(tty=False))
+    assert tui_launcher._headless_stdin_error() == ""
+
+
+def test_admin_commands_still_run_without_a_terminal(monkeypatch) -> None:
+    """The gate guards the cockpit only; `--status` and friends stay headless."""
+    monkeypatch.delenv("ARGUS_SKILL_ALLOW_HEADLESS_TUI", raising=False)
+    monkeypatch.setattr(tui_launcher.sys, "stdin", _Stdin(tty=False))
+    monkeypatch.setattr(tui_launcher, "_run_python_admin", lambda argv: 0)
+
+    assert tui_launcher.main(["--status"]) == 0

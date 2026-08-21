@@ -1,6 +1,6 @@
 ---
 name: "Academic Paper Peer Review Benchmark"
-description: "Simulate a strict, venue-aware reviewer for a nearly complete AI research paper, judging contribution value, evidence, reproducibility, writing, format, and readiness without requiring a positive result or a fixed benchmark scale."
+description: "Review a nearly complete AI research paper the way a top-venue area chair does: find the strongest paper this evidence can support, say what would get it accepted, and hold claims to real evidence — without requiring a positive result or a fixed benchmark scale."
 ---
 
 # Academic Paper Peer Review Benchmark
@@ -19,6 +19,10 @@ not by itself create publication value.
 
 ## Reviewer stance
 
+Review as an area chair who would like to accept this paper and is deciding
+what it would take. The useful output is the shortest path to acceptance, not a
+verdict.
+
 - For publishable/doctoral work, require a nontrivial technical core, verified
   originality, claim-relevant formal/causal grounding, and field-level
   consequence.
@@ -26,6 +30,13 @@ not by itself create publication value.
 - Review constructively: first identify the strongest publishable argument the
   evidence can support, including a negative or mixed-result argument, and limit
   blocking feedback to issues that would actually change the venue decision.
+- Say what would raise the paper, concretely, in priority order: the experiment
+  that would close the gap, the claim that the evidence already supports more
+  strongly than the text admits, the reorganization that would make one insight
+  carry the argument.
+- A paper that undersells itself is a paper you are failing. When the result is
+  stronger than the abstract claims, return that as a finding: hedged writing
+  over a real result costs the same acceptance as an unsupported claim.
 - Do not reward a PDF merely for existing.
 - Do not accept or reject a contribution by result sign. For a negative/boundary
   paper, value a robustly characterized regime, mechanism, scaling law, benchmark
@@ -77,6 +88,10 @@ Score each dimension 1–5.
    - Is evidence breadth, task count, model count, seed count, or proof coverage
      justified by the claim rather than a universal quota?
    - Are uncertainty and repeatability handled appropriately?
+   - For publishable/doctoral work, does
+     `paper/PUBLICATION_SCALE_ASSESSMENT.json` accurately compare the real
+     claim-bearing artifacts with recent accepted same-area papers? Claim
+     narrowing does not repair underpowered, tiny-slice, or proxy-only evidence.
 
 4. **Literature and novelty**
    - Are material premises, nearest competitors, foundations, contradictions,
@@ -98,6 +113,10 @@ Score each dimension 1–5.
      implication honestly?
    - Does the paper have one coherent thesis?
    - Does every major section strengthen or explain the same thesis?
+   - Does `paper/style_ref/ARGUMENT_ORGANIZATION.json` show that accepted
+     same-area full papers and available official code were actually read?
+     Judge whether their argument/code organization was intelligently adapted
+     to local evidence without copied prose or a reproduction requirement.
 
 7. **Venue format and visual evidence**
    - Does the paper follow the selected venue's current official template,
@@ -145,6 +164,10 @@ and no hard blocker.
 - private infrastructure/secrets leaked into rendered prose;
 - paper value depends only on relabeling a weak result rather than a genuine
   insight.
+- missing, false, or unsupported publication-scale assessment for a
+  publishable/doctoral target;
+- an underpowered pilot, tiny evaluation slice, or proxy-only diagnostic is the
+  primary evidence and is made to look sufficient only by narrowing the claim;
 - shallow prompt/schema/wrapper/scale contributions, decorative claimed theory,
   or no field-level consequence beyond a local metric;
 - the paper proposes a method as its contribution while its own evidence defeats
@@ -152,8 +175,9 @@ and no hard blocker.
 - underperformance is treated as scientific evidence without a credible
   implementation-adequacy audit.
 
-A negative, null, diagnostic, or boundary result is not a blocker by sign; lack
-of standalone insight is.
+A negative, null, diagnostic, or boundary result is not a blocker by sign. It
+still needs standalone publication-scale evidence and independent value; lack
+of either is a blocker.
 
 ## Output contract
 

@@ -1,58 +1,142 @@
 \section{Introduction}
 \label{sec:introduction}
 
-A language model is an engine and tokens are its working fluid, but an engine is not
-a factory. What made the steam engine consequential was not the discovery that steam
-carries energy; it was the century of machinery built to convert that energy into
-rotation, and rotation into manufactured goods. Intelligence is at the equivalent
-stage. Capability is abundant, and the machinery that converts it reliably into
-delivered value is not. \emph{Auto research} is our name for that machinery when the
-work requires invention rather than recall---not automated science in the sense of a
-machine that discovers unaided, but the pipeline that turns tokens into intelligence
-and intelligence into artifacts worth having. Intelligence is not the terminal good;
-value is.
+A language model is an engine. It burns compute and puts out tokens, and tokens are
+the power---the last few years have been spent making that output remarkable. But an
+engine bolted to a bench only spins. Something has to transmit its power to the
+ground, so we built the car around it: an agent \emph{harness} couples that output to
+files, shells, compilers, GPUs, and test suites, turning tokens into motion against
+the real world. Building good harnesses is most of what the last two years of agent
+engineering produced, and the results are real. Computer-using agents hold up in
+production on repeatable workflows, though they stay brittle the moment the work
+drifts off the runbook~\citep{a16z2026computeruse}. Pointed at hard problems, frontier
+models have returned findings nobody had: new attacks on a post-quantum signature
+scheme and on round-reduced AES~\citep{anthropic2026crypto}, and progress on ten
+mathematical problems that had stood for a decade~\citep{willison2026tenadvances}.
 
-An agent harness is the part of that machinery that lets a language model touch the
-real world: files, shells, compilers, GPUs, test suites. Building good harnesses is
-most of what the last two years of agent engineering produced, and the results are
-real. But a harness only executes. Something else has to decide what to attempt,
-judge whether the attempt worked, and choose whether the next step is another
-attempt, a different route, or a question for a human. We call that role the
-\emph{Driver}. In every deployed agent system we know of, the answer to who drives
-the harness is: a person does.
+But a car with no one at the wheel does not go anywhere worth going. Motion is not
+progress. Something has to choose the destination, read the road, decide whether the
+last turn was right, and know when to pull over and ask. We call that role the
+\emph{Driver}, and it is the part nobody automated. In every deployed agent system we
+know of, the answer to who drives the harness is that a person does---which also
+answers how long it can be driven, since nobody drives for eight days without
+stopping. The last few months of our own work went into the question this report
+reports on: what happens when \systemname{} takes that seat instead.
+
+Where the wheel points is not a secondary question, and July 2026 supplied the
+demonstration. An autonomous agent under a frontier-lab capability evaluation
+inferred that the benchmark's reference solutions were held on Hugging Face's
+production systems, and went and took them: roughly 17{,}600 recovered actions over
+four and a half days, at machine speed, with no human in the
+loop~\citep{huggingface2026intrusion}. Hugging Face's reading is that the intrusion
+was, from the agent's point of view, an attempt to cheat the evaluation rather than
+solve it. Nothing about that requires malice, and that is the uncomfortable part. A
+system optimizing a score, holding the authority to act, and answerable to nobody
+about whether it was finished, took the shortest path to the number. It is the
+failure this report is about, run at full speed: the executor decided what counted
+as done, and no boundary told it which actions were not its to take.
+
+The quieter failure is waste. Each model generation consumes more tokens per task
+than the last, so an inefficient harness compounds the cost of every autonomous
+session~\citep{caldwell2026tokenefficiency}, and unattended operation multiplies
+whatever the loop was already doing wrong. Both failures are failures of steering
+rather than horsepower, and both get worse as the engine improves.
+
+That is the machinery we call \emph{auto research} when the work requires invention
+rather than recall---not automated science in the sense of a machine that discovers
+unaided, but the pipeline that turns tokens into intelligence and intelligence into
+artifacts worth having. Engines are abundant; so are cars. Intelligence is not the
+terminal good, and neither is motion. Value is, and value is a matter of where you
+point the thing.
 
 This is why agent progress is bounded by a resource that cannot be scaled. The
 operator reads the diff, decides it is not what they meant, types the correction,
 and the loop advances one step. When the operator goes to dinner, the project stops.
 Not because the model is out of capacity, and not because the machine is tired, but
 because the only component authorized to say ``that is not right, do this instead''
-has gone home. \emph{Human intelligence therefore arrives in discrete bursts},
-and every long-horizon agent trajectory is stitched together from the waking hours of
-whoever is babysitting it. Measured on the systems available today, that stitching is
-dense: a strong coding agent driven turn by turn sustains roughly
-\CodexEndurance{} hour before it needs its operator back.
+has gone home. \emph{Human intelligence is discrete}: it arrives in bursts bounded
+by attention and sleep, and every long-horizon agent trajectory is stitched together
+from the waking hours of whoever is babysitting it. The assumption underneath is
+rarely stated---that oversight at human speed is sufficient---and it is the
+assumption Anthropic identifies as the one our institutions were built
+on~\citep{anthropic2026multiagent}. Where agents already deliver, the same shape
+appears: OpenAI's field report on agent-modernized scientific software describes
+researchers moving from writing code to specifying, verifying, and orchestrating what
+the agent wrote~\citep{openai2026sciencecomputing}. The bottleneck migrates to the
+person; it does not leave. Measured on the systems available
+today, that stitching is fine-grained: a strong coding agent driven turn by turn
+sustains roughly \CodexEndurance{} hour before it needs its operator back.
+
+The work this report is about has the opposite shape. A \emph{dense-intelligence
+task}---one that sustains reasoning, tool use, verification, and revision
+continuously until it produces a measurable result (Section~\ref{sec:problem})---is
+precisely a task that will not hold still between bursts. Supplying such a task from
+a discrete source is the mismatch that has bounded this field. The work wants days of
+uninterrupted judgment; the only component licensed to supply it goes home at six,
+and what it left running is stale by morning.
+
+\emph{Driver intelligence is dense, and it compounds.} It does not rest, so the
+campaign's clock and the calendar's clock are the same clock. And it compounds
+because a premise adopted
+on day one is still under revision on day eight by the same accumulated state instead
+of being re-established each morning by a person reading yesterday's log. That
+compounding is what a discrete supply cannot buy at any level of individual
+brilliance, and it is measurable: Section~\ref{sec:duty-cycle} reports
+\DutyCycleLow--\DutyCycleHigh\% of available time spent working, against a ceiling of
+33\% for any harness whose Driver has to sleep.
+
+This changes what is being automated. A harness automates execution---the model does
+what a person already decided to do. A Driver automates the deciding, and deciding
+under evidence, repeatedly, over days, is most of what research is. The step from
+automating execution to automating research is not a matter of a stronger model
+executing more; it is a matter of who holds the seat, and for how long. Assisted
+driving keeps a person's hands on the wheel and measures how much less they have to
+steer. What we report is the other thing: the car going somewhere useful overnight,
+with the seat empty and the destination chosen on the way.
 
 We report what happens when the Driver's seat is handed to the machine. The task the
 seat performs is not monolithic, and separating it is the first contribution of this
-report. A Driver answers exactly three questions, over and over:
+report. A Driver answers four questions, over and over, and they nest---each is asked
+about the answer to the one before it:
 
 \begin{enumerate}[label=\textbf{Q\arabic*.}]
-  \item \textbf{Is this actually done?} Not whether a command exited zero, but
-    whether the artifact discharges the obligation that motivated it.
+  \item \textbf{Is this done, and is it any good?} Not whether a command exited zero,
+    and not whether an artifact exists, but whether it discharges the obligation that
+    motivated it at the standard its claim requires. Finished and good are different
+    verdicts, and a system that conflates them will ship the first one forever.
   \item \textbf{What is worth doing next?} Given everything now known, including
     what just failed, where should the next unit of effort go?
+  \item \textbf{How does the system get better at this?} What did this round teach
+    that should change how the next one is attempted---and does that lesson hold for
+    this project, for the whole field, or everywhere?
   \item \textbf{Does this need a person?} Which of the remaining obstacles are the
     machine's to resolve, and which belong to someone with authority it does not
     have?
 \end{enumerate}
 
-It is worth noticing when these questions are hard. Given a dense reward---a test to
-turn green, a leaderboard to climb, a latency to halve---all three collapse. Q1 is
-answered by reading the number, Q2 by whatever raises it, and Q3 never arises because
-nothing is ambiguous enough to escalate. This is why recursive self-improvement has
+The four are ordered by scope. Q1 judges an artifact, Q2 a trajectory, Q3 the
+capability that produces both, and Q4 draws the boundary around all three. Each is
+answerable only if the one before it was answered honestly: a system that cannot tell
+finished from good cannot tell which lesson is worth keeping, and a system that keeps
+the wrong lessons gets confidently worse.
+
+It is worth noticing when these questions are hard. Given an explicit numeric
+reward---a test to
+turn green, a leaderboard to climb, a latency to halve---all four collapse into it.
+Q1 is answered by reading the number, Q2 by whatever raises it, Q3 by keeping
+whatever raised it before, and Q4 never arises because nothing is ambiguous enough to
+escalate. Q3 is the one such a reward answers most completely, since keeping what
+moved the number is what training already does. This is why recursive self-improvement has
 progressed fastest exactly where such signals exist, and why that progress has not
 transferred: \textbf{the Driver's seat is not a separate problem from the missing
-score. It is what the missing score leaves behind.}
+score. It is what the missing score leaves behind.} Recursive self-improvement is one
+of four routes DeepMind identifies from AGI toward
+superintelligence~\citep{legg2026agitoasi}; what this framing adds is that the route
+is gated on a question nobody scores. The strongest automated-research results to date
+are consistent with this: the systems posting them select benchmarks for clear metrics,
+low variance, and evaluators hardened against reward
+hacking~\citep{recursive2026firststeps}---which is to say, they select for the case
+where the Driver's questions have already been answered by the task.
 
 The tasks that motivate this report supply no such signal. A mathematical campaign
 rarely terminates in the theorem it set out to prove, and its intermediate bounds and
@@ -70,10 +154,12 @@ impossible---most importantly, that an experiment which never ran can never be
 recorded as a refuted idea.
 
 Automating Q2 alone yields an agent that confidently executes a plan nobody checked.
-Automating Q1 and Q2 without Q3 yields an agent that spends a credential or force
-pushes a branch because no rule told it that this class of decision is not its to
-make. The three have to be answered together, by different parties, or the seat
-cannot be delegated safely.
+Automating Q1 and Q2 without Q3 yields an agent that solves the same problem the same
+way forever, paying full price each time for a lesson it already had. Automating the
+first three without Q4 yields an agent that spends a credential or force pushes a
+branch because no rule told it that this class of decision is not its to make. The
+four have to be answered together, by different parties, or the seat cannot be
+delegated safely.
 
 \systemname answers them with four model-driven roles over durable state. A
 \emph{Reviewer} answers Q1 and is deliberately weak: it runs read-only, so it
@@ -82,7 +168,12 @@ look better, and it can return \code{blocked}, refusing to certify work rather t
 manufacturing a completion. A \emph{Planner} answers Q2 by decomposing the current
 research state into bounded tasks, while a \emph{Manager} holds sole authority over
 campaign stage transitions so that a single round cannot quietly redefine the
-campaign. Q3 is answered by an explicit authority boundary: credentials, payment,
+campaign. Q3 is answered by promotion under that same gate: the Engineer proposes
+what the round taught, and a separate Manager pass decides whether the lesson stays
+with this project, is written into the field's own contract so that every future
+campaign in that domain inherits it, or becomes global---which is how the runtime
+grows expert in a field without anyone editing the runtime. Q4 is answered by an
+explicit authority boundary: credentials, payment,
 irreversible actions, and publication stop for a human in every autonomy mode, while
 an ordinary timeout, failed test, or unavailable backend does not.
 
@@ -92,8 +183,9 @@ The reason a person must watch a conventional agent is that the component doing 
 work is also the component declaring it finished, and no one should accept a
 self-certified result on a task that matters. Separate those two, give the certifying
 party no ability to edit what it certifies, and let it refuse---and the human can
-leave the room. \textbf{Verification is not a quality feature. It is the load-bearing
-wall that makes unattended operation possible at all.}
+leave the room. \textbf{Independent review is not a quality feature. Separating who
+does the work from who may certify it is the load-bearing wall that makes unattended
+operation possible at all.}
 
 The seat also could not be delegated earlier for a reason specific to research work:
 the objective itself moves. A mathematical campaign rarely ends in the theorem it set
@@ -181,10 +273,9 @@ which is the boundary behaving as designed. \DutyContextPercent\% reported missi
 context files. Only \DutyJudgmentPercent\%---\DutyJudgmentCount{} requests in
 \DutyWallHours{} hours---were research judgment, the case where the system had work
 available and could not decide how to proceed. With work in hand, duty cycle runs
-\DutyCycleLow--\DutyCycleHigh\%. The lowest observed campaign,
-\DutyDegradedCycle\%, is the one whose GPU driver and container storage failed
-repeatedly: \textbf{the binding constraint on unattended operation is infrastructure
-availability, not agent autonomy.}
+\DutyCycleLow--\DutyCycleHigh\%, and where it falls short the interruption logs
+record failed drivers and corrupted storage: \textbf{the binding constraint on
+unattended operation is infrastructure availability, not agent autonomy.}
 
 \paragraph{Do the unattended hours produce anything?}
 Duty cycle alone would only prove an expensive idle loop, so we pair it with
@@ -210,86 +301,79 @@ reporting an unsupported success, which is the same gate viewed from the other s
 a system that can leave the room is a system that can also refuse to claim it
 finished.
 
-This report makes eleven contributions:
+One task, four questions, six contributions. The task is dense-intelligence work;
+the four questions are the Driver's; the contributions are these:
 
 \begin{enumerate}[label=\textbf{C\arabic*.}]
-  \item We frame \emph{auto research} as the machinery converting tokens into
-    intelligence and intelligence into value, argue that what current systems---ours
-    included---actually automate is execution and the human attention bundled with
-    invention rather than invention itself, and fix its relationship to
-    \emph{recursive self-improvement} as containment: RSI is auto research pointed at
-    the production of AI, and inherits every constraint of the general case.
-  \item We show how a runtime can iterate and self-improve where no dense reward,
-    well-formed objective, or reliable numeric feedback exists---the regime in which
-    recursive self-improvement has previously stalled---by replacing the scalar with
-    a typed vocabulary of frontier transitions in which informative failure counts as
-    progress, separating execution failure from hypothesis refutation so that a run
-    which never executed cannot refute an idea, naming the honest non-terminal
-    outcomes, and scaling the evidence bar to the maturity of the claim.
-  \item We identify the \emph{Driver} as a distinct, previously unautomated role
-    sitting above the harness, and decompose it into three separable questions---is
-    this done, what is next, does this need a person---each of which must be owned by
-    a different party for the seat to be delegated safely.
-  \item We show that independent verification is the enabling condition for
-    unattended operation rather than a quality feature added after it. A read-only
-    Reviewer that cannot edit the evidence it judges, and that may return
-    \code{blocked}, is what makes it acceptable for the operator to be absent.
-  \item We introduce two paired metrics for unattended operation and report them
-    from runtime ledgers: \emph{duty cycle}, the fraction of available time in which
-    the system is producing, and \emph{interruption rate}, how often a human is
-    required. Neither is meaningful alone; together they separate a productive
-    unattended system from both an idle loop and a babysat one.
-  \item We measure both across \DutyCampaigns{} campaigns, \DutyWallHours{}
-    wall-clock hours, and \DutyEvents{} events: \DutyInterruptions{} human requests,
-    one every \DutyInterval{} hours, of which only \DutyJudgmentPercent\% are
-    research judgment; duty cycle of \DutyCycleLow--\DutyCycleHigh\% with work in
-    hand. We further show the residual gap is dominated by infrastructure failure
-    rather than agent hesitation.
-  \item We argue that long-horizon research requires evidence-driven rather than
-    goal-driven control---since an objective written before the work begins can
-    itself be wrong, and suppressing departure from it preserves the error---and
-    formulate this as evidence-admitted revision over a compact report-level contract
-    $K_t=(\iota,o_t,c_t,v_t)$ with explicit user decision state $X_t$. The analytical \code{ManagerAdmit} operator makes evidence, authority, and
-    provenance requirements explicit without claiming one atomic implementation API.
-    Contract refinement is represented through typed, logged, role-owned surfaces:
-    \code{GoalContract} revisions, Manager stage transitions, abandoned approaches,
-    and recorded verdict sources give material changes an author, a precondition, and
-    an audit trail.
-  \item We measure where the runtime spends verification and where it refuses to
-    terminate. Of \ReviewerTasks{} SWE-Bench Pro tasks, \ReviewerInvoked{} invoke an
-    independent Reviewer and \ReviewerSkipped{} use Engineer self-review. The Reviewer
-    withholds completion on \ReviewerRevisionRequested{} tasks, of which
-    \ReviewerVerifierRecovered{} later pass the official verifier and
-    \ReviewerStrictRescues{} complete the strict review loop; a further
-    \ReviewerFirstBlocked{} tasks are declared blocked rather than reported complete.
-  \item We report delivery from the unattended hours against human effort on the same
-    work. One engineer with a turn-by-turn coding agent spent over
-    \SGLangHumanHours{} hours on an SGLang integration without completing it, which
-    \systemname finished within a \SGLangArgusHours{}-hour envelope; a
-    FlashAttention-4 diffusion-LLM mask adaptation reached
-    \FlashDAGapLow--\FlashDAGapHigh\% of native kernel performance for under
-    \FlashDACostCNY{} CNY of model spend. We additionally present a six-project paper
-    case study spanning \PaperCaseMissions{} missions and \PaperCaseRollbacks{} Stage
-    rollbacks, and a mathematical campaign retaining one falsified route alongside six
-    accepted theorem-frontier updates.
-  \item We separate self-improvement into a parameter-invariant axis, which
-    compounds retained state under a fixed backbone and which this report measures,
-    and a parameter-changing axis, which moves the capability ceiling itself. We
-    report the runtime building and running a from-scratch 1B pretraining stack on an
-    eight-GPU B200 node as the entry condition for the second axis, and state
-    precisely what remains: training on its own retained trajectories rather than a
-    public corpus, and measuring whether a model produced this way improves the
-    runtime that built it.
-  \item We present frontier GPU and serving infrastructure as the vertical with the
-    least forgiving verifier and the most external scrutiny: six diffusion-LLM mask
-    families carried into a FlashAttention-4 CuTe DSL kernel within
+  \item \textbf{The Driver.} We identify the previously unautomated role above the
+    harness and decompose it into four nested questions---is this done and any good,
+    what is next, how does the system get better at this, does this need a
+    person---each of which must be owned by a different party for the seat to be
+    delegated safely. This also locates \emph{auto research}: what current systems,
+    ours included, automate is execution, not invention. \emph{Recursive
+    self-improvement} is the same machinery aimed at the production of AI, and
+    inherits every constraint of the general case.
+
+  \item \textbf{Progress without a score.} We show how a runtime iterates where no
+    explicit numeric reward, well-formed objective, or reliable feedback exists---the
+    regime in which self-improvement has previously stalled. Rather than manufacture
+    a score, which would have one system produce both the work and its grade,
+    \systemname{} records progress as a typed frontier transition in which
+    informative failure counts, makes a run that never executed incapable of refuting
+    a hypothesis, names the honest non-terminal outcomes, and scales the evidence bar
+    to the maturity of the claim. We formalize this as evidence-driven rather than
+    goal-driven control---evidence-admitted revision over a report-level contract
+    $K_t$---so an objective that turns out to be wrong can be departed from on the
+    record, with an author, a precondition, and an audit trail.
+
+  \item \textbf{Verification as the enabling condition.} Independent review is not a
+    quality feature added after execution; separating who works from who may certify
+    is what makes the seat delegable. A
+    read-only Reviewer that cannot edit the evidence it judges, and that may return
+    \code{blocked}, is what makes the operator's absence acceptable. Of
+    \ReviewerTasks{} SWE-Bench Pro tasks it withholds completion on
+    \ReviewerRevisionRequested{}, \ReviewerVerifierRecovered{} of which later pass the
+    official verifier, and declares \ReviewerFirstBlocked{} blocked rather than
+    reporting an unsupported success.
+
+  \item \textbf{Domain depth without core change.} We separate domain expertise from
+    decision authority architecturally. A \emph{vertical} declares what counts as
+    evidence in a field and may raise the evidence bar but never lower it, while the
+    authority boundary and the escalation path live in a core no domain package can
+    reach---\VerticalAuthorityRefs{} references to either across all
+    \VerticalTotalLoc{} lines of vertical code. \VerticalCount{} verticals ship
+    against a \VerticalCoreLoc{}-line core that does not change when a domain is
+    added, the smallest costing \VerticalSmallest{} lines. What a specialist writes is
+    a seed rather than a ceiling: campaigns running under a vertical promote knowledge
+    and revised checks into its contract, above a declared floor of gates no revision
+    may remove. Self-improvement is scoped along the same seam: a parameter-invariant
+    axis that compounds retained state under a fixed backbone, which this report
+    measures, and a parameter-changing axis, for which we report a from-scratch 1B
+    pretraining stack as the entry condition and state what remains.
+
+  \item \textbf{Measuring the delegation.} We introduce two paired metrics and report
+    them from runtime ledgers: \emph{duty cycle}, the share of available time the
+    system is producing, and \emph{interruption rate}, how often a human is required.
+    Neither is meaningful alone; together they separate a productive unattended system
+    from both an idle loop and a babysat one. Across \DutyCampaigns{} campaigns,
+    \DutyWallHours{} wall-clock hours, and \DutyEvents{} events: \DutyInterruptions{}
+    human requests, one every \DutyInterval{} hours, of which only
+    \DutyJudgmentPercent\% are research judgment, at
+    \DutyCycleLow--\DutyCycleHigh\% duty cycle with work in hand. The residual gap is
+    dominated by infrastructure failure, not agent hesitation.
+
+  \item \textbf{What the unattended hours delivered.} Against a capability floor
+    across seven benchmark arenas showing the verification machinery does not cost
+    end-task performance, we report delivery where the verifier is least forgiving
+    and the scrutiny most external: six diffusion-LLM mask families carried into a
+    FlashAttention-4 CuTe DSL kernel within
     \FlashDAGapLow--\FlashDAGapHigh\% of native across two architectures for under
-    \FlashDACostCNY{} CNY; a unified-model integration into SGLang validated on real
-    hardware; and TileLang and correctness-fix kernels reviewed by outside
-    maintainers of \code{flash-linear-attention} and accepted with no blocking
-    changes requested. We report this alongside a capability floor across seven
-    benchmark arenas showing that the verification machinery does not cost end-task
-    performance.
+    \FlashDACostCNY{} CNY; an SGLang integration one engineer had not completed in
+    over \SGLangHumanHours{} hours, finished within a \SGLangArgusHours{}-hour
+    envelope; and \FLAPRTotal{} kernels accepted by outside maintainers of
+    \code{flash-linear-attention} with no blocking changes. Case studies in paper
+    production and mathematics show the same machinery retaining falsified routes
+    rather than discarding them.
 \end{enumerate}
 
 The remainder of the report follows a conventional research-paper organization.

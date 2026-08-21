@@ -76,6 +76,46 @@ def test_paper_is_claim_driven_and_selective() -> None:
     assert "not a chronological experiment report" in draft["draft.tex"]
 
 
+def test_publishable_boundary_results_cannot_be_underpowered_pilots() -> None:
+    analysis_skill = _skill("engineer/research-results-analysis-and-figures.md")
+    peer_review = _skill("reviewer/academic-paper-peer-review-benchmark.md")
+    analysis = {item.id: item.statement for item in STAGE_CHECKLISTS["analysis"]}
+    plan = {item.id: item.statement for item in STAGE_CHECKLISTS["plan"]}
+    review = {item.id: item.statement for item in STAGE_CHECKLISTS["review"]}
+
+    assert "official acceptance" in plan["plan.publication_scale"]
+    assert "not universal numeric quotas" in analysis_skill
+    assert "pilot_only" in analysis_skill
+    assert "claim narrowing" in " ".join(peer_review.lower().split())
+    assert "publication-scale evidence" in review["review.publication_value"]
+    # The bar is unchanged; the sentence carrying it is not. Stated as a
+    # prohibition ("a failed small experiment plus narrower prose is not a
+    # contribution") it taught the safest move — claim less — and the drafts
+    # read like audit reports. Stated as the standard a boundary finding is
+    # held to, it asks for the run instead of the hedge.
+    assert (
+        "same terms as a positive one"
+        in analysis["analysis.publication_scale"]
+    )
+    assert "at that scale" in analysis["analysis.publication_scale"]
+
+
+def test_accepted_paper_and_code_organization_is_learned_without_copying() -> None:
+    exemplar = _skill("engineer/paper-exemplar-pdf-learning.md")
+    peer_review = _skill("reviewer/academic-paper-peer-review-benchmark.md")
+    plan = {item.id: item.statement for item in STAGE_CHECKLISTS["plan"]}
+
+    statement = plan["plan.argument_organization"]
+    assert "accepted same-area full papers" in statement
+    assert "official code" in statement
+    assert "Reproduction is not required" in statement
+    assert "copying prose" in statement
+    assert "ARGUMENT_ORGANIZATION.json" in exemplar
+    assert "problem setup" in exemplar
+    assert "config/evaluation flow" in exemplar
+    assert "without copied prose or a reproduction requirement" in peer_review
+
+
 def test_live_checklist_requires_thesis_and_implementation_adequacy() -> None:
     run = {item.id: item.statement for item in STAGE_CHECKLISTS["run"]}
     analysis = {item.id: item.statement for item in STAGE_CHECKLISTS["analysis"]}
@@ -171,7 +211,11 @@ def test_research_plan_and_run_require_current_generation_backbone() -> None:
     assert "current open model generation" in plan["plan.backbone"]
     assert "live model catalog" in plan["plan.backbone"]
     assert "never the primary publication evidence" in plan["plan.backbone"]
-    assert "current-generation headline model" in benchmark["benchmark.backbone"]
+    # The backbone requirement was written into plan, benchmark and run. The
+    # middle copy only restated the plan lock, and every restatement is one
+    # more box an agent can open a mission to go tick. Planning locks it and
+    # the run proves it was executed.
+    assert "benchmark.backbone" not in benchmark
     assert "actually execute" in run["run.backbone"]
     assert "plumbing-only" in runner
     assert "cannot become headline evidence by inertia" in runner
@@ -379,3 +423,112 @@ def test_research_protocol_rejects_unsupported_magic_thresholds() -> None:
     assert "unsupported round-number gains" in plan["plan.experiment"]
     assert "continuous evidence" in brief
     assert "cost-quality frontier" in results_review
+
+
+def test_process_artifacts_are_finishing_steps_not_missions() -> None:
+    """Measured on four live ICLR campaigns: 44% of missions were bookkeeping.
+
+    Of 125 completed missions the titles broke down as 55 certification, scope,
+    checklist and package missions against 41 that ran an experiment — roughly
+    ten hours spent on the harness agreeing with itself. The mechanism is that
+    any unsatisfied artifact reads as schedulable work, so process competes with
+    science for mission slots and the analysis directories end up named after
+    repairs rather than questions.
+
+    Both roles now say the same thing from their own side: the Planner does not
+    schedule an artifact as its own mission, and the Reviewer does not return
+    work for a missing one.
+    """
+    from argus_skill.verticals.research.stages import role_banner
+
+    planner = role_banner("planner")
+    assert "Each mission advances the argument the paper will make" in planner
+    assert "Name missions after the question they answer" in planner
+    assert "are not missions of" in planner
+
+    reviewer = role_banner("reviewer")
+    assert "belongs in next_action, not in a returned verdict" in reviewer
+
+
+def test_a_shortfall_is_a_gap_to_close_not_a_verdict() -> None:
+    """Every campaign so far shipped a boundary study, because the policy's only
+    two endings were a positive result and a write-up of what survived. Falling
+    short of the baseline now points at the next fix, the way a leaderboard
+    result is earned, and a loss is never what gets written up."""
+    from argus_skill.verticals._base import load_vertical, vertical_role_banner
+
+    research = load_vertical("research")
+    planner = vertical_role_banner(research, "planner")
+    reviewer = vertical_role_banner(research, "reviewer")
+
+    # Selection fixes the number the campaign then spends itself improving.
+    for named in ("end-task claim", "resource-matched", "measures the gap"):
+        assert named in planner
+    assert "close it" in planner
+
+    # A miss buys the next fix; it does not judge the idea.
+    assert "leaderboard result is earned" in reviewer
+    assert "says nothing about the idea" in reviewer
+    assert "a loss is never the paper" in reviewer
+
+
+def test_probes_still_cannot_veto_a_selected_idea() -> None:
+    """A ten-minute smoke test must not be able to stop an idea: only evidence
+    at the scale named at selection is what the campaign optimizes against."""
+    from argus_skill.verticals._base import load_vertical, vertical_role_banner
+
+    research = load_vertical("research")
+    assert "cannot by themselves" in vertical_role_banner(research, "reviewer")
+    assert "claim-bearing evidence at " in vertical_role_banner(research, "planner")
+
+
+def test_only_the_manager_retires_an_idea_and_only_reluctantly() -> None:
+    """Grinding the gap down is the campaign's normal state. Deciding an idea is
+    dead is one role's call, it is meant to be rare, and impatience is named as
+    the thing it will otherwise be mistaken for."""
+    from argus_skill.verticals._base import load_vertical, vertical_role_banner
+
+    research = load_vertical("research")
+    manager = vertical_role_banner(research, "manager")
+    reviewer = vertical_role_banner(research, "reviewer")
+
+    assert "Only you can judge that an idea is genuinely dead" in manager
+    assert "rare and expensive" in manager
+    assert "impatience" in manager
+    # A dead idea returns to selection; it still never becomes a manuscript.
+    assert "roll back to selection" in manager
+    assert "never becomes is the paper" in manager
+
+    # No other role may make that call.
+    assert "the Manager's call" in reviewer
+
+
+def test_the_grind_skill_says_what_a_campaign_does_between_rounds() -> None:
+    """Argus grinds well on its own infrastructure and stops after two rounds on
+    the science. The skill exists to carry that appetite across, and the roles
+    that would need it have to be able to find it."""
+    from argus_skill.skills.builtins import iter_vertical_skill_texts
+    from argus_skill.verticals._base import load_vertical, vertical_role_banner
+
+    skill = dict(iter_vertical_skill_texts("research"))["engineer/research-grind.md"]
+
+    # A first miss is a draft, not a verdict, and the causes are enumerated.
+    assert "first implementation is a first draft" in skill
+    for cause in ("implementation", "optimizer", "data slice", "scale", "evaluator"):
+        assert cause in skill
+
+    # Flat stretches are the middle of the problem, not a signal.
+    assert "Troughs are part of the shape" in skill
+    assert "lowering the target" in skill
+
+    # The method mutates while it is ground, and the paper follows the method.
+    assert "not the method you started" in skill
+    assert "That is the research happening." in skill
+
+    # Judgement over procedure.
+    assert "None of this is a procedure to execute" in skill
+    assert "Follow the surprising thing" in skill
+
+    research = load_vertical("research")
+    for role in ("engineer", "manager"):
+        assert "research-grind.md" in vertical_role_banner(research, role)

@@ -10,6 +10,10 @@ from typing import Callable, Sequence
 
 from ..core.runtime_identity import source_root
 
+_PUBLIC_REPOSITORY = "https://github.com/lbx154/Argus.git"
+_PUBLIC_MAIN_REF = "refs/heads/main"
+_PUBLIC_UPSTREAM = "lbx154/Argus/main"
+
 
 class UpdateError(RuntimeError):
     """Raised when an update cannot be completed without risking local work."""
@@ -72,7 +76,7 @@ def update_source_checkout(
     runner: CommandRunner = _run_command,
     python_executable: str | None = None,
 ) -> UpdateResult:
-    """Fast-forward and reinstall the checkout that loaded this Argus process."""
+    """Fast-forward from public main and reinstall the loaded source checkout."""
     checkout = (root or source_root()).expanduser().resolve()
     if not (checkout / "pyproject.toml").is_file():
         raise UpdateError(
@@ -106,13 +110,13 @@ def update_source_checkout(
     )
     if not branch:
         raise UpdateError("source checkout is detached; switch to a branch first")
-    upstream = _checked(
-        runner,
-        ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
-        cwd=checkout,
-    )
     before = _checked(runner, ["git", "rev-parse", "HEAD"], cwd=checkout)
-    _checked(runner, ["git", "pull", "--ff-only"], cwd=checkout, timeout=300.0)
+    _checked(
+        runner,
+        ["git", "pull", "--ff-only", _PUBLIC_REPOSITORY, _PUBLIC_MAIN_REF],
+        cwd=checkout,
+        timeout=300.0,
+    )
     after = _checked(runner, ["git", "rev-parse", "HEAD"], cwd=checkout)
 
     if before != after:
@@ -126,7 +130,7 @@ def update_source_checkout(
 
     return UpdateResult(
         root=checkout,
-        upstream=upstream,
+        upstream=_PUBLIC_UPSTREAM,
         before_revision=before,
         after_revision=after,
     )

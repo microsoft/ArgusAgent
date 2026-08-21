@@ -3,9 +3,16 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 RunnerBackend = Literal["codex", "claude", "copilot", "opencode", "pi", "grok", "qoder", "dsh"]
+
+#: Every backend the runtime can drive, derived from the type above so the two
+#: can never disagree. The CLI's `--backend` choices, the readiness check and
+#: the operator control-knob help all render from this. They used to hold their
+#: own copies and the knob help had drifted to five of the eight, so a fully
+#: supported backend was one a user could not learn existed.
+SUPPORTED_BACKENDS: tuple[str, ...] = get_args(RunnerBackend)
 
 BACKEND_CODEX: RunnerBackend = "codex"
 BACKEND_CLAUDE: RunnerBackend = "claude"

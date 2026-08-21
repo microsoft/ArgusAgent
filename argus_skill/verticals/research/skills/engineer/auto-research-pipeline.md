@@ -53,8 +53,9 @@ experiment or honest failure report is not automatically a paper.
   merely to obtain a binary keep/reject rule. A numeric cutoff needs a basis in
   utility, risk, domain standards, prior evidence, theory, or prospective
   sensitivity. Otherwise report the effect, uncertainty, regimes, and
-  cost-quality frontier continuously; a modest credible effect may justify
-  targeted improvement or a narrower claim.
+  cost-quality frontier continuously; a modest credible effect is a reason to
+  push the method further, and only a claim no affordable experiment can reach
+  gets narrowed.
 
 ## Venue selection
 
@@ -165,7 +166,7 @@ while credible fixes remain.
 - When the router selects image-2, generate/review its required candidate set,
   register through `sync-paper-metadata`, reuse a valid frozen cache, and preserve
   exact accepted raster bytes. These image-2-specific rules do not apply to
-  deterministic SVG/HTML/diagram/PPT renderers, which repair their own source and
+  browser-rendered HTML/diagram/PPT renderers, which repair their own source and
   re-render.
 
 ## Stage guidance

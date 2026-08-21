@@ -20,6 +20,20 @@ import pytest
 from argus_skill.apps import tui_launcher
 
 
+@pytest.fixture(autouse=True)
+def _interactive_stdin(monkeypatch):
+    """These tests drive the launcher as a terminal invocation.
+
+    `main()` refuses the cockpit when stdin is not a tty, which pytest's never
+    is, so the console-ownership behaviour under test is only reachable once
+    stdin looks interactive.
+    """
+    monkeypatch.delenv("ARGUS_SKILL_ALLOW_HEADLESS_TUI", raising=False)
+    monkeypatch.setattr(
+        tui_launcher.sys, "stdin", SimpleNamespace(isatty=lambda: True)
+    )
+
+
 @pytest.fixture
 def launcher(monkeypatch, tmp_path):
     """A launcher whose preflight passes, so only the spawn path is exercised."""

@@ -1,6 +1,15 @@
 \section{Related Work}
 \label{sec:related}
 
+Three literatures bear on this work: systems that automate research, runtimes that
+keep agents alive over long horizons, and the accumulating evidence on whether a
+model can judge its own output. Read together they show one shape. The executing half
+of research has been automated repeatedly and well. The deciding half---what to
+attempt, whether it worked, when to involve a person---has stayed with the operator,
+and almost no system reports how much of the operator it consumed. That omission is
+the gap this work addresses, and the rest of this section establishes that it is a
+gap and not an oversight on our part.
+
 \subsection{Autonomous Research Systems}
 
 Autonomous research systems range from tightly scoped experiment loops to complete
@@ -11,6 +20,22 @@ organizes iterative code search for machine-learning improvements
 search to mathematical, algorithmic, and systems problems
 ~\citep{romera2024funsearch,novikov2025alphaevolve}. These systems show how a clear
 objective and an executable evaluator can turn model calls into sustained search.
+
+Recursive's automated research system is the sharpest current demonstration of that
+principle and reports state-of-the-art results on three benchmarks this report also
+runs---fixed-budget language-model training, training-speed optimization, and GPU
+kernel optimization---exceeding our numbers on the first
+two~\citep{recursive2026firststeps}. Its account of why those benchmarks were chosen
+is the part we want to draw attention to: they have ``clear metrics, relatively low
+variance, and evaluators that can be hardened against reward hacks.'' That is the
+regime in which the Driver's questions are answerable by reading a number, and it is
+where automated research has advanced fastest. The tasks this report is about are
+selected the other way, by the absence of that evaluator---an open conjecture, a
+kernel port whose acceptance criteria are discovered during the port, a materials
+question whose measurement is itself under construction---and Section~\ref{sec:no-score}
+is about what replaces the number when there is not one. The two lines of work are
+complementary: one pushes on how far a hardened evaluator can carry a search, the
+other on what a runtime does before an evaluator exists.
 
 Full-lifecycle systems add problem selection, planning, experimentation, review,
 and scientific communication. The AI Scientist introduced an end-to-end research
@@ -159,6 +184,20 @@ are better. \systemname{} pursues it, and Sections~\ref{sec:results}
 and~\ref{sec:rsi-vertical} report its position along that transfer rather than
 asserting a loop.
 
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{figures/autoresearch_rsi.pdf}
+  \caption{Auto research and recursive self-improvement. Panel (a): RSI is the
+  special case in which the artifact re-enters the system that produced it, so it
+  inherits every constraint of the general case---including the requirement to run
+  without a person in the loop. Panel (b): the two capabilities are preconditions for
+  each other. Operating on frontier problems produces verified process data that no
+  scraped corpus contains; that record is what a training stage would consume; and a
+  model with better research judgment conducts better campaigns, including campaigns
+  about training. Colour indicates what this report establishes and what remains.}
+  \label{fig:autoresearch-rsi}
+\end{figure}
+
 The relationship to the preceding subsections is containment. Auto research is the
 general machinery for converting intelligence into results wherever invention is
 required; recursive self-improvement is that machinery pointed at the production of
@@ -248,6 +287,6 @@ hours regardless of its accuracy, and horizon-scaling studies show task success
 degrading precisely as horizons grow past that window~\citep{kwa2025longtasks}. We
 therefore report duty cycle and interruption rate alongside task outcomes
 (Section~\ref{sec:duty-cycle}). We are not aware of prior agent systems reporting
-either, and we suggest both belong in evaluations of long-horizon autonomy: an
-outcome obtained under continuous supervision and the same outcome obtained
-unattended are different results.
+either. Both belong in any evaluation of long-horizon autonomy: an outcome obtained
+under continuous supervision and the same outcome obtained unattended are different
+results.

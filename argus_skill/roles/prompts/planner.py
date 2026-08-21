@@ -28,8 +28,8 @@ OPERATIONS = frozenset(
 
 _PLANNER_DECISION_PAYLOAD_EXAMPLE = (
     '{"project_done":false,"reason":"why","advance_to_stage":"run",'
-    '"tasks":[{"key":"task-key","deps":[],"title":"title",'
-    '"objective":"work and decisive check","scope":"bounded"}]}'
+    '"tasks":[{"key":"task-key","deps":[],"title":"<question>",'
+    '"objective":"<work+decisive check>","scope":"bounded"}]}'
 )
 _PLANNER_DECISION_EVENT = decision_event_instruction(
     "planner",
@@ -477,6 +477,13 @@ def build_continuous_resume_prompt(
         f"- sequence: {', '.join(prompt_context.stage_order) or '(none)'}\n"
         + str(prompt_context.stage_checklist or ""),
         skill_block,
+        # Live vertical facts change between cycles, which is exactly what a
+        # resume delta is for — the header above already promises that current
+        # state supersedes stale session facts. Omitting them meant a resumed
+        # Planner never saw its vertical's altitude at all: the search floor and
+        # frozen count for a metric campaign, or the accepted papers pulled to
+        # disk for a paper campaign. Each vertical still renders only its own.
+        str(prompt_context.search_altitude or ""),
         "## Manager mission brief (authoritative)\n" + continuous_objective.strip(),
         "## Journal of completed work (most recent last)\n"
         + (journal_tail.strip() or "(no completed work yet — this is the first cycle)"),

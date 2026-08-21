@@ -54,6 +54,39 @@ def _continuous_contract_error(
     return continuous_mode_error(backend, continuous, objective)
 
 
+def _missing_web_dependency() -> str | None:
+    """Name the first absent web dependency, without importing it.
+
+    `webapi.server` imports uvicorn lazily inside `serve()`, so a guard on the
+    module import alone never fired: the pairing banner offered a URL and a
+    bare ImportError then escaped as a traceback. Probing the spec is cheap and
+    has no import side effects, so it can run before anything is promised.
+    """
+    from importlib.util import find_spec
+
+    for module in ("fastapi", "uvicorn"):
+        try:
+            if find_spec(module) is None:
+                return module
+        except (ImportError, ValueError):
+            return module
+    return None
+
+
+def _report_missing_web_dependency(missing: str) -> int:
+    """Explain a broken web install instead of raising through the CLI.
+
+    fastapi and uvicorn are required dependencies, not an extra, so the old
+    advice to install `argus-skill[web]` named an extra that does not exist.
+    """
+    sys.stderr.write(
+        f"argus-skill: --web cannot start because {missing} is missing. It "
+        "ships as a required dependency, so this is a broken install: "
+        "`pip install --force-reinstall argus-skill`.\n"
+    )
+    return 2
+
+
 def _resolve_global_root(args: argparse.Namespace) -> Path:
     return resolve_life_root(args.life_dir)
 
@@ -177,7 +210,11 @@ def _session_for_current_workdir(
     return next((sid for sid in matches if sid in live_ids), matches[0] if matches else None)
 
 
-def _resolve_project_bundle(args: argparse.Namespace):
+def _resolve_project_bundle(
+    args: argparse.Namespace,
+    *,
+    create_if_missing: bool = True,
+):
     from ...life import MemoryBundle
 
     global_root = _resolve_global_root(args)
@@ -209,6 +246,13 @@ def _resolve_project_bundle(args: argparse.Namespace):
     else:
         selected_workdir = Path.cwd()
     if sid is None:
+        if not create_if_missing:
+            from ...core.project import project_fingerprint
+
+            fingerprint = project_fingerprint(selected_workdir).fingerprint
+            state_dir = core_paths.session_state_root(fingerprint, root=global_root)
+            if not state_dir.is_dir():
+                return None
         return MemoryBundle.for_cwd(selected_workdir, global_root=global_root)
     from ...core.session import (
         migrate_legacy_session_workdir,
@@ -217,6 +261,8 @@ def _resolve_project_bundle(args: argparse.Namespace):
     )
 
     state_dir = core_paths.session_state_root(sid, root=global_root)
+    if not create_if_missing and not state_dir.is_dir():
+        return None
     meta = read_session_meta(global_root, sid)
     try:
         if meta is None:
@@ -498,14 +544,15 @@ def main(argv: list[str] | None = None) -> int:
         if entry_error:
             sys.stderr.write(f"argus-skill: {entry_error}\n")
             return 2
+        # Nothing may promise a URL before the stack that serves it is known
+        # to be present.
+        missing = _missing_web_dependency()
+        if missing:
+            return _report_missing_web_dependency(missing)
         try:
             from ...webapi.server import serve as serve_web
-        except ImportError:
-            sys.stderr.write(
-                "argus-skill: --web needs the web extra — install it with "
-                "`pip install 'argus-skill[web]'` (fastapi + uvicorn).\n"
-            )
-            return 2
+        except ImportError as exc:
+            return _report_missing_web_dependency(exc.name or "a web dependency")
         from ...webapi.pairing import pairing_plan
 
         host = str(getattr(args, "web_host", "127.0.0.1") or "127.0.0.1")
@@ -517,12 +564,15 @@ def main(argv: list[str] | None = None) -> int:
         if plan.banner:
             sys.stderr.write(f"{plan.banner}\n")
             sys.stderr.flush()
-        return serve_web(
-            host=host,
-            port=port,
-            global_root=_resolve_global_root(args),
-            auth_token=plan.token or None,
-        )
+        try:
+            return serve_web(
+                host=host,
+                port=port,
+                global_root=_resolve_global_root(args),
+                auth_token=plan.token or None,
+            )
+        except ImportError as exc:
+            return _report_missing_web_dependency(exc.name or "a web dependency")
     if args.notify:
         return _run_with_path_resolution_errors(lambda: _cmd_notify(args))
     if args.init_identity:
@@ -1913,6 +1963,13 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     days = getattr(args, "gc_days", None)
     if days is None:
         days = retention_days_default()
+    if days < 0:
+        sys.stderr.write(
+            f"argus-skill: --gc-days must not be negative (got {days}). A "
+            "negative retention window puts the cutoff in the future, so every "
+            "project would be trashed.\n"
+        )
+        return 2
     dry = bool(getattr(args, "gc_dry_run", False))
     pruned = gc_stale_projects(root, retention_days=days, dry_run=dry)
     verb = "would prune" if dry else "moved to projects_trash/"
@@ -1938,7 +1995,13 @@ def _cmd_status(args: argparse.Namespace) -> int:
         read_continuous_state,
         read_daemon_status,
     )
-    bundle = _resolve_project_bundle(args)
+    bundle = _resolve_project_bundle(args, create_if_missing=False)
+    if bundle is None:
+        print(f"argus-skill — global-root: {_resolve_global_root(args)}")
+        print("  project  : no session for this workdir")
+        print("  daemon   : not running")
+        print("  next     : run `argus` to create a session")
+        return 0
     status = read_daemon_status(bundle.project.root)
     all_items = bundle.backlog.all()
     pending, running, paused, done, failed, skipped = count_backlog_statuses(all_items)

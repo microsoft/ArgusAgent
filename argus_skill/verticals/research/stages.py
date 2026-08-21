@@ -183,6 +183,41 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
             evidence_hint="research/BASELINE_AND_BENCHMARK_PLAN.md, experiments/BENCHMARK_PROVENANCE.json",
         ),
         ChecklistItem(
+            id="plan.publication_scale",
+            statement=(
+                "Calibrate the claim-bearing experiment plan against recent accepted "
+                "same-area papers from the selected venue or a comparable top venue. "
+                "Record official acceptance URLs and compare models/systems, public "
+                "sources, evaluation units, repeats or proof obligations, strongest "
+                "comparisons, and uncertainty/formal guarantees. Do not copy their "
+                "exact scale as a quota; explain what evidence this claim needs. A "
+                "small pilot may de-risk implementation, but it cannot be the planned "
+                "final evidence merely because the claim could later be narrowed."
+            ),
+            evidence_hint=(
+                "research/EXPERIMENT_PLAN.md publication-scale section + accepted "
+                "paper official/PDF sources"
+            ),
+        ),
+        ChecklistItem(
+            id="plan.argument_organization",
+            statement=(
+                "Read at least two accepted same-area full papers with a similar "
+                "contribution shape and inspect available official code at pinned "
+                "revisions. Extract each paper's problem setup, gap move, organizing "
+                "insight, contribution order, Method decomposition, evidence sequence, "
+                "Figure 1 role, limitations role, and conclusion move. For code, map "
+                "entry points, modules, config/evaluation flow, and artifact ownership. "
+                "Write `paper/style_ref/ARGUMENT_ORGANIZATION.json` and transfer those "
+                "roles to this paper's own claims/evidence. Reproduction is not "
+                "required; copying prose, examples, figure design, or code is forbidden."
+            ),
+            evidence_hint=(
+                "`python -m argus_skill.verticals.research.argument_organization "
+                "--project-root .` + downloaded PDFs/text + official code URLs/revisions"
+            ),
+        ),
+        ChecklistItem(
             id="plan.code_reuse",
             statement=(
                 "Code-reuse plan lists every external repo we will run, fork, or "
@@ -211,15 +246,6 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
         ),
     ),
     "benchmark": _checklist(
-        ChecklistItem(
-            id="benchmark.backbone",
-            statement=(
-                "The real benchmark path loads the current-generation headline model "
-                "locked in plan.backbone. Legacy/small-model plumbing remains labeled "
-                "non-headline and cannot substitute for the current model run."
-            ),
-            evidence_hint="run manifest model revision + research/INFRA_CHOICE.md",
-        ),
         ChecklistItem(
             id="benchmark.environment_preflight",
             statement=(
@@ -304,17 +330,6 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
             evidence_hint="experiment manifests + model revision/release metadata",
         ),
         ChecklistItem(
-            id="run.environment_preflight",
-            statement=(
-                "Each pilot/full/ablation launch has a fresh, run-specific "
-                "Environment Readiness Gate transcript. Verify only resources that "
-                "run actually uses (environment, data/evaluator, storage, GPU/model/API "
-                "as applicable); an applicable failed or missing preflight means the "
-                "run is uncertified."
-            ),
-            evidence_hint="experiments/runs/<run_id>/preflight.txt (per run)",
-        ),
-        ChecklistItem(
             id="run.manifests",
             statement=(
                 "Each long-running experiment writes manifest.json, status.json, "
@@ -339,7 +354,11 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
                 "Final empirical claims include executed public benchmark/data "
                 "evidence at a scale justified by the claim and uncertainty method. "
                 "Synthetic/generated diagnostics are labeled supplementary and are "
-                "not the sole final evidence."
+                "not the sole final evidence. A run marked full is not publication-"
+                "scale merely because its manifest says so: compare the executed "
+                "evidence dimensions with recent accepted same-area work, and run "
+                "what is missing to reach that bar. A claim worth making is worth "
+                "the evidence that carries it."
             ),
             evidence_hint="experiments/**/manifest.json declares scale=full",
         ),
@@ -409,10 +428,46 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
             evidence_hint="paper/RESULTS_REPORT.md",
         ),
         ChecklistItem(
+            id="analysis.publication_scale",
+            statement=(
+                "Write `paper/PUBLICATION_SCALE_ASSESSMENT.json` from current "
+                "accepted-paper comparators and real local artifacts, then build the "
+                "primary evidence out until it stands on its own beside them rather "
+                "than only beside a pilot or a proxy. A negative, null, diagnostic or "
+                "boundary finding earns the paper on exactly the same terms as a "
+                "positive one: establish it at that scale and it is a contribution."
+            ),
+            evidence_hint=(
+                "`python -m argus_skill.verticals.research.publication_scale "
+                "--project-root .` + paper/PUBLICATION_SCALE_ASSESSMENT.json"
+            ),
+        ),
+        ChecklistItem(
+            id="analysis.figure1",
+            statement=(
+                "Design and render the paper's reader-facing Figure 1 teaser or "
+                "framework overview from a written communication brief. It must "
+                "show the problem, core mechanism/architecture or taxonomy, and "
+                "claim-bearing flow in one coherent visual. Route it through the "
+                "Research Visualization Router: prefer PPT Master for polished "
+                "editable composition, or browser-rendered HTML, FigureSpec, "
+                "Draw.io, Mermaid/Graphviz as appropriate. image-2 is optional and "
+                "its absence is never a reason to omit Figure 1. Preserve editable "
+                "source, export SVG/PDF/PNG, inspect it at final paper size, and "
+                "plan its caption and in-text callout. A LaTeX table, prose box, "
+                "or rule-bar diagnostic is not a framework figure."
+            ),
+            evidence_hint=(
+                "paper/figures editable source + exported Figure 1 asset + "
+                "paper/DRAFT_OUTLINE.md figure slot"
+            ),
+        ),
+        ChecklistItem(
             id="analysis.gaps",
             statement=(
-                "Known evidence gaps are explicitly enumerated with a planned "
-                "supplement, ablation, or claim downgrade — no missing evidence "
+                "Known evidence gaps are explicitly enumerated, each with the "
+                "supplement or ablation that would close it — and a claim "
+                "downgrade only where none is affordable. No missing evidence "
                 "is silently absorbed."
             ),
             evidence_hint="paper/main.tex limitations + Reviewer notes + raw results",
@@ -445,7 +500,14 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
                 "paper/main.tex uses the selected venue's official structure and tells "
                 "one coherent argument, not a chronological experiment report. The "
                 "title, abstract, introduction, method, and experiments all serve the "
-                "same thesis. If a proposed method does not win, write the paper around "
+                "same thesis. Lead with what the work establishes: the abstract's "
+                "first sentence states the result at full strength and the "
+                "introduction earns it, rather than opening with scope, caveats, or "
+                "what the paper does not claim. Its paragraph/section roles follow "
+                "the accepted-paper "
+                "argument transfer plan in `ARGUMENT_ORGANIZATION.json`, adapted to "
+                "local claims and evidence without copied prose. If a proposed method "
+                "does not win, write the paper around "
                 "the robustly characterized boundary, mechanism, scaling behavior, "
                 "failure mode, or practical decision that the experiments establish; "
                 "do not write an apologetic failure log and do not abandon a truthful "
@@ -483,11 +545,15 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
         ChecklistItem(
             id="draft.figures",
             statement=(
-                "The paper's figures are clear, readable at final size, visually "
-                "coherent, and attractive enough for the venue. Use a good-enough "
-                "standard: minor stylistic imperfections are not blockers, and do "
-                "not request repeated regeneration unless a figure is unreadable, "
-                "factually wrong, visibly broken, or seriously harms the paper."
+                "The paper embeds a real external Figure 1 teaser/method/framework "
+                "overview plus any claim-bearing result visuals needed by the "
+                "argument. Figure 1 communicates the problem, mechanism and flow at "
+                "a glance; it is not a LaTeX table, prose box, or rule-bar diagnostic "
+                "inside a figure environment. image-2 is optional: when unavailable, "
+                "use PPT Master, browser-rendered HTML, FigureSpec, Draw.io, "
+                "Mermaid/Graphviz, or another truthful editable route. All figures "
+                "are clear, readable at final size, coherent, and attractive enough "
+                "for the venue. Minor stylistic imperfections are not blockers."
             ),
             evidence_hint=(
                 "paper/main.pdf rendered pages and the actual figure files; optional "
@@ -504,14 +570,6 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
                 "device IDs, no API keys — the manuscript is publication-clean."
             ),
             evidence_hint="grep main.tex for '/root/', 'CUDA_VISIBLE_DEVICES', 'argus-skill', 'codex', 'OPENAI_API_KEY'",
-        ),
-        ChecklistItem(
-            id="review.placeholders",
-            statement=(
-                "No PLACEHOLDER / TODO / TBD / FIXME / UNVERIFIED markers in the "
-                "paper body, captions, or tables."
-            ),
-            evidence_hint="grep -nE 'PLACEHOLDER|TODO|TBD|FIXME|UNVERIFIED' paper/main.tex",
         ),
         ChecklistItem(
             id="review.tables",
@@ -563,7 +621,13 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
                 "size, or a changed thesis is not by itself a rejection reason. Positive "
                 "or negative original research may contribute a method/system, theorem, "
                 "mechanism, scaling law, robust boundary, benchmark lesson, or "
-                "decision-relevant finding. Request at most the few claim-critical "
+                "decision-relevant finding only when that contribution has standalone "
+                "publication-scale evidence. Where the evidence outruns the prose, push "
+                "the claim up; where it does not yet reach, name the run that would get "
+                "it there rather than the sentence that would avoid it. Compare the "
+                "evidence dimensions in "
+                "`paper/PUBLICATION_SCALE_ASSESSMENT.json` with its accepted-paper "
+                "comparators and the actual artifacts. Request at most the few claim-critical "
                 "repairs that would change the decision; keep lesser concerns advisory "
                 "and do not reopen settled stages. A "
                 "literature review must deliver valuable coverage, synthesis, critique, "
@@ -576,13 +640,13 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
         ChecklistItem(
             id="submission.upstream",
             statement=(
-                "All upstream stage checklists (research → review) are themselves "
+                "All upstream stage checklists (research \u2192 review) are themselves "
                 "marked done by a prior reviewer round or explicitly skipped by a "
                 "recorded Manager decision because they do not apply to this article "
                 "form. Submission readiness is not a way to retro-fix missing evidence."
             ),
             evidence_hint=(
-                ".argus/PIPELINE_STATE.json shows each stage status=done or "
+                "stage checklist state for research\u2026review: status=done, or "
                 "status=skipped with skip_reason/skipped_by and stage_history evidence"
             ),
         ),
@@ -627,8 +691,46 @@ def get_stage_checklist(stage: str) -> tuple[ChecklistItem, ...]:
     return STAGE_CHECKLISTS.get(str(stage).strip().lower(), ())
 
 
-def stage_completion_issues(stage: str, project_root: Path) -> tuple[str, ...]:
-    if str(stage or "").strip().lower() != "research":
+def stage_completion_issues(
+    stage: str,
+    project_root: Path,
+    *,
+    state_root: Path | None = None,
+) -> tuple[str, ...]:
+    normalized = str(stage or "").strip().lower()
+    issues: list[str] = []
+    if normalized in {"plan", "analysis", "draft", "review", "submission"}:
+        from ...core.research_contract import resolve_research_target_level
+        from .argument_organization import argument_organization_issues
+
+        target = resolve_research_target_level(state_root or project_root)
+        issues.extend(
+            f"[argument_organization] {issue}"
+            for issue in argument_organization_issues(
+                project_root,
+                research_target_level=target,
+            )
+        )
+    if normalized in {"analysis", "draft", "review", "submission"}:
+        from ...core.research_contract import resolve_research_target_level
+        from .publication_scale import publication_scale_issues
+
+        target = resolve_research_target_level(state_root or project_root)
+        issues.extend(
+            f"[publication_scale] {issue}"
+            for issue in publication_scale_issues(
+                project_root,
+                research_target_level=target,
+            )
+        )
+    if normalized in {"draft", "review", "submission"}:
+        from .paper_structural_minimums import validate_paper_structural_minimums
+
+        report = validate_paper_structural_minimums(project_root)
+        issues.extend(f"[{issue.code}] {issue.detail}" for issue in report.issues)
+    if issues:
+        return tuple(issues)
+    if normalized != "research":
         return ()
     from .idea_portfolio import idea_portfolio_completion_issues
 
@@ -919,40 +1021,54 @@ VERIFICATION_STAGE_PROFILES = {
 # independent Reviewer; an Engineer verifier cannot waive this review.
 REQUIRE_INDEPENDENT_REVIEW = True
 
-_PROGRESS_ORIENTED_RESEARCH_POLICY = (
-    "Progress-oriented paper policy: use each stage to make the paper stronger, not "
-    "to search for reasons to stop. Apply requirements proportionally to the actual "
-    "claim and contribution shape; mark inapplicable items instead of manufacturing "
-    "work. Reuse certified upstream evidence and do not reopen it without a concrete "
-    "contradiction. Default to advance with explicit limitations and a small number of "
-    "high-value next actions. Only fabricated evidence, invalid measurement, a headline "
-    "claim contradicted by the data, or a truly submission-critical defect is a hard "
-    "blocker. Treat negative and mixed results as engineering/debugging signals first: "
-    "actively pursue evidence-based implementation, optimization, data, scale, evaluator, "
-    "and method repairs toward a genuine positive result. Only after independent "
-    "engineering-adequacy review and exhausted credible repairs may the remaining "
-    "boundary, mechanism, scaling, or decision finding become the paper. Metrics, "
-    "seeds, slices, and baselines may evolve for documented scientific reasons; keep "
-    "the final claim scoped to the resulting evidence. "
+_AMBITIOUS_RESEARCH_POLICY = (
+    "Ambitious paper policy: go after a result that changes what people in the field "
+    "do. Pick that target while the work is still shapeable — ambition is a choice made "
+    "at the start, and no amount of care at review recovers a timid one. Every stage "
+    "exists to make the paper stronger. "
+    "Make the boldest claim your evidence carries, and say it in the first sentence of "
+    "the abstract. Papers get remembered for what they establish, never for what they "
+    "carefully decline to establish; an abstract spent listing non-claims has thrown "
+    "away its own result. When the evidence is strong, commit to the strong reading. "
+    "When it is not yet strong, the answer is better evidence, not a smaller sentence — "
+    "so treat a negative or mixed result as a debugging signal and chase the "
+    "implementation, data, scale, evaluator, and method fixes that could turn it "
+    "positive. A boundary or mechanism finding is worth writing when it is genuinely "
+    "the interesting thing you found and you can show it at real scale, not when it is "
+    "what is left after giving up. "
+    "Apply requirements proportionally to the actual claim and contribution shape; "
+    "mark inapplicable items instead of manufacturing work. Reuse certified upstream "
+    "evidence and do not reopen it without a concrete contradiction. Default to advance "
+    "with explicit limitations and a small number of high-value next actions. Stop for "
+    "fabricated evidence, invalid measurement, or a headline claim the data "
+    "contradicts — those cost the paper everything and are the reason the bold claim "
+    "has to be a real one. "
 )
 
-_REVIEWER_ENGINEERING_AUDIT = (
+_REVIEWER_RESEARCH_JUDGEMENT = (
     "For experiment claims, inspect implementation and raw rows once, then reuse "
     "them until a dependency changes. Separate method results from infrastructure "
     "or evaluator failure. Research-stage smoke probes are short advisory "
-    "observations, not miniature benchmarks or idea-kill gates: judge the idea "
-    "primarily from current-frontier novelty, mechanism, generality, and professional "
-    "plausibility. No-training convenience or local ease confers no scientific credit. "
-    "Weak, null, noisy, underpowered, misconfigured, or inconclusive "
-    "smoke results cannot by themselves trigger replan or reject a review-qualified "
-    "idea; record limitations for later iterative engineering.\n"
+    "observations, not gates: weak or underpowered ones cannot by themselves "
+    "trigger replan. Measured short of the baseline, the gap has a size and "
+    "closing it is the work: name what it is made of — implementation, data, "
+    "scale, evaluator — buy that fix and measure again, the way a leaderboard "
+    "result is earned. Such rounds are normal; a miss "
+    "says nothing about the idea, retiring one is the Manager's call, and a "
+    "loss is never the paper. If it "
+    "is stronger than the writing says, "
+    "push the claim up. A missing certificate or field belongs in "
+    "next_action, not in a returned verdict.\n"
 )
 
 _PLANNER_RESEARCH_ORCHESTRATION = (
-    _PROGRESS_ORIENTED_RESEARCH_POLICY +
+    _AMBITIOUS_RESEARCH_POLICY +
     "Research orchestration: run routes and reviews concurrently. At an 80% review "
     "quorum (10/12 by default), let a fresh selector Agent choose a current-frontier "
-    "high-novelty method or publication-scale empirical contribution. Never optimize "
+    "high-novelty method or publication-scale empirical contribution. Choose first "
+    "the consequential uncertainty whose resolution would change what the field "
+    "builds or believes, then treat named mechanisms as competing, disposable bets "
+    "on that question. Never optimize "
     "selection for no training, the shortest evidence path, cheapness, or single-GPU "
     "fit; require a credible staged resource plan instead. Verify latest-12-month "
     "arXiv and current major-venue coverage before selection; do not "
@@ -960,18 +1076,55 @@ _PLANNER_RESEARCH_ORCHESTRATION = (
     "can verify feasibility without pretending to decide the full hypothesis; otherwise "
     "record it untested and advance. Never use a full benchmark, training run, broad "
     "sweep, or publication-scale multi-seed study as a research probe. Research-stage "
-    "outcomes cannot kill or block the selected idea. Keep the resulting critical path "
-    "below one hour when default resources allow it. A failed hypothesis or rejected "
+    "outcomes steer how the selected problem is pursued; claim-bearing evidence at "
+    "the faithful scale named at selection is what the campaign optimizes against. "
+    "Name at selection the end-task claim, the strongest resource-matched "
+    "baseline, the win that would matter, and the cheapest faithful run that "
+    "measures the gap — then buy that measurement early, so there is a number to "
+    "improve for the rest of the campaign. Short of the baseline is a gap with a "
+    "size, and the campaign's job is to close it: each round names what the "
+    "shortfall is made of, buys the implementation, optimization, data, scale or "
+    "evaluator fix that addresses it, and measures again. Papers are won this "
+    "way, over many rounds, and an early miss is the normal starting position "
+    "rather than a verdict on the idea. Keep only research-stage route "
+    "selection and feasibility probing below one hour when default resources allow it; "
+    "claim-bearing publication-scale runs are not subject to that time box. A failed "
     "direction is project memory, not automatic completion or a forced next action; "
     "only the independently reviewed research target closes the project.\n"
+    "Each mission advances the argument the paper will make: the experiment that "
+    "decides a claim, the comparison that earns it, the rewrite that makes one "
+    "insight carry the paper. Name missions after the question they answer, not "
+    "after the defect they repair. Certification, scope prescription, package "
+    "assembly, schema conformance and checklist bookkeeping are not missions of "
+    "their own — they are finishing steps inside the mission whose work they "
+    "certify, and scheduling them separately spends the campaign on the harness "
+    "instead of the paper.\n"
 )
 
 _ENGINEER_RESEARCH_EXECUTION = (
-    _PROGRESS_ORIENTED_RESEARCH_POLICY +
+    _AMBITIOUS_RESEARCH_POLICY +
     "Research execution: keep independent work file-disjoint and parallel. Respect "
     "the route/review/selector/probe time boxes, stop searching once the novelty "
     "boundary is credible, and treat source-balance gaps and smoke outcomes as "
-    "documented limitations rather than reasons to stall.\n"
+    "documented limitations rather than reasons to stall. When a method is short of its baseline, `engineer/research-grind.md` is how the gap gets closed: the first number is a first draft, the loop is measure-diagnose-fix-measure, flat stretches are the middle of the problem rather than a verdict, and the method you end up with is the one the paper is about.\n"
+)
+
+
+_MANAGER_RESEARCH_STEWARDSHIP = (
+    _AMBITIOUS_RESEARCH_POLICY +
+    "Research stewardship: the campaign's normal state is closing the gap to the "
+    "baseline named at selection — round after round of the fix that the current "
+    "shortfall points at, the way a leaderboard result is earned. Missing is the "
+    "starting position, not news about the idea, and no Reviewer verdict or "
+    "mission outcome retires one. Only you can judge that an idea is genuinely "
+    "dead, and that judgement is rare and expensive: it wants sustained "
+    "optimization already spent across implementation, data, scale and evaluator, "
+    "the gap unmoved by any of it, and a reason the next round would fail that is "
+    "not simply that the last one did. Fewer rounds than that is impatience "
+    "wearing the costume of judgement — the shortfall is still an engineering "
+    "shortfall until the engineering has actually been done. When you do retire "
+    "an idea, roll back to selection with the accumulated evidence; what a dead "
+    "idea never becomes is the paper. `engineer/research-grind.md` is what a campaign is supposed to look like between the first measurement and the result.\n"
 )
 
 
@@ -979,9 +1132,74 @@ def role_banner(role: str = "engineer") -> str:
     """Add research-only role policy without affecting other verticals."""
     return {
         "planner": _PLANNER_RESEARCH_ORCHESTRATION,
-        "reviewer": _REVIEWER_ENGINEERING_AUDIT,
+        "reviewer": _REVIEWER_RESEARCH_JUDGEMENT,
         "engineer": _ENGINEER_RESEARCH_EXECUTION,
+        "manager": _MANAGER_RESEARCH_STEWARDSHIP,
     }.get(role, "")
+
+
+def search_altitude_context(project_root: object) -> str:
+    """Put the accepted papers this work claims to learn from within reach.
+
+    ``ARGUMENT_ORGANIZATION.json`` already records same-area accepted papers
+    whose full text was pulled to disk, and the validator has confirmed those
+    files exist. Nothing then reopened them: review compared the manuscript
+    against the *plan* to reuse them rather than against the papers, so a paper
+    could carry a detailed transfer plan and a body still ordered by run
+    chronology.
+
+    This states where those papers are and nothing else. Whether this
+    manuscript would stand next to them is the reviewing Agent's judgement, and
+    a harness that scored headings would only teach the next draft to rename
+    its sections. Fail-soft: any error yields no block.
+    """
+    try:
+        import json
+        from pathlib import Path as _Path
+
+        from .argument_organization import ARGUMENT_ORGANIZATION_PATH
+
+        root = _Path(str(project_root)).resolve()
+        payload = json.loads(
+            (root / ARGUMENT_ORGANIZATION_PATH).read_text(encoding="utf-8")
+        )
+        exemplars = payload.get("exemplars")
+        if not isinstance(exemplars, list):
+            return ""
+        lines: list[str] = []
+        for exemplar in exemplars:
+            if not isinstance(exemplar, dict):
+                continue
+            title = str(exemplar.get("title") or "").strip()
+            venue = str(exemplar.get("venue") or "").strip()
+            if not title:
+                continue
+            entry = [f"- {title}" + (f" ({venue})" if venue else "")]
+            for field, label in (
+                ("text_extract", "full text"),
+                ("local_pdf", "pdf"),
+            ):
+                value = str(exemplar.get(field) or "").strip()
+                if value and (root / value).is_file():
+                    entry.append(f"    {label}: `{value}`")
+            code = exemplar.get("official_code")
+            if isinstance(code, dict):
+                checkout = str(code.get("local_checkout") or "").strip()
+                revision = str(code.get("revision") or "").strip()
+                if checkout and (root / checkout).is_dir():
+                    pin = f" @ {revision[:12]}" if revision else ""
+                    entry.append(f"    official code: `{checkout}`{pin}")
+            lines.extend(entry)
+        if not lines:
+            return ""
+        return (
+            "## Accepted same-area papers on disk\n"
+            "The full text of each is local and readable now:\n"
+            + "\n".join(lines)
+            + "\n"
+        )
+    except Exception:  # noqa: BLE001 - prompt building never fails on this
+        return ""
 
 
 __all__ = [
@@ -999,6 +1217,7 @@ __all__ = [
     "VERIFICATION_STAGE_PROFILES",
     "REQUIRE_INDEPENDENT_REVIEW",
     "role_banner",
+    "search_altitude_context",
     "render_role_prompt_fragment",
     "stage_completion_issues",
     "completion_gate",

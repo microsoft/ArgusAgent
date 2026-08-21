@@ -228,6 +228,37 @@ def augment_idea_candidates(
         resolved = _resolve_direction(workdir, direction)
         if not resolved:
             return 0
+
+        # Several labs' models, asked separately and then set against each
+        # other, beat one model asked once — when this box has them.
+        from .idea_panel import run_panel
+
+        panel = run_panel(
+            Path(workdir).expanduser().resolve(),
+            direction=resolved,
+            proposal_prompt=_build_prompt(resolved, n),
+        )
+        if panel:
+            # The candidate file belongs to the ranking agent, which rewrites it
+            # whole — and the first run of this lost the cross-examination that
+            # way. The debate lives in its own file; the candidate file gets the
+            # candidates and a pointer back to the argument about them.
+            path = _candidates_path(workdir)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            panel_path = path.with_name("IDEA_PANEL.md")
+            panel_path.write_text(
+                f"{SOURCE_MARKER}\n# Panel ideation\n{panel}", encoding="utf-8"
+            )
+            proposals, _, _ = panel.partition("\n## Cross-examination")
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(
+                    f"\n\n{SOURCE_MARKER}\n# Panel ideation\n"
+                    f"> Each candidate below was cross-examined by the models that "
+                    f"did not propose it. Read `research/{panel_path.name}` for the "
+                    f"objections and the bets before ranking these.\n{proposals}"
+                )
+            return panel.count("## Candidate ")
+
         log.info(
             "idea-search: running codex live web-search (model=%s, n=%d) for %r",
             model, n, resolved[:80],
