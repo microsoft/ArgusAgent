@@ -462,13 +462,16 @@ def test_a_shortfall_is_a_gap_to_close_not_a_verdict() -> None:
     reviewer = vertical_role_banner(research, "reviewer")
 
     # Selection fixes the number the campaign then spends itself improving.
-    for named in ("end-task claim", "resource-matched", "measures the gap"):
+    for named in ("end-task claim", "resource-matched", "wants the claim to be false"):
         assert named in planner
     assert "close it" in planner
 
-    # A miss buys the next fix; it does not judge the idea.
-    assert "leaderboard result is earned" in reviewer
-    assert "says nothing about the idea" in reviewer
+    # A miss buys the next fix. It becomes evidence against the claim only
+    # after the stack under it has been checked — before that it is evidence
+    # about the harness, and after it, refusing to count it is not rigour.
+    assert "name what the gap is made of" in reviewer
+    assert "A miss is evidence about the tested system" in reviewer
+    assert "Then repeated misses count." in reviewer
     assert "a loss is never the paper" in reviewer
 
 
@@ -532,3 +535,96 @@ def test_the_grind_skill_says_what_a_campaign_does_between_rounds() -> None:
     research = load_vertical("research")
     for role in ("engineer", "manager"):
         assert "research-grind.md" in vertical_role_banner(research, role)
+
+
+def test_the_paper_is_written_for_reviewers_who_exist() -> None:
+    """Seeds, intervals and reproducibility checklists are what an imitation of
+    a reviewer asks for. Reading real ICLR reviews and the official guide, what
+    is nearly always assessed is whether the problem is real, whether the idea
+    is interesting, whether the comparison is fair, and whether the claim
+    matches the evidence — statistics appear when a margin is small."""
+    from argus_skill.verticals._base import load_vertical, vertical_role_banner
+    from argus_skill.verticals.research.stages import STAGE_CHECKLISTS
+
+    drafting = " ".join(item.statement for item in STAGE_CHECKLISTS["review"])
+    assert "one honest paragraph" in drafting
+    assert "buys no protection" in drafting
+    assert "not the spine of a paper" in drafting
+
+    planner = vertical_role_banner(load_vertical("research"), "planner")
+    # The moves that actually earn a strong review, named so they can be aimed at.
+    for move in ("assumed it already understood", "principled method", "contradicts"):
+        assert move in planner
+    assert "a claim the results do not support" in planner
+
+
+def test_submission_asks_whether_the_result_stands() -> None:
+    """The terminal objective was "produce a paper", and submission only checked
+    that one existed: three of its four items were packaging — PDF, BibTeX,
+    anonymity, metadata — and none asked whether the result held. The campaigns
+    learned the obvious lesson, recording as durable experience that "a visually
+    polished Stage 1 diagnostic can be certified as a release-ready ICLR final
+    submission". Scoping down until it certifies is the reward hack."""
+    from argus_skill.verticals.research.stages import STAGE_CHECKLISTS
+
+    submission = STAGE_CHECKLISTS["submission"]
+    first = " ".join(submission[0].statement.split())
+
+    # The result question comes before the packaging questions.
+    assert submission[0].id == "submission.result_stands"
+    assert "beat the baseline it was chosen against" in first
+    assert "a gap to close, not a finding to package" in first
+    assert "delivers a paper without delivering a result" in first
+
+
+def test_an_unfinished_implementation_is_not_a_dead_idea() -> None:
+    """Over-confidence and under-confidence are the same bug: a number read as a
+    verdict on the idea when it was really a verdict on the engineering."""
+    from argus_skill.verticals.research.stages import STAGE_CHECKLISTS
+
+    first = " ".join(STAGE_CHECKLISTS["submission"][0].statement.split())
+
+    assert "until the baseline reproduces in this harness" in first
+    assert "an unfinished implementation looks exactly like a wrong idea" in first
+
+
+def test_the_win_threshold_is_derived_not_invented() -> None:
+    """A campaign declared it needed "+8 absolute points". Nothing produced that
+    number; asking for "the win that would matter" invites a round figure that
+    sounds decisive and that no evidence can contradict."""
+    from argus_skill.verticals._base import load_vertical, vertical_role_banner
+
+    planner = " ".join(vertical_role_banner(load_vertical("research"), "planner").split())
+
+    assert "derived from something observable, not invented" in planner
+    assert "spread this benchmark already reports" in planner
+    assert "A round number picked because it sounds decisive" in planner
+
+
+def test_the_model_choice_is_read_as_a_claim_about_currency() -> None:
+    """Campaigns kept reaching for checkpoints that were two generations old,
+    because that is what a training cutoff leaves behind."""
+    from argus_skill.verticals._base import load_vertical, vertical_role_banner
+
+    engineer = " ".join(vertical_role_banner(load_vertical("research"), "engineer").split())
+
+    assert "read the model you chose as a claim about how current the work is" in engineer
+    assert "what the registry actually serves today" in engineer
+    assert "probably two generations stale" in engineer
+
+
+def test_stopping_is_separated_from_being_wrong() -> None:
+    """Three rules I wrote today deadlocked: a miss said nothing about the idea,
+    retirement demanded proof the next round would fail, and submission demanded
+    success. The only lawful states left were win, cheat the gate, or grind
+    forever. Separating the scientific, spending and publication decisions is
+    what gives persistence an exit that is not a false verdict."""
+    from argus_skill.verticals.research.stages import STAGE_CHECKLISTS
+
+    gate = " ".join(STAGE_CHECKLISTS["submission"][0].statement.split())
+
+    assert "Three decisions live here and must not be collapsed" in gate
+    assert "an opportunity-cost call, not a verdict that the idea was false" in gate
+    # And abstention has to be a legal ending, or the contract gets weakened instead.
+    assert "no qualifying result inside the budget is an honest ending" in gate
+    assert "will eventually weaken its own contract to ship one" in gate

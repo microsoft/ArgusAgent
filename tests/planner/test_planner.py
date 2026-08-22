@@ -10,6 +10,7 @@ from argus_skill.planner.planner import (
     PLANNER_SUPERSEDED_ERROR,
     Planner,
     PlannerConfig,
+    parse_planner_payload,
     parse_planner_text,
     parse_task_scope,
 )
@@ -27,6 +28,60 @@ def test_parse_key_value_completion_after_freeform_progress() -> None:
     assert verdict.project_done is True
     assert verdict.new_tasks == []
     assert verdict.reason == "Updated the parser and verified the regression suite."
+
+
+def test_structured_planner_payload_preserves_list_item_text() -> None:
+    verdict = parse_planner_payload({
+        "project_done": False,
+        "reason": "one task remains",
+        "tasks": [{
+            "key": "repair",
+            "deps": [],
+            "title": "Repair the parser",
+            "objective": "Preserve structured fields.",
+            "scope": "bounded",
+            "non_goals": ["Do not rewrite A | B."],
+            "owns_paths": ["tests/a,b.txt"],
+        }],
+    })
+
+    assert verdict.error == ""
+    assert verdict.new_tasks[0].non_goals == ["Do not rewrite A | B."]
+    assert verdict.new_tasks[0].owns_paths == ["tests/a,b.txt"]
+
+
+def test_structured_planner_wait_preserves_framed_lists() -> None:
+    verdict = parse_planner_payload({
+        "project_done": False,
+        "reason": "the external job is still running",
+        "waiting": {
+            "blocker_fingerprint": "job-running",
+            "recheck_condition": "the durable job reaches terminal state",
+            "recheck_token": "job-42",
+            "wait_mode": "event",
+            "wake_on": ["subagent_state"],
+            "watched_paths": ["results/a,b.json"],
+        },
+        "tasks": [],
+    })
+
+    assert verdict.error == ""
+    assert verdict.waiting_contract is not None
+    assert verdict.waiting_contract.wake_on == ("subagent_state",)
+    assert verdict.waiting_contract.watched_paths == ("results/a,b.json",)
+
+
+def test_structured_planner_payload_rejects_wrong_field_types() -> None:
+    verdict = parse_planner_payload({
+        "project_done": False,
+        "reason": "invalid task framing",
+        "tasks": "not-an-array",
+    })
+
+    assert verdict.new_tasks == []
+    assert verdict.error == (
+        "invalid structured planner decision: tasks must be an array"
+    )
 
 
 def test_parse_planner_task_ignores_legacy_workdir_and_quality_controls() -> None:
@@ -595,8 +650,11 @@ def test_plan_next_repairs_not_done_empty_task_response(monkeypatch) -> None:
     # The schema example must read as a slot to fill, not as a mission the
     # Planner can copy through verbatim — every campaign shipped one titled
     # "title" whose objective was "work and decisive check".
-    assert '"title":"<question>"' in runner.calls[1]["prompt"]
-    assert '"objective":"<work+decisive check>"' in runner.calls[1]["prompt"]
+    # A real question and a real objective: the Planner pastes this example
+    # through verbatim, so a slot-shaped one becomes a mission called
+    # "<question>" exactly as "title" did before it.
+    assert '"title":"Does pruning beat 4-bit at equal latency?"' in runner.calls[1]["prompt"]
+    assert '"objective":"match latency, read top-1"' in runner.calls[1]["prompt"]
     assert runner.calls[1]["options"].working_dir == "/tmp/project"
 
 

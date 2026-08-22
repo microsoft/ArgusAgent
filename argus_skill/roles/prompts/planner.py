@@ -28,8 +28,8 @@ OPERATIONS = frozenset(
 
 _PLANNER_DECISION_PAYLOAD_EXAMPLE = (
     '{"project_done":false,"reason":"why","advance_to_stage":"run",'
-    '"tasks":[{"key":"task-key","deps":[],"title":"<question>",'
-    '"objective":"<work+decisive check>","scope":"bounded"}]}'
+    '"tasks":[{"key":"k1","deps":[],"title":"Does pruning beat 4-bit at equal latency?",'
+    '"objective":"match latency, read top-1","scope":"bounded"}]}'
 )
 _PLANNER_DECISION_EVENT = decision_event_instruction(
     "planner",
@@ -42,10 +42,9 @@ Read the current state, then choose the next useful milestone. Do not implement 
 delegate implementation to Engineer. Do not edit project files; Engineer owns edits,
 commands, tests, and iteration.
 
-- Reuse what Manager and completed tasks already established. Inspect only what the
-  decision needs.
-- Make each task large enough for one Engineer to own end to end. Use several tasks
-  only for real dependencies or independent work.
+- Reuse Manager/completed-task decisions. Give each Engineer a self-contained task
+  with its decision, inputs, check; split only for dependencies
+  or independent work.
 - Prefer the simplest sufficient plan. Do not add defensive machinery, abstractions,
   or future-facing work without evidence that the current task needs them.
 - Follow the operator's requested actions and order. Existing artifacts or a usable
@@ -57,9 +56,10 @@ commands, tests, and iteration.
   is allowed when it can change the decision. When related attempts repeatedly fail,
   revisit primary papers and official implementations. A performance diagnosis needs
   code-path evidence plus timing/profiling or a controlled comparison.
-- `project_done=true` means the operator goal is actually complete, not merely that one
-  attempt ended. Integrity and reproducibility are admission constraints, not a routing command.
-  Never use a bare launch verdict; say what happened and what should happen next.
+- Set `project_done=true` only when the operator goal is complete. Bounded-direct
+  Reviewer `done` closes it; review again only if requested or the verdict finds a gap.
+  Integrity and reproducibility are admission constraints, not a routing command.
+  Never emit a bare launch verdict; say what happened and the next action or Host rejects it.
 - Payload: `project_done`, `reason`, `tasks`, `advance_to_stage`; staged decisions
   require a Host-validated stage. Tasks require `key`, `deps`, `title`, `objective`,
   `scope`; optional: `acceptance_check`, `parallel_safe`, `owns_paths`, `vertical`.
@@ -67,9 +67,9 @@ commands, tests, and iteration.
   `recheck_condition`, and `recheck_token`; add `operator_action_required=true`
   only when the operator must act. Never poll a watched durable task; use
   `wait_mode=event` and `wake_on=["subagent_state"]`.
-- Planner proposes task scope only through the structured task field (legacy
-  `TASK_SCOPE`); Host owns workdir, review, stages, context, Skill, and
-  enqueue-time validation/normalization of that field.
+- Planner proposes task scope only through the structured task field (`scope`;
+  legacy `TASK_SCOPE`); Host owns enqueue-time validation/normalization of that
+  field, workdir, review, stages, context, Skills.
 - Use the operator's language.
 """ + _PLANNER_DECISION_EVENT
 
@@ -135,8 +135,9 @@ def build_bounded_dag_prompt(objective: str) -> str:
         "Rules:\n"
         "- Default to one node. Split only for a hard dependency or genuinely "
         "independent deliverables.\n"
-        "- Keep reading, implementation, tests, and verification in the same node when "
-        "one Engineer can own them.\n"
+        "- Keep coupled deliverables, reading, implementation, and checks in one node "
+        "when one Engineer can own them. Never create a review-only or validation-only "
+        "task.\n"
         "- Each node should name the work, relevant files, and one decisive check. The "
         "check must fail when its claimed requirement is violated; never emit `or True`, "
         "`|| true`, unconditional success, or an unmeasured unchanged-file claim.\n"
@@ -147,10 +148,18 @@ def build_bounded_dag_prompt(objective: str) -> str:
         "can change the plan. When related attempts repeatedly fail, revisit the "
         "source assumption.\n"
         "- Dependencies must reflect real handoffs. Independent nodes may run in parallel.\n"
-        "- the Host owns execution and review policy.\n"
+        "- More than one mission runs at a time. A long job holds its slot for "
+        "hours without holding the others, so a cycle that schedules only that "
+        "job leaves the rest of the campaign idle for as long as it runs; "
+        "schedule what does not need its result too.\n"
+        "- The Host owns execution and enforces review policy. Set "
+        "`require_independent_review:true` on the owned work node when the operator "
+        "explicitly requests independent review or the task crosses an independent "
+        "authority boundary; otherwise omit it.\n"
         "- Put `reason` and `tasks` in the Planner decision event. Each task uses "
         "`key`, `deps` (same-batch keys only), `title`, and `objective`; add "
-        "`acceptance_check`, `non_goals`, and `vertical` when useful. Omit "
+        "`acceptance_check`, `non_goals`, `vertical`, and "
+        "`require_independent_review` when useful. Omit "
         "`vertical` to inherit Manager's campaign route; set it only when another "
         "existing role clearly fits the node. Use the operator objective's "
         "language. Keys must be unique and the graph acyclic.\n\n"

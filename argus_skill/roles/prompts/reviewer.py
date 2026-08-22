@@ -35,6 +35,27 @@ _REEVALUATE_HEADER = (
 
 _MAX_SHARED_CTX_CHARS = 100_000_000
 
+# Acceptance settles effort, never truth. Once one round accepted a 6% score on
+# a benchmark where the model publishes ~80%, this boundary forbade every later
+# round from looking again, and the campaign reproduced its own broken baseline
+# for ninety reviews without once returning `incorrect`.
+_INCREMENTAL_REREVIEW_BOUNDARY = (
+    "## Incremental re-review boundary\n"
+    "The previous Reviewer verdict below is settled context for this mission. "
+    "Inspect the prior `next_action`, the current Engineer summary, the "
+    "artifacts changed to satisfy that action, and the implicated acceptance "
+    "checks. Do not restart repository research, reopen accepted findings, or "
+    "repeat unchanged online/source checks. Repeat a broader check only when "
+    "the current delta changed its input, the previous verdict explicitly left "
+    "it unresolved, or a named contradiction/security/authority issue requires "
+    "it. One thing acceptance never settles: a number the paper will stand on "
+    "that nothing outside this harness has ever confirmed. Having been accepted "
+    "is not evidence that it is true, and a harness reproduces its own broken "
+    "baseline every round it is asked. If the requested delta now passes and no "
+    "such contradiction exists, return `done`; do not invent a new unrelated "
+    "repair round.\n\n"
+)
+
 # The Reviewer is the only role that can open the plan-challenge channel, and
 # `reconsider` is the single token that opens it. Until this block existed the
 # word appeared nowhere in any prompt while the example offered an invalid
@@ -106,6 +127,16 @@ def _verification_directive() -> str:
         "External identity drift without a mission mutation proves neither failure nor "
         "causation; require a mutation command attributable to this mission.\n\n"
     )
+
+
+_PRODUCT_ACCEPTANCE_DIRECTIVE = (
+    "UI/API/CLI/service changes need product-user acceptance. When safe, run the "
+    "candidate with isolated state, non-production port, test-only credentials; "
+    "use its public entry point, inspect the "
+    "result, and stop it. Never cause external or irreversible effects. Unit tests "
+    "alone do not prove that flow; if unavailable, state it and do not claim it passed. "
+    "Internal/library work needs its decisive check.\n\n"
+)
 
 
 def _audit_integrity_directive(context: str) -> str:
@@ -300,7 +331,10 @@ def render_reviewer_prompt(
         RESULT_FIELD_CHOICES,
         resolve_research_target_level,
     )
-    from ...skills.vertical_select import _persisted_vertical
+    from ...skills.vertical_select import (
+        _persisted_vertical,
+        resolve_workflow_mode,
+    )
     from .registry import resolve_role_prompt
 
     error_text = main_error or "none"
@@ -368,12 +402,13 @@ def render_reviewer_prompt(
         if review_libraries.block:
             matched_review_skill_block = review_libraries.block + "\n\n"
     stage = prompt_context.stage
+    direct_workflow = resolve_workflow_mode(_proot) == "direct"
     _measured = not _requires_engineering_audit and os.environ.get(
         "ARGUS_SKILL_MEASURED_MODE", ""
     ).strip().lower() in ("1", "true", "yes", "on")
     # Vertical-owned policy arrives through the prompt catalog; this module
     # contributes only role-wide review behavior.
-    optimize_banner = prompt_context.role_banner
+    optimize_banner = "" if direct_workflow else prompt_context.role_banner
     if prompt_context.requires_independent_review and not _requires_engineering_audit:
         optimize_banner = ""
     research_target_instruction = ""
@@ -455,6 +490,8 @@ def render_reviewer_prompt(
         )
     else:
         stage_checklist = prompt_context.stage_checklist
+    if direct_workflow:
+        stage_checklist = ""
 
     wiki_curator_skill_block = ""
     direct_memory_edit_block = ""
@@ -512,19 +549,7 @@ def render_reviewer_prompt(
     )
     incremental_review_block = ""
     if round_index > 1 and prev_review_summary.strip():
-        incremental_review_block = (
-            "## Incremental re-review boundary\n"
-            "The previous Reviewer verdict below is settled context for this "
-            "mission. Inspect the prior `next_action`, the current Engineer "
-            "summary, the artifacts changed to satisfy that action, and the "
-            "implicated acceptance checks. Do not restart repository research, "
-            "reopen accepted findings, or repeat unchanged online/source checks. "
-            "Repeat a broader check only when the current delta changed its input, "
-            "the previous verdict explicitly left it unresolved, or a named "
-            "contradiction/security/authority issue requires it. If the requested "
-            "delta now passes and no such contradiction exists, return `done`; do "
-            "not invent a new unrelated repair round.\n\n"
-        )
+        incremental_review_block = _INCREMENTAL_REREVIEW_BOUNDARY
     # Prefer direct runtime and verifier evidence over the Engineer's summary
     # when callers provide it. Omit the block when no such evidence exists.
     evidence_block = (
@@ -577,7 +602,7 @@ def render_reviewer_prompt(
         measured=_measured,
         compact=not bool((main_error or "").strip()),
     )
-    if prompt_context.workflow_mode == "direct":
+    if direct_workflow:
         rollback_block = ""
     # Byte-stable static policy; every fresh Reviewer receives it in full.
     shell_contract = native_shell_summary()
@@ -591,6 +616,24 @@ def render_reviewer_prompt(
             )
         )
     )
+    handoff_policy = (
+        "`done` closes a bounded direct task when its mission contract and decisive "
+        "check pass. Use `continue` for one concrete material gap and give one next "
+        "action; leave optional hardening advisory."
+        if direct_workflow
+        else (
+            "`done` needs enough evidence for the material outcome, not exhaustive proof or "
+            "artifact completeness. Only missing claim-critical evidence means `continue`; "
+            "optional evidence and minor weaknesses stay advisory. One timeout, failed attempt, "
+            "or threshold miss is not impossibility. A threshold miss only shows that this run "
+            "missed its target; a root-cause, dominant/bottleneck-stage, or replacement-architecture "
+            "claim needs code-path evidence plus profiling, timing, or a controlled comparison. "
+            "Give one highest-impact NEXT_ACTION. "
+            "Integrity is mandatory but not scientific value by itself. Ask the "
+            "operator one question only for authority or information only they can provide. "
+            "Bounded `done` closes this task; final-submission `done` may certify the project."
+        )
+    )
     static = (
         optimize_banner
         + research_target_instruction
@@ -598,6 +641,8 @@ def render_reviewer_prompt(
         + "\n\n"
         + (shell_contract + "\n\n" if shell_contract else "")
         + MODEL_INTEGRITY_BOUNDARY
+        + "\n\n"
+        + _PRODUCT_ACCEPTANCE_DIRECTIVE
         + "\n\n## Reviewer role\n"
         "Advance useful work. Default to `done` when the requested outcome materially "
         "works; optional evidence, polish, and future robustness are advisory. Inspect "
@@ -643,16 +688,8 @@ def render_reviewer_prompt(
         + "\n\n"
         + venv_skill_block
         + "\n\n## Handoff policy\n"
-        "`done` needs enough evidence for the material outcome, not exhaustive proof or "
-        "artifact completeness. Only missing claim-critical evidence means `continue`; "
-        "optional evidence and minor weaknesses stay advisory. One timeout, failed attempt, "
-        "or threshold miss is not impossibility. A threshold miss only shows that this run "
-        "missed its target; a root-cause, dominant/bottleneck-stage, or replacement-architecture "
-        "claim needs code-path evidence plus profiling, timing, or a controlled comparison. "
-        "Give one highest-impact NEXT_ACTION. "
-        "Integrity is mandatory but not scientific value by itself. Ask the "
-        "operator one question only for authority or information only they can provide. "
-        "Bounded `done` closes this task; final-submission `done` may certify the project.\n\n"
+        + handoff_policy
+        + "\n\n"
         + objective_block
         + "Operator messages:\n"
         f"{operator_text}\n\n"

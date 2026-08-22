@@ -50,6 +50,7 @@ class _FakeBackend:
     thread_id: str | None = "tid-chat-1"
     classify_answer: str = "SELF"
     stream_message: str | None = None
+    backend: str = "pi"
     calls: list[dict[str, Any]] = field(default_factory=list)
     classify_calls: list[dict[str, Any]] = field(default_factory=list)
 
@@ -263,6 +264,67 @@ def test_message_only_self_reply_uses_lean_low_cost_route(monkeypatch) -> None:
     assert call["options"].dangerous_yolo is False
     assert "reply exactly hello" in call["prompt"]
     assert "Grounding workspace" not in call["prompt"]
+
+
+def test_local_microtask_uses_compact_isolated_execution(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "argus_skill.apps._self_reply.resolve_role_reasoning_effort",
+        lambda *_args, **_kwargs: "high",
+    )
+    backend = _FakeBackend(response_message="done")
+    runner = _make_runner(backend)
+
+    runner._simple_quick_reply(
+        objective="create result.txt and verify it",
+        sink=_RecordingSink(),
+        execute_mode="micro",
+    )
+
+    call = backend.calls[-1]
+    assert call["run_label"] == "self-micro"
+    assert call["prompt"] == "create result.txt and verify it"
+    assert call["options"].model == "gpt-5.4-mini"
+    assert call["options"].reasoning_effort == "high"
+    assert call["options"].skill_paths == []
+    assert call["options"].extra_args == [
+        "--tools",
+        "bash",
+        "--system-prompt",
+        "Complete the finite local microtask in the current directory. Use one "
+        "shell command to make the requested change and verify it, then report "
+        "briefly and stop.",
+    ]
+    assert runner.last_thread_id is None
+
+
+@pytest.mark.parametrize(
+    ("mode", "tools", "prompt_fragment"),
+    [
+        ("implement", "read,bash,edit,write", "implementation task"),
+        ("debug", "read,bash,edit,write", "debugging task"),
+        ("review", "read,bash,write", "without modifying source"),
+        ("synthesize", "read,bash,write", "supplied-source synthesis"),
+    ],
+)
+def test_local_worker_modes_get_narrow_tools_and_prompts(
+    mode: str,
+    tools: str,
+    prompt_fragment: str,
+) -> None:
+    backend = _FakeBackend(response_message="done")
+    runner = _make_runner(backend)
+
+    runner._simple_quick_reply(
+        objective="complete the local task",
+        sink=_RecordingSink(),
+        execute_mode=mode,
+    )
+
+    call = backend.calls[-1]
+    assert call["run_label"] == f"self-{mode}"
+    assert call["prompt"] == "complete the local task"
+    assert call["options"].extra_args[:2] == ["--tools", tools]
+    assert prompt_fragment in call["options"].extra_args[-1]
 
 
 def test_manager_self_effort_can_be_overridden(monkeypatch) -> None:
@@ -829,6 +891,8 @@ def test_execute_uses_full_pipeline_on_real_task(
         skip_git_repo_check: bool = True
         workflow_mode: str = "staged"
         active_vertical: str = ""
+        paper_mission: bool = False
+        reviewer_reasoning_effort: str = "xhigh"
 
     runner._SkillLoopConfig = _StubConfig
 
@@ -875,6 +939,11 @@ def test_execute_uses_full_pipeline_on_real_task(
         "_workflow_mode_for_project_root",
         lambda root: "direct",
     )
+    monkeypatch.setattr(
+        _runtime,
+        "_paper_mission_for_project_root",
+        lambda root: True,
+    )
     backend.calls.clear()
     planned_tasks.clear()
     loop_kwargs.clear()
@@ -888,6 +957,8 @@ def test_execute_uses_full_pipeline_on_real_task(
     )
     assert "## Planner execution plan" not in planned_tasks[0]
     assert loop_kwargs[0]["config"].workflow_mode == "direct"
+    assert loop_kwargs[0]["config"].paper_mission is False
+    assert loop_kwargs[0]["config"].reviewer_reasoning_effort == "high"
     assert loop_kwargs[0]["config"].wiki_enabled is True
     assert loop_kwargs[0]["config"].auto_init_wiki is True
 

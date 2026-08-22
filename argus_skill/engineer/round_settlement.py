@@ -41,20 +41,54 @@ def _review_plan_signal(review: ReviewDecision) -> str:
     return str(report.get("plan_signal") or "").strip().lower()
 
 
+def _blocked_on_healthy_work(workdir: Path) -> bool:
+    """True while a job this mission launched is still running and healthy."""
+    from .external_work import scan_external_work
+
+    try:
+        return any(status.waitable for status in scan_external_work(workdir))
+    except Exception:  # noqa: BLE001 — an unreadable registry is not a stall claim
+        return False
+
+
 def _next_semantic_stall_streak(
     review: ReviewDecision,
     current_streak: int,
+    *,
+    blocked_on_healthy_work: bool = False,
 ) -> tuple[int, bool | None]:
     """Count consecutive explicit no-progress ``continue`` verdicts.
 
     A missing or malformed ``forward_progress`` value is unknown, not evidence
     of a stall. Resetting on unknown makes this guard fail open and prevents the
     harness from replacing the Reviewer's judgment with an inference of its own.
+
+    Waiting is not stalling. While a healthy job the mission launched is still
+    running, no round can show forward progress, so four such rounds retired the
+    mission for doing exactly what it was asked to do -- seven missions across
+    six campaigns in ninety minutes, including the MATH-500 gate the whole run-03
+    paper rests on. Work that is stalled or needs attention still counts, so a
+    dead job cannot buy unlimited rounds, and the round budget is untouched.
     """
     forward_progress = _review_forward_progress(review)
+    if blocked_on_healthy_work:
+        return 0, forward_progress
     if review.status == "continue" and forward_progress is False:
         return max(0, int(current_streak)) + 1, forward_progress
     return 0, forward_progress
+
+
+# Half of every failed mission across seven campaigns ended on one of the stall
+# counters, and the reason each returned described only the refusal. One
+# campaign read it as a verdict on the work: its claim-bearing benchmark run
+# stalled, and the next thing the Planner queued was an unrelated question with
+# a four-word objective. What a stall measures is the approach, so the reason
+# has to point somewhere instead of just stopping.
+_STALL_REDIRECT = (
+    " The rounds ended; the question did not. Name what these rounds kept "
+    "failing to move, then take a different route to the same question — "
+    "changing the question is how a campaign loses its paper."
+)
 
 
 class RoundSettlementMixin:
@@ -103,7 +137,7 @@ class RoundSettlementMixin:
             return (
                 "no_progress",
                 "Engineer produced no effective output for "
-                f"{no_progress_streak} consecutive rounds.",
+                f"{no_progress_streak} consecutive rounds." + _STALL_REDIRECT,
             )
         if (
             stall_threshold > 0
@@ -113,7 +147,7 @@ class RoundSettlementMixin:
             return (
                 "no_progress",
                 "Reviewer reported no forward progress for "
-                f"{semantic_stall_streak} consecutive rounds.",
+                f"{semantic_stall_streak} consecutive rounds." + _STALL_REDIRECT,
             )
         if (
             decision_timeout_seconds > 0
@@ -122,7 +156,8 @@ class RoundSettlementMixin:
         ):
             return (
                 "no_progress",
-                f"Reached {decision_timeout_seconds} seconds without decision progress.",
+                f"Reached {decision_timeout_seconds} seconds without decision "
+                "progress." + _STALL_REDIRECT,
             )
         if (
             hard_escalate_rounds > 0
@@ -159,6 +194,7 @@ class RoundSettlementMixin:
         next_semantic_stall_streak, forward_progress = _next_semantic_stall_streak(
             review,
             state.semantic_stall_streak,
+            blocked_on_healthy_work=_blocked_on_healthy_work(workdir),
         )
         now_monotonic = time.monotonic()
         next_decision_progress_at = (

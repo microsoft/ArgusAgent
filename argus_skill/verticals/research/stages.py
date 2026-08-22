@@ -309,12 +309,26 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
                 "intervention claims require executable comparisons with the same "
                 "decision-time information, not only historical traces or post-hoc "
                 "judges. Never invent an evaluator, gold label, participant, visit, "
-                "or task merely to satisfy this item."
+                "or task merely to satisfy this item. Where the model and benchmark "
+                "have a published number, look it up and put yours beside it before "
+                "trusting any comparison built on this harness: a harness can "
+                "reproduce its own broken baseline all day, and a score far below "
+                "the published one means your pipeline is what you measured. "
+                "Reproduce it under the protocol that produced it — the prompt "
+                "format, tool access, decoding and generation budget the published "
+                "result used — and name any deviation beside both numbers; a "
+                "CoT-prompted score is not comparable to a tool-integrated one. A "
+                "generation budget is not a number anyone picks: read it off the "
+                "length distribution of this model's own completions, so the budget "
+                "is what lets it finish rather than what fits. Report "
+                "the rate at which generation hits its own limits, since a run cut "
+                "off before it can answer scores like a method that cannot."
             ),
             evidence_hint=(
-                "computational: evaluator source + official scorer outputs; "
-                "clinical/mechanism: public-source loader/analysis code + derived "
-                "rows + machine-readable result and uncertainty"
+                "computational: evaluator source + official scorer outputs, plus the "
+                "published score for this model and benchmark next to yours and the "
+                "truncation rate; clinical/mechanism: public-source loader/analysis "
+                "code + derived rows + machine-readable result and uncertainty"
             ),
         ),
     ),
@@ -511,7 +525,21 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
                 "the robustly characterized boundary, mechanism, scaling behavior, "
                 "failure mode, or practical decision that the experiments establish; "
                 "do not write an apologetic failure log and do not abandon a truthful "
-                "paper merely because the sign is negative. A "
+                "paper merely because the sign is negative. That boundary still has to "
+                "be a finding someone wants, and the title has to name what you found "
+                "rather than the genre you retreated to: 'A Boundary Study' announces a "
+                "shape, and a title carrying a substitution, a layer index or any other "
+                "apology has put the excuse where the result belongs. A qualifier "
+                "you chose is itself a claim: a title saying frozen, layer-20 or "
+                "substituted promises that the paper shows unfreezing, another "
+                "layer or the real model changing the answer — show that or drop "
+                "the word, because otherwise a reader cannot tell whether the idea "
+                "failed or only your restriction of it did. A negative sign earns "
+                "its venue by naming the belief it kills: say in the abstract "
+                "which published claim or common practice this refutes. Claim as far as "
+                "the evidence reaches and no further, but a claim narrowed past what you "
+                "showed is not caution -- it throws the result away, and no tightly "
+                "fenced claim was ever the reason a paper mattered. A "
                 "literature review instead aligns its scope, taxonomy/comparison "
                 "frame, source evidence, synthesis, limitations, and conclusions; it "
                 "must not invent a method or experiment section merely to mimic an "
@@ -576,9 +604,22 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
             statement=(
                 "Tables are readable and organized around the paper's claims. They "
                 "include every comparison needed to assess the thesis, but do not "
-                "force an irrelevant cross-benchmark matrix or a universal house style."
+                "force an irrelevant cross-benchmark matrix or a universal house style. "
+                "A reader skimming one should see the answer without reconstructing it: "
+                "name the method as ours, put it where the eye lands, bold the winning "
+                "number in each column, and say in the caption what the table shows "
+                "rather than what it contains. A row the reader has to identify as "
+                "yours, or a column where they have to work out who won, has buried "
+                "the result the paper spent its whole budget earning. Round every "
+                "number to the precision its evidence supports: "
+                "0.6946666666666667 is a machine dump, and it reads as a paper "
+                "nobody proofread."
             ),
-            evidence_hint="paper/main.tex tables + canonical result artifacts",
+            evidence_hint=(
+                "paper/main.tex tables + canonical result artifacts: an ours row that "
+                "reads as ours, a marked best value per column, a caption that states "
+                "the finding"
+            ),
         ),
         ChecklistItem(
             id="review.citations",
@@ -604,8 +645,15 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
                 "gaps, and limitations. Every "
                 "headline claim is tied to reported evidence; no unsupported hype, "
                 "template LLM openings, experiment-report narration, or repeated "
-                "not-X-but-Y caveats. Limitations bound the thesis instead of becoming "
-                "the paper's central message. The "
+                "not-X-but-Y caveats. Limitations are one honest paragraph naming "
+                "the real constraint, not a comprehensive defence: a page of what "
+                "the method cannot do reads as a weaker contribution and buys no "
+                "protection from a reviewer who wanted more anyway. Write for what "
+                "reviewers actually weigh — is the problem shown to be real, is the "
+                "idea interesting, is the comparison fair, does the claim match what "
+                "was shown, is the related work placed. Seeds, intervals and "
+                "significance belong wherever the claim rests on a small margin, "
+                "and nowhere else; they are not the spine of a paper. The "
                 "model-backed reviewer (academic_language_review) is advisory "
                 "input — this checklist, judged by the reviewer agent, is the "
                 "source of truth."
@@ -637,6 +685,32 @@ STAGE_CHECKLISTS: dict[str, tuple[ChecklistItem, ...]] = {
         ),
     ),
     "submission": _checklist(
+        ChecklistItem(
+            id="submission.result_stands",
+            statement=(
+                "The result this paper is about beat the baseline it was chosen "
+                "against, at the scale named at selection. If it did not, say which "
+                "of implementation, optimization, data, scale or evaluator the "
+                "shortfall is made of and what the next round buys — a "
+                "shortfall is a gap to close, not a finding to package. No number "
+                "here judges the idea until the baseline reproduces in this "
+                "harness and the method does what it says, because an unfinished "
+                "implementation looks exactly like a wrong idea. Scoping a "
+                "diagnostic down until it certifies is how a campaign delivers a "
+                "paper without delivering a result. Three decisions live here and "
+                "must not be collapsed: whether the claim is supported, whether "
+                "this campaign keeps spending, and whether anything is submitted. "
+                "Closing a campaign because the next round is worth less than "
+                "another candidate is an opportunity-cost call, not a verdict that "
+                "the idea was false — and no qualifying result inside the budget "
+                "is an honest ending, since a system that must always ship a paper "
+                "will eventually weaken its own contract to ship one."
+            ),
+            evidence_hint=(
+                "the endpoint number beside the baseline it was measured against, "
+                "and the margin declared at selection"
+            ),
+        ),
         ChecklistItem(
             id="submission.upstream",
             statement=(
@@ -1033,9 +1107,15 @@ _AMBITIOUS_RESEARCH_POLICY = (
     "When it is not yet strong, the answer is better evidence, not a smaller sentence — "
     "so treat a negative or mixed result as a debugging signal and chase the "
     "implementation, data, scale, evaluator, and method fixes that could turn it "
-    "positive. A boundary or mechanism finding is worth writing when it is genuinely "
+    "positive. Before a shortfall counts as one, check that the run could have seen "
+    "the win: put the spread of your own repeated measurements beside the margin "
+    "declared at selection, and when the noise is wider than the margin, the run has "
+    "not tested the idea, only failed to look at it — the fix is a run that resolves "
+    "what you are claiming, not a smaller claim. "
+    "A boundary or mechanism finding is worth writing when it is genuinely "
     "the interesting thing you found and you can show it at real scale, not when it is "
     "what is left after giving up. "
+    "What gets a reviewer excited is narrow and worth aiming at: explaining something the field assumed it already understood, a connection between two areas nobody had joined, a principled method where the principle does the work, or a result that contradicts what everyone expected. None of those is a bigger number. What loses a reviewer is equally narrow: a problem never shown to be real, an increment with no new idea, and above all a claim the results do not support. Say the thing you found and let it be judged. "
     "Apply requirements proportionally to the actual claim and contribution shape; "
     "mark inapplicable items instead of manufacturing work. Reuse certified upstream "
     "evidence and do not reopen it without a concrete contradiction. Default to advance "
@@ -1050,11 +1130,12 @@ _REVIEWER_RESEARCH_JUDGEMENT = (
     "them until a dependency changes. Separate method results from infrastructure "
     "or evaluator failure. Research-stage smoke probes are short advisory "
     "observations, not gates: weak or underpowered ones cannot by themselves "
-    "trigger replan. Measured short of the baseline, the gap has a size and "
-    "closing it is the work: name what it is made of — implementation, data, "
-    "scale, evaluator — buy that fix and measure again, the way a leaderboard "
-    "result is earned. Such rounds are normal; a miss "
-    "says nothing about the idea, retiring one is the Manager's call, and a "
+    "trigger replan. Short of the baseline, name what the gap is made of and "
+    "buy that fix. "
+    "A miss is evidence about the tested system; it weighs against the claim "
+    "once the baseline reproduced, the method did what it says and the run "
+    "could resolve the effect. Then repeated misses count. "
+    "Retiring is the Manager's call, and a "
     "loss is never the paper. If it "
     "is stronger than the writing says, "
     "push the claim up. A missing certificate or field belongs in "
@@ -1079,9 +1160,22 @@ _PLANNER_RESEARCH_ORCHESTRATION = (
     "outcomes steer how the selected problem is pursued; claim-bearing evidence at "
     "the faithful scale named at selection is what the campaign optimizes against. "
     "Name at selection the end-task claim, the strongest resource-matched "
-    "baseline, the win that would matter, and the cheapest faithful run that "
-    "measures the gap — then buy that measurement early, so there is a number to "
-    "improve for the rest of the campaign. Short of the baseline is a gap with a "
+    "baseline, the size of win that would matter — derived from something "
+    "observable, not invented: the spread this benchmark already reports "
+    "between seeds or methods, or the gap between the last two published "
+    "results on it. A round number picked because it sounds decisive is a "
+    "threshold nobody can argue with or fail. Name too the run that would "
+    "convince a reader who wants the claim to be false: the field's standard "
+    "split at the field's standard size, repeats enough to put the margin "
+    "outside their own spread, and the baselines a referee would ask for "
+    "unprompted. Buy that measurement early, so there is a number to improve "
+    "for the rest of the campaign. Scale is part of the argument, not a cost "
+    "to minimize: a win of three examples on 120, or one on 48, is not a small "
+    "result but no result, and three campaigns have already filed one. When "
+    "the convincing run will not fit at once, stage it and buy it in pieces; "
+    "shrinking it into a run nobody can believe spends the whole budget on "
+    "nothing.\n"
+    "Short of the baseline is a gap with a "
     "size, and the campaign's job is to close it: each round names what the "
     "shortfall is made of, buys the implementation, optimization, data, scale or "
     "evaluator fix that addresses it, and measures again. Papers are won this "
@@ -1098,7 +1192,12 @@ _PLANNER_RESEARCH_ORCHESTRATION = (
     "assembly, schema conformance and checklist bookkeeping are not missions of "
     "their own — they are finishing steps inside the mission whose work they "
     "certify, and scheduling them separately spends the campaign on the harness "
-    "instead of the paper.\n"
+    "instead of the paper. When a mission will sit for hours on external "
+    "compute, queue beside it the work that does not need its result: the "
+    "baseline to reproduce, the analysis to write against the agreed schema, "
+    "the section the paper already owes. Campaigns can run two missions at once "
+    "and have been running one, so eighteen hours of GPU wait across five rounds "
+    "bought nothing else — and wall-clock is most of what a paper costs.\n"
 )
 
 _ENGINEER_RESEARCH_EXECUTION = (
@@ -1106,7 +1205,7 @@ _ENGINEER_RESEARCH_EXECUTION = (
     "Research execution: keep independent work file-disjoint and parallel. Respect "
     "the route/review/selector/probe time boxes, stop searching once the novelty "
     "boundary is credible, and treat source-balance gaps and smoke outcomes as "
-    "documented limitations rather than reasons to stall. When a method is short of its baseline, `engineer/research-grind.md` is how the gap gets closed: the first number is a first draft, the loop is measure-diagnose-fix-measure, flat stretches are the middle of the problem rather than a verdict, and the method you end up with is the one the paper is about.\n"
+    "documented limitations rather than reasons to stall. Reviewers read the model you chose as a claim about how current the work is, so pick from what is strong now rather than what you remember: list what the registry actually serves today, take a current-generation checkpoint that fits the budget, and treat a family you can name from memory as probably two generations stale. Any checkpoint, library version, benchmark split or baseline number you can name from memory is a hypothesis about a world that moved after training: probe it before the plan hardens, per `engineer/stale-world-model.md`. A checkpoint that will not download is a substitution to record, not a mission to block on. When a method is short of its baseline, `engineer/research-grind.md` is how the gap gets closed: the first number is a first draft, the loop is measure-diagnose-fix-measure, flat stretches are the middle of the problem rather than a verdict, and the method you end up with is the one the paper is about.\n"
 )
 
 
@@ -1128,6 +1227,18 @@ _MANAGER_RESEARCH_STEWARDSHIP = (
 )
 
 
+def search_altitude_context(project_root: object) -> str:
+    """Everything a role should have in view before it judges its own work.
+
+    Two facts the campaign wrote down itself and then never reopened: what it
+    promised at selection, and which accepted papers it said it would learn
+    from. Both are rendered; neither is scored.
+    """
+    return _selection_contract_block(project_root) + _accepted_papers_block(
+        project_root
+    )
+
+
 def role_banner(role: str = "engineer") -> str:
     """Add research-only role policy without affecting other verticals."""
     return {
@@ -1138,7 +1249,94 @@ def role_banner(role: str = "engineer") -> str:
     }.get(role, "")
 
 
-def search_altitude_context(project_root: object) -> str:
+def _selection_contract_block(project_root: object) -> str:
+    """Put what this campaign promised at selection back in front of it.
+
+    Selection records the end task, the baseline to beat and the margin that
+    would count. Nothing reopened that file afterwards: across a full campaign
+    the phrase never appeared in a role session again, so the campaign both set
+    the bar and reported against it without the two ever meeting. A soft
+    baseline or a conveniently small margin then costs nothing, and a claim can
+    drift for days without anyone noticing it moved.
+
+    The file is written by an Agent, so its shape differs every campaign — the
+    same promise has been filed as ``meaningful_win_threshold``,
+    ``meaningful_win_size`` and ``claim_contract.end_task``. Fields are matched
+    by intent at any depth rather than by a fixed schema, because a campaign
+    that had to satisfy a schema would write to the schema.
+
+    This renders the promise and stops. Whether the baseline was the strongest
+    available, whether the margin was honest, and whether today's number clears
+    it are the reading Agent's calls — a harness that compared them itself
+    would only teach the next campaign to promise less. Fail-soft throughout.
+    """
+    try:
+        import json
+        from pathlib import Path as _Path
+
+        root = _Path(str(project_root)).resolve()
+        path = root / "research" / "IDEA_SELECTION.json"
+        if not path.is_file():
+            return ""
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return ""
+
+        # (label, key fragments) — first match at the shallowest depth wins.
+        wanted = (
+            ("question", ("central_uncertainty", "consequential_uncertainty")),
+            ("end task", ("end_task", "headline_claim", "final_claim", "claim_scope")),
+            ("baseline to beat", ("strongest_resource_matched_baseline",)),
+            ("margin that would count", ("meaningful_win",)),
+        )
+
+        def flatten(value: object) -> str:
+            if isinstance(value, dict):
+                parts = [f"{k}: {flatten(v)}" for k, v in value.items()]
+            elif isinstance(value, (list, tuple)):
+                parts = [flatten(v) for v in value]
+            else:
+                return " ".join(str(value).split())
+            return "; ".join(p for p in parts if p)
+
+        found: dict[str, tuple[int, str]] = {}
+
+        def walk(node: object, depth: int = 0) -> None:
+            if not isinstance(node, dict) or depth > 4:
+                return
+            for key, value in node.items():
+                low = str(key).lower()
+                for label, fragments in wanted:
+                    if any(fragment in low for fragment in fragments):
+                        text = flatten(value)
+                        if text and depth < found.get(label, (99, ""))[0]:
+                            found[label] = (depth, text)
+                walk(value, depth + 1)
+
+        walk(payload)
+        lines = [
+            f"- {label}: {found[label][1][:400]}"
+            for label, _ in wanted
+            if label in found
+        ]
+        if not lines:
+            return ""
+        missing = [label for label, _ in wanted if label not in found]
+        if missing:
+            lines.append(f"- never filed: {', '.join(missing)}")
+        return (
+            "## What this campaign promised at selection\n"
+            "From `research/IDEA_SELECTION.json`, written before the work began.\n"
+            + "\n".join(lines)
+            + "\nIf the claim has moved since, say so and why: drift you argue for "
+            "is research, and drift nobody mentions is how a soft baseline "
+            "becomes a result.\n\n"
+        )
+    except Exception:  # noqa: BLE001 — a missing promise must never block a role
+        return ""
+
+
+def _accepted_papers_block(project_root: object) -> str:
     """Put the accepted papers this work claims to learn from within reach.
 
     ``ARGUMENT_ORGANIZATION.json`` already records same-area accepted papers

@@ -22,11 +22,11 @@ _POSIX_LONG_EXPERIMENT_RULE = (
     "For commands over two minutes, use Argus's durable runner: "
     "`\"${ARGUS_SKILL_PYTHON:-python3}\" -m "
     "argus_skill.tools.subagent submit --task-id <id> --mode direct "
-    "--timeout <seconds> --command '<command>'`. Use `--mode supervised` only when "
-    "semantic monitoring is needed. Do not use `task(mode=\"background\")` or a "
-    "session-owned background shell. Keep the "
-    "`state=submitted`, `task_id`, `run_id`, and `check_with` receipt. On "
-    "`state=discussing`, answer with `reply_with`; do not poll in the foreground."
+    "--timeout <seconds> --command '<command>'`. Use `--mode supervised` only for "
+    "semantic monitoring. Never `task(mode=\"background\")` or a session-owned "
+    "background shell. Keep the `state=submitted`, `task_id`, `run_id` and "
+    "`check_with` receipt; on `state=discussing` answer with `reply_with` "
+    "and do not poll in the foreground."
 )
 _PERFORMANCE_DIAGNOSTIC_TASK = re.compile(
     r"\b(?:throughput|latency|performance|bottleneck|profil(?:e|ing|er)?|"
@@ -85,11 +85,12 @@ _WINDOWS_LONG_EXPERIMENT_RULE = (
 
 
 def _long_experiment_rule() -> str:
-    return (
+    shell_rule = (
         _WINDOWS_LONG_EXPERIMENT_RULE
         if native_shell_contract()
         else _POSIX_LONG_EXPERIMENT_RULE
     )
+    return shell_rule
 
 
 def append_live_guidance(prompt: str, guidance: list[str]) -> str:
@@ -193,11 +194,44 @@ def build_mission_prompt(
     require_post_task_learning: bool = False,
     project_root: Path | str | None = None,
     project_skill_dir: Path | str | None = None,
+    compact_team: bool = False,
 ) -> str:
     """Build the complete per-round Engineer mission prompt."""
-    sections: list[str] = [EFFECTIVE_TASK_CONTRACT]
     shell_contract = native_shell_contract()
     shell_summary = native_shell_summary()
+    learning_block = _post_task_learning_section(
+        require_post_task_learning=require_post_task_learning,
+        project_skill_dir=project_skill_dir,
+    )
+    if compact_team and include_static:
+        sections = [EFFECTIVE_TASK_CONTRACT]
+        if shell_summary:
+            sections.append(shell_summary)
+        if skill_text:
+            sections.append(skill_text)
+        sections.append(task)
+        sections.append(
+            "## Engineer service\n"
+            "Manager fixed scope and Planner delegated this package. Inspect only what "
+            "the mission contract needs, implement it end to end, and run the named or "
+            "smallest decisive check once. Do not reopen planning, start another Argus "
+            "service, broaden research, or create extra artifacts. If a material blocker "
+            "remains, preserve only the state needed for one next round."
+        )
+        if learning_block:
+            sections.append(learning_block)
+        sections.append(
+            "## Engineer receipt\n"
+            "Return the material result and decisive check; Reviewer owns acceptance.\n"
+            + decision_event_instruction(
+                "engineer",
+                '{"status":"done","result":"material result and decisive check",'
+                '"next_owner":"reviewer"}',
+            )
+        )
+        return sanitize_model_visible_text("\n\n".join(sections))
+
+    sections: list[str] = [EFFECTIVE_TASK_CONTRACT]
     if shell_summary:
         sections.append(shell_summary)
     delta_sections: list[str] = []
@@ -257,17 +291,14 @@ def build_mission_prompt(
         "Write only the code this task needs; do not add hashes, UUIDs, retries, "
         "fallbacks, locks, or abstractions without a concrete requirement. "
         "Unless required, do not write planning/spec/brief documents, initialize Git, "
-        "branch/worktree, commit, or spawn subagents. Use subagents for operator-requested "
-        "parallelism or useful independent work.\n"
+        "branch/worktree, or commit; Planner owns the campaign plan. Delegate wide "
+        "reading, sweeps and long runs to subagents; take back the answer, not the "
+        "transcript. Your context is the budget.\n"
         "Never repeat unchanged checks/reads; batch tools and cap results at 200 "
         "lines. At 18 tool calls, synthesize or checkpoint/yield; never exceed 24.\n"
         "Use primary sources when external behavior matters. If repeated attempts fail, "
         "recheck the underlying assumption instead of making another cosmetic tweak.\n"
         + _long_experiment_rule()
-    )
-    learning_block = _post_task_learning_section(
-        require_post_task_learning=require_post_task_learning,
-        project_skill_dir=project_skill_dir,
     )
     if learning_block:
         sections.append(learning_block)
