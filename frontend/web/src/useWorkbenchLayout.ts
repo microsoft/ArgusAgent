@@ -34,11 +34,12 @@ export function useWorkbenchLayout() {
   const [showReasoning, setShowReasoning] = useState(
     () => storedBoolean('argus.reasoning.visible.v1', false),
   );
-  const [workspaceView, setWorkspaceView] = useState<'mission' | 'activity' | 'workbench'>(
+  const [workspaceView, setWorkspaceView] = useState<'mission' | 'activity' | 'workbench' | 'map'>(
     () => {
-      if (params.get('view') === 'workbench') return 'workbench';
+      const requested = params.get('view');
+      if (requested === 'mission' || requested === 'activity' || requested === 'workbench' || requested === 'map') return requested;
       const stored = readLocalStorage('argus.workspace.view');
-      return stored === 'mission' || stored === 'workbench' ? stored : 'activity';
+      return stored === 'mission' || stored === 'activity' || stored === 'workbench' || stored === 'map' ? stored : 'map';
     },
   );
   const [mobileView, setMobileView] = useState<'activity' | 'preview'>('activity');

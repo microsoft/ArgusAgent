@@ -384,7 +384,7 @@ class LifeSupervisor(
         return self._project_workdir()
 
     def _planner_config(self):
-        from ...core.knobs import resolve_role_model
+        from ...core.knobs import resolve_knob, resolve_role_model
         from ...daemon.state import read_continuous_state
         from ...planner import (
             PlannerConfig,
@@ -425,9 +425,9 @@ class LifeSupervisor(
         return PlannerConfig(
             model=resolve_role_model("planner", role_env="ARGUS_SKILL_PLAN_MODEL")
             or self.reviewer_model,
-            reasoning_effort=os.environ.get(
+            reasoning_effort=resolve_knob(
                 "ARGUS_SKILL_PLANNER_REASONING_EFFORT", "high"
-            ),
+            ).value,
             working_dir=str(workdir),
             state_root=str(state_root),
             add_dirs=([str(state_root)] if state_root != workdir else []),
@@ -1345,17 +1345,15 @@ class LifeSupervisor(
     def _build_terminal_project_delivery(self, reason: str) -> dict[str, Any] | None:
         """Promote the last verified mission output only after project_done."""
         latest: dict[str, Any] = {}
+        settlements = []
         try:
             # Settlement-scoped tail: journal chatter (planner cycles, waiting
             # heartbeats) must not push the winning settlement out of view.
             # The ``success is True`` check stays literal: the kind projection
             # defaults a missing ``success`` to complete, and a delivery must
             # only ever promote an explicitly successful settlement.
-            for entry in reversed(
-                self.memory.journal.tail_settlements(
-                    8, kinds=("mission_complete",)
-                )
-            ):
+            settlements = self.memory.journal.tail_settlements(8, kinds=("mission_complete",))
+            for entry in reversed(settlements):
                 extra = getattr(entry, "extra", None)
                 if isinstance(extra, dict) and extra.get("success") is True:
                     latest = extra
@@ -1363,7 +1361,11 @@ class LifeSupervisor(
         except Exception:  # noqa: BLE001 - delivery presentation is optional
             latest = {}
         try:
-            from ..delivery import build_delivery_receipt
+            from ..delivery import (
+                build_delivery_receipt,
+                linked_report_paths,
+                referenced_delivery_paths,
+            )
 
             outcome = latest.get("outcome")
             outcome = outcome if isinstance(outcome, dict) else {}
@@ -1374,6 +1376,38 @@ class LifeSupervisor(
                 str(latest.get("execution_workdir") or "").strip()
                 or self._project_workdir()
             )
+            # Older settlements omitted the accepted Engineer final_output
+            # from delivery_candidates. Recover named files without a directory
+            # scan, and retain outputs of earlier nodes in this same goal.
+            candidates = list(candidates)
+            candidates.extend(referenced_delivery_paths(workspace, [latest.get("final_output")], limit=12))
+            objective = str(getattr(self.config, "continuous_objective", "") or "").strip()
+            goal_items = {
+                item.id: item for item in self.memory.backlog.all()
+                if item.status == "done" and objective
+                and str(item.original_objective or item.objective).strip() == objective
+            }
+            for entry in reversed(settlements):
+                extra = getattr(entry, "extra", None)
+                if not isinstance(extra, dict) or extra.get("success") is not True:
+                    continue
+                if extra.get("item_id") not in goal_items:
+                    continue
+                if str(extra.get("execution_workdir") or workspace) != str(workspace):
+                    continue
+                candidates.extend(extra.get("delivery_candidates") or [])
+                candidates.extend(referenced_delivery_paths(workspace, [extra.get("final_output"), extra.get("summary")], limit=12))
+                # The reviewed node's concrete file contract still identifies
+                # its outputs when a terse handoff only says "checks passed".
+                candidates.extend(referenced_delivery_paths(workspace, [goal_items[extra["item_id"]].objective], limit=12))
+            candidates = [*linked_report_paths(workspace, candidates), *candidates]
+            from ...skills.vertical_select import resolve_vertical_if_decided
+
+            if resolve_vertical_if_decided(self._artifact_root()) == "software":
+                # Keep the product and report ahead of implementation sources
+                # when the bounded delivery list is clipped.
+                presentation_order = {".html": 0, ".pdf": 1, ".md": 2, ".markdown": 2, ".csv": 3, ".tsv": 3}
+                candidates.sort(key=lambda path: presentation_order.get(Path(str(path)).suffix.lower(), 4))
             final_submission_certified = bool(
                 latest.get("final_submission_certified")
             )
@@ -1405,7 +1439,7 @@ class LifeSupervisor(
                     str(getattr(self.config, "continuous_objective", "") or "").strip()
                     or str(latest.get("title") or "Completed task")
                 ),
-                summary=str(latest.get("summary") or reason or "").strip(),
+                summary=str(latest.get("summary") or latest.get("final_output") or reason or "").strip(),
                 success=True,
                 overall_complete=True,
                 status="done",
@@ -1460,6 +1494,18 @@ class LifeSupervisor(
                 "reason": reason,
             })
             return False
+        handled_revision = int(event.get("handled_operator_context_revision") or 0)
+        if completion_kind == "certified_increment" and handled_revision > 0:
+            # The validated handoff is now a durable decision, even if report
+            # delivery fails below. Checkpoint only the input Planner actually
+            # handled so retry can drain the outbox, not repeat planning.
+            from ...core.operator_context import OperatorContextStore
+
+            try:
+                OperatorContextStore(self.memory.root).acknowledge("planner", handled_revision)
+            except (OSError, ValueError):
+                log.exception("failed to checkpoint certified Planner handoff")
+                return False
         if not self._emit(event):
             self._emit({
                 "type": EventType.LIFE_PLANNER_ERROR,
@@ -1469,14 +1515,21 @@ class LifeSupervisor(
                 "delivery_id": event["delivery_id"],
             })
             return False
-        if details.get("project_done") is True:
-            report_result = self._manager_publish_project_report(reason)
+        if details.get("project_done") is True or completion_kind == "certified_increment":
+            report_result = self._manager_publish_project_report(
+                reason,
+                **(
+                    {"certified_increment": True}
+                    if completion_kind == "certified_increment"
+                    else {}
+                ),
+            )
             if report_result != "reported":
                 self._emit({
                     "type": EventType.LIFE_PLANNER_ERROR,
                     "cycle": details.get("cycle", self._planning_cycles),
                     "error": (
-                        "project completion was recorded, but the post-completion "
+                        "completion was recorded, but the post-completion "
                         "Manager report is still pending"
                     ),
                     "reason": reason,
@@ -1568,9 +1621,14 @@ class LifeSupervisor(
                 "delivery_id": delivery_id,
             })
             return True, _PLAN_RETRY
-        if event.get("project_done") is True:
+        if event.get("project_done") is True or event.get("completion_kind") == "certified_increment":
             report_result = self._manager_publish_project_report(
-                str(event.get("reason") or "")
+                str(event.get("reason") or ""),
+                **(
+                    {"certified_increment": True}
+                    if event.get("completion_kind") == "certified_increment"
+                    else {}
+                ),
             )
             if report_result != "reported":
                 return True, _PLAN_RETRY

@@ -49,9 +49,23 @@ env:
     tests/test_idle_watchdog.py
     tests/test_run_exec_stream_callback.py
     tests/test_stop_kind_lifecycle.py
+    tests/agent_cli/test_codex_execution_host_failure.py
+    tests/apps/test_update.py
+    tests/apps/test_update_dispatch.py
+    tests/apps/test_update_install.py
+    tests/core/test_event_catalog.py
+    tests/apps/test_update_launcher.py
+    tests/apps/test_package_update.py
+    tests/life/test_execution_host_lifecycle.py
+    tests/life/test_planner_effort_resolution.py
+    tests/life/test_planner_host_pause_race.py
+    tests/planner/test_execution_host_failure.py
+    tests/test_backend_receipt_classification.py
+    tests/test_provider_turn_cap_restart.py
     tests/tools/test_lean_check.py
     tests/webapi/test_manager_rotation.py
     tests/webapi/test_pairing.py
+    tests/webapi/test_source_update.py
 
   # Product paths whose Windows behavior is exercised by the Desktop host.
   WINDOWS_CORE_TESTS: >-
@@ -76,6 +90,10 @@ env:
     tests/webapi/test_commands_m1.py
     tests/webapi/test_server_m0.py
     tests/webapi/test_workspace_v2.py
+    tests/webapi/test_map_datasets.py
+    tests/webapi/test_map_live.py
+    tests/webapi/test_map_model.py
+    tests/webapi/test_map_incremental.py
 
   # These modules must remain collectable on Windows even when individual
   # POSIX-only assertions are reported as skipped.
@@ -193,6 +211,10 @@ jobs:
           npm --prefix frontend/tui ci
       - name: Typecheck web
         run: npm --prefix frontend/web run typecheck
+      - name: Validate checked-in release artifacts
+        run: |
+          python -m argus_skill.release_tools.generate_manifest --check
+          python -m argus_skill.release_tools.check_artifacts
       - name: Test web
         run: npm --prefix frontend/web test
       - name: Test cockpit
@@ -238,5 +260,8 @@ jobs:
         shell: pwsh
         run: |
           ./desktop-tauri/scripts/build-backend.ps1 -SkipInstall
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm --prefix frontend/web run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm --prefix desktop-tauri run build:unsigned
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
