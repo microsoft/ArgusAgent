@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["httpx>=0.27,<1", "pytest>=8,<9"]
+test = ["httpx>=0.27,<1", "pytest>=8,<10"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/foundry"]
