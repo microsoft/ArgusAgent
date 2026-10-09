@@ -12,12 +12,14 @@ _TOKEN_ALIASES: tuple[tuple[str, ...], ...] = (
         "cache_read_input_tokens",
         "cachedInputTokens",
         "cacheReadInputTokens",
+        "cacheReadTokens",
     ),
     (
         "cache_write_tokens",
         "cache_creation_input_tokens",
         "cacheWriteTokens",
         "cacheCreationInputTokens",
+        "cache_write_input_tokens",
     ),
     ("output_tokens", "completion_tokens", "outputTokens", "completionTokens"),
     (
@@ -164,6 +166,17 @@ def extract_token_usage(
         data_usage: dict[str, Any] = raw_data_usage if isinstance(raw_data_usage, dict) else {}
         standard_sources = (usage, data_usage, event, content)
         values, present = _token_values_from_sources(standard_sources)
+        cursor_result = (
+            event.get("type") == "result"
+            and "inputTokens" in usage
+            and "cacheReadTokens" in usage
+            and "input_tokens" not in usage
+            and "prompt_tokens" not in usage
+        )
+        if cursor_result:
+            # Cursor reports fresh input plus separate caches for this CLI run.
+            # Normalize to inclusive input, without subtracting a resumed run.
+            values[0] += values[1] + values[2]
         event_cost = _provider_cost_from_sources(standard_sources)
         if event_cost is not None:
             provider_cost_usd = event_cost
@@ -180,7 +193,7 @@ def extract_token_usage(
                 output_tokens_present=present[3],
                 reasoning_output_tokens_present=present[4],
                 provider_cost_usd=provider_cost_usd,
-                source="cumulative",
+                source="cursor_result" if cursor_result else "cumulative",
             )
 
         raw_message = event.get("message")

@@ -624,6 +624,106 @@ def test_pi_success_persists_provider_reported_cost(
     assert usage_row["cost_basis"] == "provider_reported"
 
 
+def test_cursor_resumed_calls_persist_complete_per_call_input_usage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = AgentCliBackend(backend="cursor")
+    backend.set_usage_context(project_root=tmp_path / ".argus")
+    responses = iter([
+        {"inputTokens": 14_911, "cacheReadTokens": 14_336, "cacheWriteTokens": 0, "outputTokens": 233},
+        {"inputTokens": 7_361, "cacheReadTokens": 23_040, "cacheWriteTokens": 0, "outputTokens": 580},
+    ])
+    monkeypatch.setattr(
+        backend._runner.__class__,
+        "run_exec",
+        lambda self, **kwargs: _make_cli_result(
+            json_events=[{"type": "result", "subtype": "success", "usage": next(responses)}],
+            thread_id="cursor-cache-thread",
+            usage_model="gpt-5.5",
+        ),
+    )
+
+    for resume_thread_id in (None, "cursor-cache-thread"):
+        backend.run_exec(
+            prompt="offline cache accounting",
+            options=RunnerOptions(model="gpt-5.5"),
+            run_label="engineer",
+            resume_thread_id=resume_thread_id,
+        )
+
+    rows = [json.loads(line) for line in (tmp_path / ".argus" / "usage.jsonl").read_text().splitlines()]
+    assert [row["input_tokens"] for row in rows] == [29_247, 30_401]
+    assert [row["cached_input_tokens"] for row in rows] == [14_336, 23_040]
+    assert [row["cache_write_tokens"] for row in rows] == [0, 0]
+    assert [row["output_tokens"] for row in rows] == [233, 580]
+    # Synthetic known-model selection exercises the existing pricing contract.
+    assert [row["cost_usd"] for row in rows] == pytest.approx([0.02276075, 0.01788125])
+
+
+def test_cursor_translation_failure_still_persists_normalized_usage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = AgentCliBackend(backend="cursor")
+    backend.set_usage_context(project_root=tmp_path / ".argus")
+    monkeypatch.setattr(
+        backend._runner.__class__,
+        "run_exec",
+        lambda self, **kwargs: _make_cli_result(json_events=[{
+            "type": "result",
+            "usage": {"inputTokens": 10, "cacheReadTokens": 20, "cacheWriteTokens": 5, "outputTokens": 2},
+        }]),
+    )
+
+    def fail_translation(*args, **kwargs):
+        raise ValueError("test translation failure")
+
+    monkeypatch.setattr(backend, "_translate_result", fail_translation)
+    result = backend.run_exec(
+        prompt="offline failure accounting",
+        options=RunnerOptions(model="gpt-5.5"),
+        run_label="engineer",
+    )
+
+    row = json.loads((tmp_path / ".argus" / "usage.jsonl").read_text())
+    assert result.exit_code == -1
+    assert row["input_tokens"] == 35
+    assert row["cached_input_tokens"] == 20
+    assert row["cache_write_tokens"] == 5
+    assert row["cost_usd"] == pytest.approx(0.0000428125)
+
+
+@pytest.mark.parametrize("cache_write_tokens", [0, 500])
+def test_codex_cache_write_alias_reaches_usage_ledger(
+    cache_write_tokens: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = AgentCliBackend(backend="codex")
+    backend.set_usage_context(project_root=tmp_path / ".argus")
+    monkeypatch.setattr(
+        backend._runner.__class__,
+        "run_exec",
+        lambda self, **kwargs: _make_cli_result(json_events=[{
+            "type": "turn.completed",
+            "usage": {"input_tokens": 20_218, "cached_input_tokens": 13_824, "cache_write_input_tokens": cache_write_tokens, "output_tokens": 9},
+        }]),
+    )
+    result = backend.run_exec(
+        prompt="offline cache-write accounting",
+        options=RunnerOptions(model="gpt-6-astra"),
+        run_label="manager",
+    )
+
+    row = json.loads((tmp_path / ".argus" / "usage.jsonl").read_text())
+    assert result.cache_write_tokens_present
+    assert result.cache_write_tokens == cache_write_tokens
+    assert row["input_tokens"] == 20_218
+    assert row["cache_write_tokens"] == cache_write_tokens
+    assert row["cost_usd"] is None and row["pricing_status"] == "unpriced"
+
+
 def test_usage_context_keeps_explicit_global_budget_root(tmp_path: Path) -> None:
     backend = AgentCliBackend(backend="codex")
     project = tmp_path / "state" / "projects" / "s-test"
