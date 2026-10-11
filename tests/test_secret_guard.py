@@ -326,6 +326,48 @@ def test_scrub_only_matches_known_secrets_in_project_huggingface_cache(
     assert report.scanned_files == 2
 
 
+@pytest.mark.parametrize("suffix", [".dart", ".DART", ".kt", ".KT", ".kts", ".KTS"])
+@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize("git_project", [False, True])
+def test_scrub_preserves_mobile_source_expressions_and_redacts_known_secrets(
+    tmp_path: Path,
+    monkeypatch,
+    suffix: str,
+    streamed: bool,
+    git_project: bool,
+) -> None:
+    if git_project:
+        subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    if streamed:
+        monkeypatch.setattr(secret_guard, "_MAX_ARTIFACT_BYTES", 32)
+        monkeypatch.setattr(secret_guard, "_STREAM_CHUNK_BYTES", 32)
+    source = tmp_path / f"config{suffix}"
+    if suffix.casefold() == ".dart":
+        expression = "ServerConfig copy() => ServerConfig(privateKey: this.privateKey);\r\n"
+    else:
+        expression = "fun duplicate() = ServerConfig(privateKey = this.privateKey)\r\n"
+    content = expression + 'val = "mobile-known-secret-value";\r\n'
+    source.write_bytes(content.encode("utf-8"))
+    artifact = tmp_path / "credentials.env"
+    artifact.write_bytes(b"PRIVATE_KEY=mobile-artifact-secret-value\r\n")
+
+    report = scrub_recent_text_artifacts(
+        tmp_path,
+        modified_since=time.time() - 5,
+        known_values=("mobile-known-secret-value",),
+    )
+
+    assert source.read_bytes() == (
+        expression + 'val = "<REDACTED:known-secret>";\r\n'
+    ).encode("utf-8")
+    assert artifact.read_bytes() == b"PRIVATE_KEY= <REDACTED:secret>\r\n"
+    assert set(report.redacted_paths) == {source.name, artifact.name}
+    assert report.replacement_count == 2
+    assert report.scanned_files == 2
+    assert report.errors == ()
+    assert report.skipped_paths == ()
+
+
 def test_scrub_preserves_crlf_without_inserting_blank_lines(tmp_path: Path) -> None:
     artifact = tmp_path / "response.headers"
     artifact.write_bytes(
