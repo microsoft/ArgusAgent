@@ -11,11 +11,12 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math-extended';
-import rehypeKatex from 'rehype-katex';
+import { markdownRemarkPlugins, markdownRehypePlugins } from '../../components/markdownMath';
 import { PdfPreview } from '../../components/PdfPreview';
 import { isMarkdownArtifact } from '../../lib/artifactPresentation';
+import { downloadBlob } from '../../lib/downloadBlob';
+import { agentRoleColor } from '../../lib/agentRoles';
+import { plainDetail } from '../../lib/plainStatus';
 import { api } from '../api';
 import { roleLabel } from '../enumLabels';
 import type { ArtifactInfo, EventMsg } from '../types';
@@ -113,14 +114,12 @@ export function Spinner({ label }: { label?: string }) {
 }
 
 export function Markdown({ children, className }: { children: string; className?: string }) {
+  const { locale } = useWorkbenchText();
   return (
     <div className={cx('markdown', className)}>
       <ReactMarkdown
-        remarkPlugins={[
-          remarkGfm,
-          [remarkMath, { backslashDelimiters: true, singleDollarTextMath: false }],
-        ]}
-        rehypePlugins={[rehypeKatex]}
+        remarkPlugins={markdownRemarkPlugins}
+        rehypePlugins={markdownRehypePlugins(locale === 'zh-CN')}
         components={{
           a: ({ href, title, children: label }) => (
             <a href={href} title={title} target="_blank" rel="noreferrer">{label}<ExternalLink size={11} /></a>
@@ -151,15 +150,15 @@ export function EventTimeline({
     <div className={cx('event-list', dense && 'event-list--dense')}>
       {rows.map((event, index) => {
         const role = eventRole(event);
-        const title = eventTitle(event);
-        const detail = eventDetail(event, dense ? 180 : 480);
+        const title = eventTitle(event, locale);
+        const detail = plainDetail(eventDetail(event, dense ? 180 : 480), locale).text;
         const tone = statusTone(String(event.status ?? event.kind ?? event.type ?? ''));
         return (
           <article className="event-row" key={`${event.type}-${event.ts}-${event.message_id ?? index}`}>
             <div className={cx('event-row__marker', `event-row__marker--${tone}`)} />
             <div className="event-row__content">
               <div className="event-row__meta">
-                <span className={cx('role-label', `role-label--${role}`)}>{roleLabel(role, text)}</span>
+                <span className="role-label" style={{ color: agentRoleColor(role) }}>{roleLabel(role, text)}</span>
                 <time>{formatClock(event.ts, locale)}</time>
               </div>
               <div className="event-row__title">{title}</div>
@@ -262,12 +261,7 @@ export function ArtifactViewer({
 
   const download = async () => {
     const blob = await api.artifactBlob(sid, artifact.path, true);
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = artifact.name;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(blob, artifact.name);
   };
 
   return (

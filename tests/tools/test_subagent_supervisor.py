@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from argus_skill.core.models import RunnerResult
-from argus_skill.core.token_usage import sum_token_counts
-from argus_skill.tools import subagent as _sub
-from argus_skill.tools.subagent import (
+from argus.core.models import RunnerResult
+from argus.core.token_usage import sum_token_counts
+from argus.tools import subagent as _sub
+from argus.tools.subagent import (
     _append_discussion,
     _build_report,
     _child_env,
@@ -105,8 +105,8 @@ def test_legacy_hashed_registry_record_is_read_and_migrated(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from argus_skill.core.portable_filename import legacy_hashed_filename_components
-    from argus_skill.tools.subagent import _registry
+    from argus.core.portable_filename import legacy_hashed_filename_components
+    from argus.tools.subagent import _registry
 
     monkeypatch.chdir(tmp_path)
     task_id = "team::task"
@@ -127,7 +127,12 @@ def test_legacy_hashed_registry_record_is_read_and_migrated(
 
     assert _registry._registry_path(task_id).exists()
     assert not legacy.exists()
-    assert _registry._list_tasks() == [{"task_id": task_id, "status": "done"}]
+    assert _registry._list_tasks() == [{
+        "task_id": task_id,
+        "status": "done",
+        "owner_team_task_id": "",
+        "owner_mission_id": "",
+    }]
 
     legacy_only_id = "~legacy"
     legacy_only = _registry.REGISTRY_DIR / f"{legacy_only_id}.json"
@@ -537,16 +542,17 @@ def test_resume_recovery_on_lean_check_drops_thread(monkeypatch, tmp_path) -> No
 
 
 def test_rl_collapse_guidance_loads_and_strips_frontmatter() -> None:
-    from argus_skill.tools.subagent import _rl_collapse_guidance
+    from argus.tools.subagent import _rl_collapse_guidance
 
     guidance = _rl_collapse_guidance()
     assert guidance, "RL collapse guidance should load from the bundled skill"
     assert not guidance.startswith("---"), "YAML frontmatter must be stripped"
-    assert "reward-variance death" in guidance.lower()
+    assert "reward_std" in guidance
+    assert "Standard offline DPO" in guidance
 
 
 def test_rl_collapse_guidance_for_attaches_only_to_rl_commands() -> None:
-    from argus_skill.tools.subagent import _rl_collapse_guidance_for
+    from argus.tools.subagent import _rl_collapse_guidance_for
 
     assert _rl_collapse_guidance_for("python train.py --num-generations 4")
     assert _rl_collapse_guidance_for("python t.py --method MGR_RLVR --rollouts 8")
@@ -632,7 +638,7 @@ def test_timeout_report_does_not_misclassify_timeout_as_failure() -> None:
 def test_supervisor_authors_report_grounded_in_diagnosis(monkeypatch) -> None:
     # The summary + next step must be authored from the supervisor's own
     # diagnosis, not a signal-blind summarizer that only sees stdout.
-    from argus_skill.tools import subagent as sub
+    from argus.tools import subagent as sub
 
     captured: dict[str, str] = {}
 
@@ -781,7 +787,7 @@ def test_late_report_does_not_overwrite_reused_task_id(monkeypatch, tmp_path) ->
 def test_verdict_survives_trailing_non_json_chatter() -> None:
     # If codex emits the verdict and then a trailing prose message, the most
     # recent *parseable* verdict must still win (not a no-op continue/unknown).
-    from argus_skill.tools.subagent import _codex_agent_messages
+    from argus.tools.subagent import _codex_agent_messages
 
     stdout = _codex_jsonl(
         '{"decision": "early_stop", "health": "diverging"}',
@@ -830,7 +836,7 @@ def test_child_env_respects_explicit_vllm_and_opt_out(monkeypatch) -> None:
 
 
 def test_run_dir_parsed_from_command_space_and_equals() -> None:
-    cmd = ("python -m argus_skill.tools.gpu_lease run -- env CUDA_VISIBLE_DEVICES=0 "
+    cmd = ("python -m argus.tools.gpu_lease run -- env CUDA_VISIBLE_DEVICES=0 "
            ".venv/bin/python code/run_condition.py --method B0 "
            "--run-dir experiments/runs/full-B0-math500 --use-runwriter")
     assert _run_dir_from_command(cmd) == "experiments/runs/full-B0-math500"
@@ -1047,7 +1053,7 @@ def test_queue_fallback_writes_utf8_report(monkeypatch, tmp_path) -> None:
     """
     monkeypatch.setattr(_sub._reporting, "REGISTRY_DIR", tmp_path)
     monkeypatch.setattr(
-        "argus_skill.apps._inbox.queue_inbox_message",
+        "argus.apps._inbox.queue_inbox_message",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")),
     )
     report = "实验报告 🔬 → α"
@@ -1099,11 +1105,11 @@ def test_run_discussion_processes_preexisting_engineer_turn(monkeypatch, tmp_pat
         )
 
     monkeypatch.setattr(
-        "argus_skill.tools.subagent._discuss_run._supervisor_discuss_with_usage",
+        "argus.tools.subagent._discuss_run._supervisor_discuss_with_usage",
         fake_discuss,
     )
-    monkeypatch.setattr("argus_skill.tools.subagent._discuss_run.DISCUSSION_POLL_INTERVAL", 0)
-    from argus_skill.tools.subagent import _run_discussion
+    monkeypatch.setattr("argus.tools.subagent._discuss_run.DISCUSSION_POLL_INTERVAL", 0)
+    from argus.tools.subagent import _run_discussion
     _write_task(tid, {"state": "discussing", "task_id": tid})
     _run_discussion(tid, {"concern": "x", "command": "python t.py"}, "gpt-5.5", str(tmp_path))
 
@@ -1201,7 +1207,7 @@ def test_backend_turn_uses_accounted_agent_backend(monkeypatch, tmp_path) -> Non
 
 
 def test_supervisor_role_backend_does_not_inherit_shared_runner(monkeypatch) -> None:
-    from argus_skill.core import knob_store
+    from argus.core import knob_store
 
     constructed: dict[str, object] = {}
     resolved: list[tuple[str, str | None]] = []
@@ -1447,7 +1453,7 @@ def test_cmd_submit_override_records_and_proceeds(monkeypatch, tmp_path, capsys)
     assert shlex.split(out["check_with"]) == [
         sys.executable,
         "-m",
-        "argus_skill.tools.subagent",
+        "argus.tools.subagent",
         "status",
         "--task-id",
         "new",
@@ -1576,11 +1582,13 @@ class _OSNameProxy:
 
 
 def test_cmd_submit_spawns_windows_worker(monkeypatch, tmp_path, capsys) -> None:
-    from argus_skill.tools.subagent import _cli
+    from argus.tools.subagent import _cli
 
     monkeypatch.chdir(tmp_path)
     workload = tmp_path / "workload"
     workload.mkdir()
+    owner = tmp_path / "projects" / "s-windows"
+    monkeypatch.setenv("ARGUS_SKILL_SESSION_ROOT", str(owner))
     spawned: list[dict] = []
 
     class _Worker:
@@ -1613,6 +1621,31 @@ def test_cmd_submit_spawns_windows_worker(monkeypatch, tmp_path, capsys) -> None
     assert record["state"] == "starting"
     assert record["cwd"] == str(workload)
     assert record["worker_pid"] == 9876
+    assert record["owner_session_root"] == str(owner)
+
+
+@requires_fork
+def test_submit_binds_the_session_even_when_command_cwd_differs(
+    monkeypatch, tmp_path, capsys,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    workload = tmp_path / "workload"
+    workload.mkdir()
+    owner = tmp_path / "projects" / "s-origin"
+    monkeypatch.setenv("ARGUS_SKILL_SESSION_ROOT", str(owner))
+    monkeypatch.setattr(_sub._cli.os, "fork", lambda: 4242)
+
+    assert _sub.cmd_submit(_submit_args(task_id="bound", cwd=str(workload))) == 0
+    capsys.readouterr()
+    record = _sub._read_task("bound")
+    assert record["owner_session_root"] == str(owner)
+    assert record["cwd"] == str(workload)
+
+    # Ordinary standalone CLI use stays on the legacy cwd-derived route.
+    monkeypatch.delenv("ARGUS_SKILL_SESSION_ROOT")
+    assert _sub.cmd_submit(_submit_args(task_id="standalone")) == 0
+    capsys.readouterr()
+    assert "owner_session_root" not in _sub._read_task("standalone")
 
 
 @requires_fork
@@ -1673,7 +1706,7 @@ def test_submit_without_timeout_survives_past_old_default(
     monkeypatch,
     tmp_path,
 ) -> None:
-    from argus_skill.tools.subagent import _direct_run
+    from argus.tools.subagent import _direct_run
 
     monkeypatch.chdir(tmp_path)
     clock = [100.0]
@@ -1748,7 +1781,7 @@ def test_launch_durable_command_uses_native_powershell_on_windows(
     monkeypatch,
     tmp_path,
 ) -> None:
-    from argus_skill.tools.subagent import _registry
+    from argus.tools.subagent import _registry
 
     monkeypatch.chdir(tmp_path)
     captured: dict[str, object] = {}
@@ -1796,7 +1829,7 @@ def test_launch_durable_command_uses_native_powershell_on_windows(
 
 
 def test_terminate_proc_uses_windows_tree_before_root_fallback(monkeypatch) -> None:
-    from argus_skill.tools.subagent import _direct_run
+    from argus.tools.subagent import _direct_run
 
     calls: list[int] = []
 
@@ -1903,7 +1936,7 @@ def test_cmd_status_surfaces_open_discussion(monkeypatch, tmp_path, capsys) -> N
     assert shlex.split(out["reply_with"]) == [
         sys.executable,
         "-m",
-        "argus_skill.tools.subagent",
+        "argus.tools.subagent",
         "reply",
         "--task-id",
         "d",
@@ -1987,7 +2020,7 @@ def test_supervisor_discuss_prompt_requires_concrete_fix_resolution(monkeypatch,
 # --- Pre-launch RL config preflight -----------------------------------------
 
 def test_rl_training_gate_matches_rl_launches_only() -> None:
-    from argus_skill.tools.subagent import _looks_like_rl_training
+    from argus.tools.subagent import _looks_like_rl_training
 
     assert _looks_like_rl_training(
         ".venv/bin/python code/train_rl_lora_adapter.py --num-generations 2")
@@ -1999,8 +2032,30 @@ def test_rl_training_gate_matches_rl_launches_only() -> None:
     assert not _looks_like_rl_training("")
 
 
+def test_declared_intent_triggers_rl_supervision_without_a_command_hint(monkeypatch) -> None:
+    """A survey-chosen framework has no recognisable token in its launch line;
+    the submit-time ``--intent`` text is what tells the supervisor to watch."""
+    from argus.tools.subagent import _direct_run
+
+    monkeypatch.delenv(_direct_run.SUBAGENT_INTENT_ENV, raising=False)
+    command = "python -m third_party.candidate.launch --config recipe.yaml"
+    assert not _direct_run._looks_like_rl_training(command)
+    assert _direct_run._looks_like_rl_training(
+        command, intent="stand-up pilot: rl post-training")
+    assert _direct_run._looks_like_rl_training(
+        command, intent="policy-gradient pilot on the allocated device")
+    assert not _direct_run._looks_like_rl_training(
+        command, intent="stand-up pilot: supervised fine-tuning baseline")
+    # The worker receives the intent through the environment set at submit.
+    monkeypatch.setenv(_direct_run.SUBAGENT_INTENT_ENV, "stand-up pilot: rl post-training")
+    assert _direct_run._looks_like_rl_training(command)
+    assert _direct_run._rl_collapse_guidance_for(command)
+    monkeypatch.setenv(_direct_run.SUBAGENT_INTENT_ENV, "data preparation")
+    assert not _direct_run._looks_like_rl_training(command)
+
+
 def test_parse_launch_flags_normalizes_space_and_equals_forms() -> None:
-    from argus_skill.tools.subagent import _parse_launch_flags
+    from argus.tools.subagent import _parse_launch_flags
 
     flags = _parse_launch_flags(
         "python x.py --num-generations 2 --max-completion-length=256 "
@@ -2018,7 +2073,7 @@ def test_preflight_prompt_hard_blocks_only_mechanical_degeneracy(monkeypatch, tm
     # The preflight must instruct the model to block ONLY mechanically-unlearnable
     # configs (e.g. GRPO group<=1) and explicitly NOT block a maybe-short
     # max_completion_length, which is data-dependent and left to the in-flight check.
-    from argus_skill.tools import subagent as sub
+    from argus.tools import subagent as sub
 
     captured: dict[str, str] = {}
 
@@ -2043,7 +2098,7 @@ def test_preflight_prompt_hard_blocks_only_mechanical_degeneracy(monkeypatch, tm
 
 
 def test_preflight_rejects_degenerate_group_with_actionable_fix(monkeypatch, tmp_path) -> None:
-    from argus_skill.tools import subagent as sub
+    from argus.tools import subagent as sub
 
     class _Result:
         stdout = ""
@@ -2066,7 +2121,7 @@ def test_preflight_rejects_degenerate_group_with_actionable_fix(monkeypatch, tmp
 
 def test_preflight_reject_without_actionable_fix_is_noop(monkeypatch, tmp_path) -> None:
     # A vague reject with no concrete fix must NOT wedge a launch.
-    from argus_skill.tools import subagent as sub
+    from argus.tools import subagent as sub
 
     class _Result:
         stdout = ""
@@ -2084,7 +2139,7 @@ def test_preflight_reject_without_actionable_fix_is_noop(monkeypatch, tmp_path) 
 
 
 def test_preflight_fails_soft_on_unparseable_verdict(monkeypatch, tmp_path) -> None:
-    from argus_skill.tools import subagent as sub
+    from argus.tools import subagent as sub
 
     class _Result:
         stdout = ""
@@ -2112,9 +2167,9 @@ def test_preflight_discussion_opening_signals_pre_launch_block(monkeypatch, tmp_
     def fake_discuss(task_id, task_data, model, cwd, thread_id=None):
         return (True, "I'll set num_generations=8.", thread_id, (0, 0, 0, 0))
 
-    monkeypatch.setattr("argus_skill.tools.subagent._discuss_run._supervisor_discuss_with_usage", fake_discuss)
-    monkeypatch.setattr("argus_skill.tools.subagent._discuss_run.DISCUSSION_POLL_INTERVAL", 0)
-    from argus_skill.tools.subagent import _run_discussion
+    monkeypatch.setattr("argus.tools.subagent._discuss_run._supervisor_discuss_with_usage", fake_discuss)
+    monkeypatch.setattr("argus.tools.subagent._discuss_run.DISCUSSION_POLL_INTERVAL", 0)
+    from argus.tools.subagent import _run_discussion
     td = {
         "preflight": True,
         "concern": "num_generations=1 -> 8 because a GRPO group of 1 has zero advantage",
@@ -2138,9 +2193,9 @@ def test_nonpreflight_discussion_opening_uses_stopped_wording(monkeypatch, tmp_p
     def fake_discuss(task_id, task_data, model, cwd, thread_id=None):
         return (True, "ack", thread_id, (0, 0, 0, 0))
 
-    monkeypatch.setattr("argus_skill.tools.subagent._discuss_run._supervisor_discuss_with_usage", fake_discuss)
-    monkeypatch.setattr("argus_skill.tools.subagent._discuss_run.DISCUSSION_POLL_INTERVAL", 0)
-    from argus_skill.tools.subagent import _run_discussion
+    monkeypatch.setattr("argus.tools.subagent._discuss_run._supervisor_discuss_with_usage", fake_discuss)
+    monkeypatch.setattr("argus.tools.subagent._discuss_run.DISCUSSION_POLL_INTERVAL", 0)
+    from argus.tools.subagent import _run_discussion
     _append_discussion(tid, "engineer", "ack, fixing")
     _write_task(tid, {"state": "discussing", "task_id": tid})
     _run_discussion(tid, {"concern": "x", "command": "python t.py"}, "gpt-5.5", str(tmp_path))
@@ -2163,7 +2218,7 @@ def test_superseded_discussion_cannot_overwrite_reused_task_id(
         },
     )
     monkeypatch.setattr(
-        "argus_skill.tools.subagent._discuss_run.DISCUSSION_POLL_INTERVAL",
+        "argus.tools.subagent._discuss_run.DISCUSSION_POLL_INTERVAL",
         0,
     )
 
@@ -2188,7 +2243,7 @@ def test_superseded_discussion_cannot_overwrite_reused_task_id(
 def test_preflight_strict_bool_reject_fails_soft(monkeypatch, tmp_path) -> None:
     # A non-bool "reject" (string "false", 1, etc.) is an LLM formatting hiccup
     # and must NEVER hard-block a launch.
-    from argus_skill.tools import subagent as sub
+    from argus.tools import subagent as sub
 
     class _Result:
         stdout = ""
@@ -2214,7 +2269,7 @@ def test_preflight_strict_bool_reject_fails_soft(monkeypatch, tmp_path) -> None:
 def test_preflight_reject_without_flagref_concern_is_noop(monkeypatch, tmp_path) -> None:
     # A non-empty but non-actionable concern (no flag/value reference) must not
     # wedge a launch — the contract requires a concrete flag+value to change.
-    from argus_skill.tools import subagent as sub
+    from argus.tools import subagent as sub
 
     class _Result:
         stdout = ""
@@ -2236,7 +2291,7 @@ def test_preflight_reject_td_omits_run_dir_and_reads_no_stale_metrics(tmp_path) 
     # A preflight reject never launched: _effective_run_dir must NOT recover a
     # run dir from the command's --run-dir (which could hold a prior run's
     # metrics), preserving the no-phantom-run invariant.
-    from argus_skill.tools.subagent import _effective_run_dir
+    from argus.tools.subagent import _effective_run_dir
 
     td = {
         "preflight": True,

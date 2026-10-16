@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
-import { buildMap, type Dataset } from "../map/model";
+import { buildMap, latestMissionCompletion, type Dataset } from "../map/model";
+import { layoutScene } from "../map/submap";
 import { mapIsPaused, mergeMapProgress, parseMapSelection } from "../map/incremental";
 import { mergeMapCopy, needsCardCopy, type CardCopy } from "../map/presentation";
 import type { Snapshot } from "../api";
@@ -37,6 +38,30 @@ it("merges paged history without duplicates and drops explicitly removed tasks",
   expect(mergeMapProgress(first, { ...first, reset_history: true, events: [] }).events).toEqual([]);
 });
 
+it("keeps completion scope across event-only pages without leaking an earlier attempt into a new finish", () => {
+  const done = { ...first, tasks: [{ ...first.tasks[0], status: "done", started_ts: 2, finished_ts: 4, attempt: 1 }], events: [] };
+  const partial = { id: "partial", item_id: "a", type: "life.mission.completed", ts: 5, text: "",
+    success: true, overall_complete: false, campaign_continues: true, attempt: 1 };
+  const page = mergeMapProgress(done, { ...done, incremental: true, tasks: [], events: [partial] });
+  const next = mergeMapProgress(page, { ...done, incremental: true, tasks: [], events: first.events });
+  expect(layoutScene(buildMap(next.tasks), next.events, false).cards[0].completionScope).toContain("further work remained");
+  expect(next.tasks[0].status).toBe("done");
+
+  const retried = { ...next.tasks[0], started_ts: 10, finished_ts: 12, attempt: 2 };
+  const retryPage = mergeMapProgress(next, { ...done, incremental: true, tasks: [retried], events: [] });
+  expect(latestMissionCompletion(retried, retryPage.events)).toBeUndefined();
+  expect(layoutScene(buildMap(retryPage.tasks), retryPage.events, false).cards[0].completionScope).toBeUndefined();
+  const legacyFinish = { id: "later", item_id: "a", type: "life.mission.completed", ts: 13, text: "", success: true };
+  const finished = mergeMapProgress(retryPage, { ...done, incremental: true, tasks: [], events: [legacyFinish] });
+  const olderPage = mergeMapProgress(finished, { ...done, incremental: true, tasks: [], events: [partial] });
+  expect(latestMissionCompletion(retried, olderPage.events)).toEqual(legacyFinish);
+  expect(layoutScene(buildMap(olderPage.tasks), olderPage.events, false).cards[0].completionScope).toBeUndefined();
+  expect(latestMissionCompletion(retried, [{ ...partial, ts: 15 }])).toBeUndefined();
+  expect(latestMissionCompletion(retried, [legacyFinish, {
+    id: "restart", item_id: "a", type: "life.mission.started", ts: 14, text: "",
+  }])).toBeUndefined();
+});
+
 it('updates Team observations by identity and removes deleted workers without losing history', () => {
   const team = { id: 'team:route', item_id: 'a', type: 'team.task', ts: 1, text: 'Research route', status: 'running', revision: 'v1' };
   const previous = { ...first, events: [...first.events, team, { ...team, id: 'team:deleted' }] };
@@ -51,11 +76,13 @@ it('updates Team observations by identity and removes deleted workers without lo
   expect(historyPage.events).toEqual([first.events[0], changed]);
 });
 
-it("keeps closed step copy when its task progresses or model selection changes", () => {
+it("keeps closed step copy on later task progress and refreshes it for changed explanation settings", () => {
   const progressed = { ...first, tasks: [{ ...first.tasks[0], status: "done", revision: "r2", finished_ts: 9999 }] };
-  const copy = { cards: { e1: saved }, relations: [], model_revision: "different" };
+  const copy = { cards: { e1: saved }, relations: [], model_revision: saved.model_revision };
   const request = { key: "e1", task_id: "a", kind: "review", event_ids: ["e1"] };
   expect(needsCardCopy(request, progressed, copy)).toBe(false);
+  expect(needsCardCopy(request, progressed, { ...copy, model_revision: "different" })).toBe(true);
+  expect(copy.cards.e1).toBe(saved);
   expect(needsCardCopy(request, { ...progressed, events: [{ ...first.events[0], revision: "corrected" }] }, copy)).toBe(true);
   expect(needsCardCopy(request, { ...progressed, tasks: [{ ...progressed.tasks[0], content_revision: "edited-objective" }] }, copy)).toBe(true);
 });
@@ -64,7 +91,7 @@ it("updates task summaries on real progress and reuses richer cached evidence", 
   const request = { key: "a", task_id: "a", kind: "task", event_ids: [] };
   const copy = { cards: { a: saved }, relations: [] };
   expect(needsCardCopy(request, first, copy)).toBe(false);
-  expect(needsCardCopy(request, first, { ...copy, version: 99 })).toBe(false);
+  expect(needsCardCopy(request, first, { ...copy, version: 99 })).toBe(true);
   expect(needsCardCopy(request, { ...first, tasks: [{ ...first.tasks[0], revision: "new" }] }, copy)).toBe(true);
 });
 
@@ -79,6 +106,7 @@ it("late responses cannot erase other cards or overwrite newer model results", (
 it("pauses stopped sessions and an explicit operator pause without stopping bounded work", () => {
   const snapshot = { daemon: { alive: false }, roles: [] } as unknown as Snapshot;
   expect(mapIsPaused(snapshot)).toBe(true);
+  expect(mapIsPaused({ ...snapshot, manager_requests: [{ request_id: 'self', status: 'running' }] })).toBe(false);
   expect(mapIsPaused({ ...snapshot, daemon: { ...snapshot.daemon, alive: true }, continuous: { enabled: false, objective: "", done_reason: "operator pause" } })).toBe(true);
   expect(mapIsPaused({ ...snapshot, daemon: { ...snapshot.daemon, alive: true }, continuous: { enabled: false, objective: "" } })).toBe(false);
 });

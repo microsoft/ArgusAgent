@@ -16,6 +16,12 @@ const knob = (name: string, group = 'internal'): ConfigKnob => ({
 });
 
 describe('conciseConfigKnobs', () => {
+  it('makes research trace capture and archive policies discoverable', () => {
+    const names = ['ARGUS_SKILL_COPILOT_SESSION_RETENTION_DAYS', 'ARGUS_SKILL_AGENT_IO_MAX_BYTES', 'ARGUS_SKILL_AGENT_IO_KEEP', 'ARGUS_SKILL_AGENT_IO_MODE'];
+    const result = conciseConfigKnobs(names.map(name => knob(name, 'storage')));
+    expect(result.map(item => item.name)).toEqual(names);
+    expect(result.every(item => item.group === 'Storage')).toBe(true);
+  });
   it('keeps only essential controls already not represented by roles or budgets', () => {
     const result = conciseConfigKnobs([
       knob('ARGUS_SKILL_ENGINEER_BACKEND', 'backend'),
@@ -32,14 +38,12 @@ describe('conciseConfigKnobs', () => {
 
     expect(result.map((item) => item.name)).toEqual([
       'ARGUS_SKILL_MAX_ACTIVE_DAEMONS',
-      'ARGUS_SKILL_UNPRICED_COST_POLICY',
       'ARGUS_SKILL_SAFE_MODE',
       'ARGUS_SKILL_ENABLE_TELEGRAM',
       'ARGUS_SKILL_SHOW_REASONING',
     ]);
     expect(result.map((item) => item.group)).toEqual([
       'Limits',
-      'Safety',
       'Safety',
       'Interface',
       'Interface',

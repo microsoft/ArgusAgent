@@ -6,7 +6,7 @@ from argparse import Namespace
 
 import pytest
 
-from argus_skill.tools import subagent
+from argus.tools import subagent
 
 
 def _status(task_id: str) -> int:
@@ -23,6 +23,50 @@ def test_running_status_exits_zero(tmp_path, monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out)
     assert rc == 0
     assert out["live"] is True
+
+
+def test_registry_records_team_task_owner(tmp_path, monkeypatch):
+    monkeypatch.setattr(subagent._registry, "REGISTRY_DIR", tmp_path)
+    monkeypatch.setenv("ARGUS_SKILL_TEAM_TASK_ID", "team::route-1")
+
+    subagent._write_task(
+        "owned-job",
+        {"state": "running", "task_id": "owned-job", "pid": 4321},
+    )
+    first = subagent._read_task("owned-job")
+    assert first is not None
+    assert first["owner_team_task_id"] == "team::route-1"
+
+    monkeypatch.setenv("ARGUS_SKILL_TEAM_TASK_ID", "team::route-2")
+    subagent._write_task(
+        "owned-job",
+        {"state": "done", "task_id": "owned-job", "pid": 0},
+    )
+    updated = subagent._read_task("owned-job")
+    assert updated is not None
+    assert updated["owner_team_task_id"] == "team::route-1"
+
+
+def test_registry_records_parent_mission_owner(tmp_path, monkeypatch):
+    monkeypatch.setattr(subagent._registry, "REGISTRY_DIR", tmp_path)
+    monkeypatch.setenv("ARGUS_PLUGIN_PARENT_MISSION_ID", "mission-1")
+
+    subagent._write_task(
+        "owned-job",
+        {"state": "running", "task_id": "owned-job", "pid": 4321},
+    )
+    first = subagent._read_task("owned-job")
+    assert first is not None
+    assert first["owner_mission_id"] == "mission-1"
+
+    monkeypatch.setenv("ARGUS_PLUGIN_PARENT_MISSION_ID", "mission-2")
+    subagent._write_task(
+        "owned-job",
+        {"state": "done", "task_id": "owned-job", "pid": 0},
+    )
+    updated = subagent._read_task("owned-job")
+    assert updated is not None
+    assert updated["owner_mission_id"] == "mission-1"
 
 
 def test_failed_states_exit_nonzero(tmp_path, monkeypatch, capsys):
@@ -76,9 +120,9 @@ def test_reconcile_ignores_exit_sidecar_from_previous_run(tmp_path, monkeypatch)
     assert "no exit sidecar" in reconciled["error"]
 
 
-def test_reconcile_prefers_current_exit_sidecar_over_live_pid(tmp_path, monkeypatch):
+def test_reconcile_prefers_current_exit_sidecar_after_owner_died(tmp_path, monkeypatch):
     monkeypatch.setattr(subagent._registry, "REGISTRY_DIR", tmp_path)
-    monkeypatch.setattr(subagent._registry, "_is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(subagent._registry, "_is_pid_alive", lambda pid: pid == 4321)
     sidecar = subagent._registry._exit_status_path("job7", "current-run")
     sidecar.parent.mkdir(parents=True)
     sidecar.write_text("0\n", encoding="utf-8")
@@ -103,6 +147,24 @@ def test_reconcile_prefers_current_exit_sidecar_over_live_pid(tmp_path, monkeypa
     assert reconciled["exit_code"] == 0
     assert reconciled["terminal_owner"] == "exit_sidecar_reconciler"
     assert reconciled["stdout_tail"] == "survived"
+
+
+def test_reconcile_waits_for_live_owner_after_shell_exit(tmp_path, monkeypatch):
+    monkeypatch.setattr(subagent._registry, "REGISTRY_DIR", tmp_path)
+    monkeypatch.setattr(subagent._registry, "_is_pid_alive", lambda pid: pid == 4322)
+    sidecar = subagent._registry._exit_status_path("settling", "current-run")
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text("0\n", encoding="utf-8")
+    task = {
+        "state": "running", "task_id": "settling", "run_id": "current-run",
+        "pid": 4321, "worker_pid": 4322,
+    }
+
+    reconciled = subagent._registry.reconcile_terminal_task("settling", task)
+
+    assert reconciled["state"] == "running"
+    assert "owner_lost" not in reconciled
+    assert "completed_at" not in reconciled
 
 
 def test_reconcile_rejects_reused_live_pid_identity(tmp_path, monkeypatch):

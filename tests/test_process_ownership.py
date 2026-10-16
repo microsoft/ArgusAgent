@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import json
-
-from argus_skill.adapters.memory_backend import CannedResponse, MemoryBackend
-from argus_skill.engineer.runner import (
+from argus.adapters.memory_backend import CannedResponse, MemoryBackend
+from argus.engineer.runner import (
     EngineerConfig,
     SupervisedConfig,
     SupervisedEngineer,
 )
-from argus_skill.reviewer import Reviewer, ReviewerConfig
+from argus.reviewer import Reviewer, ReviewerConfig
 
 
 def test_runner_process_ownership_fact_reaches_reviewer(tmp_path) -> None:
@@ -23,11 +21,7 @@ def test_runner_process_ownership_fact_reaches_reviewer(tmp_path) -> None:
     )
     backend.queue(
         "reviewer",
-        CannedResponse(message=json.dumps({
-            "status": "done",
-            "reason": "The result is complete.",
-            "next_action": "",
-        })),
+        CannedResponse(review_action=('approve_review', {'review': 'The result is complete.'})),
     )
     engineer = SupervisedEngineer(
         engineer_runner=backend,

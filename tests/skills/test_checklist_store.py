@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from argus_skill.skills.checklist_store import store_items_for_stage
-from argus_skill.skills.vertical_select import persist_vertical
+from argus.skills.checklist_store import store_items_for_stage
+from argus.skills.vertical_select import persist_vertical
 
 
 def _store(root: Path, vertical: str, stage: str) -> Path:
@@ -36,8 +36,8 @@ def test_research_ignores_but_preserves_legacy_checklists(tmp_path: Path) -> Non
 
 
 def test_other_vertical_custom_checklists_still_load(tmp_path: Path) -> None:
-    persist_vertical(tmp_path, "speedrun")
-    _store(tmp_path, "speedrun", "setup")
+    persist_vertical(tmp_path, "math_synth")
+    _store(tmp_path, "math_synth", "setup")
 
     items = store_items_for_stage(tmp_path, "setup")
 

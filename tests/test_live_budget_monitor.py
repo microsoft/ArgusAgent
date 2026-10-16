@@ -12,14 +12,14 @@ from unittest.mock import Mock
 
 import pytest
 
-from argus_skill.adapters.agent_cli_backend._budget_monitor import (
+from argus.adapters.agent_cli_backend._budget_monitor import (
     LiveBudgetMonitor,
     monitor_budget,
 )
-from argus_skill.agent_cli.agent_cli_runner import AgentCliRunner, RunnerOptions
-from argus_skill.agent_cli.copilot_acp import CopilotAcpClient
-from argus_skill.core.cost_control import cost_control_snapshot, reserve_call_budget
-from argus_skill.provider_integrations.copilot_usage import capture_copilot_usage_cursor
+from argus.agent_cli.agent_cli_runner import AgentCliRunner, RunnerOptions
+from argus.agent_cli.copilot_acp import CopilotAcpClient
+from argus.core.cost_control import cost_control_snapshot, reserve_call_budget
+from argus.provider_integrations.copilot_usage import capture_copilot_usage_cursor
 
 
 def _usage_database(path: Path) -> None:
@@ -49,7 +49,6 @@ def test_labeled_copilot_subprocess_stops_on_parent_and_child_observed_cost(
 ) -> None:
     monkeypatch.setenv("ARGUS_SKILL_HOME", str(tmp_path))
     monkeypatch.setenv("ARGUS_SKILL_GLOBAL_DAILY_CAP_USD", "1000")
-    monkeypatch.setenv("ARGUS_SKILL_UNPRICED_COST_POLICY", "block")
     db = tmp_path / "copilot-home" / "session-store.db"
     _usage_database(db)
     monkeypatch.setenv("COPILOT_HOME", str(db.parent))
@@ -130,6 +129,40 @@ time.sleep(8)
         if process.poll() is None:
             process.terminate()
             process.wait(timeout=3)
+
+
+def test_unresolved_settlement_does_not_interrupt_live_call_but_known_cap_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ARGUS_SKILL_HOME", str(tmp_path))
+    monkeypatch.setenv("ARGUS_SKILL_GLOBAL_DAILY_CAP_USD", "10")
+    reservations = []
+    for call_id in ("healthy", "unknown"):
+        reservation, reason = reserve_call_budget(
+            call_id=call_id, project_root=None, mission_id=None, provider="dsh",
+            model="test-model", run_label=call_id, global_root=tmp_path,
+        )
+        assert reservation is not None and reason == ""
+        reservations.append(reservation)
+    healthy, unknown = reservations
+    monitor = LiveBudgetMonitor(
+        SimpleNamespace(
+            backend=SimpleNamespace(_is_copilot=False),
+            cost_reservation=healthy,
+            resume_thread_id=None,
+        ),
+        interval_seconds=0,
+    )
+
+    assert monitor.check() is None
+    unknown.settle_unknown(reason="provider did not report final usage")
+    assert monitor.check() is None
+    snapshot = cost_control_snapshot(global_root=tmp_path)
+    assert snapshot["unresolved_calls"] == 1
+    assert snapshot["blocking_unresolved_calls"] == 1  # New calls wait; the already-running call continues.
+    assert snapshot["in_flight_cost_usd"] == 0
+    assert "global daily budget exhausted" in healthy.observe_cost(10)
+    assert "global daily budget exhausted" in monitor.check()
 
 
 def test_monitor_preserves_callbacks_and_prioritizes_operator_interrupt() -> None:

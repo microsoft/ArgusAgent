@@ -21,10 +21,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-BUILTIN_ROOT = Path(__file__).resolve().parents[1] / "argus_skill" / "builtin_skills"
+BUILTIN_ROOT = Path(__file__).resolve().parents[1] / "argus" / "builtin_skills"
 RESEARCH_ROOT = (
     Path(__file__).resolve().parents[1]
-    / "argus_skill"
+    / "argus"
     / "verticals"
     / "research"
     / "skills"
@@ -85,8 +85,12 @@ def test_claim_check_requires_fresh_source_level_verification() -> None:
     ).read_text(encoding="utf-8")
 
     assert "fresh-context" in text
-    assert "MATCH / MISMATCH / MISSING" in text
-    assert "one reviewer thread per claim" in text
+    assert "direct source" in text
+    assert "Group related assertions that share evidence" in text
+    assert "no fixed labels are required" in text
+    assert "do not commission another integrated paper review" in text
+    assert "MATCH / MISMATCH / MISSING" not in text
+    assert "one reviewer thread per claim" not in text
     assert "PAPER_CLAIM_AUDIT" not in text
 
 
@@ -180,7 +184,7 @@ def test_seed_builtin_skills_copies_bundled_scripts(tmp_path: Path) -> None:
     figure_renderer.py) alongside the skill markdown. Without this the
     skill prompt would reference a script that's missing in the seeded
     project workspace."""
-    from argus_skill.skills.builtins import seed_vertical_skills
+    from argus.skills.builtins import seed_vertical_skills
 
     seed_vertical_skills(tmp_path, "research")
     renderer = tmp_path / "engineer" / "figure_spec_scripts" / "figure_renderer.py"
@@ -202,7 +206,7 @@ def test_rl_config_sanity_lives_in_collapse_diagnosis_skill() -> None:
     pass lives in the collapse-diagnosis skill's "before launching" use.
     """
 
-    md = BUILTIN_ROOT / "engineer" / "rl-training-collapse-diagnosis.md"
+    md = RESEARCH_ROOT / "engineer" / "rl-training-collapse-diagnosis.md"
     text = md.read_text(encoding="utf-8")
     assert "structurally learnable" in text
     assert "num_generations" in text

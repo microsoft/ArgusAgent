@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import inspect
 
-from argus_skill.reviewer import Reviewer, ReviewerConfig
+from argus.reviewer import Reviewer, ReviewerConfig
 
 
 class _DeadResult:
@@ -29,6 +29,8 @@ class _DeadResult:
 
 
 class _CapturingRunner:
+    backend = "memory"
+
     def __init__(self) -> None:
         self.prompt: str | None = None
 

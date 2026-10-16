@@ -1,9 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import type { ProjectRow } from '../api';
 import { recommendedSidebarScope, Sidebar } from '../components/Sidebar';
+import type { WorkStatus } from '../lib/workStatus';
+
+let queryClient: QueryClient;
+beforeEach(() => {
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+});
+afterEach(() => queryClient.clear());
 
 const rows: ProjectRow[] = [
   {
@@ -34,11 +42,13 @@ describe('recommendedSidebarScope', () => {
 
 function sidebarMarkup(
   projects: ProjectRow[],
+  activeWork?: { sessionId: string; status: WorkStatus; connected: boolean },
 ): string {
   return renderToStaticMarkup(
-    createElement(Sidebar, {
+    createElement(QueryClientProvider, { client: queryClient }, createElement(Sidebar, {
       projects: projects.map((project) => ({ ...project, launch_cwd: '/workspace/test', workdir: '/workspace/test' })),
       activeId: projects[0]?.id ?? null,
+      activeWork,
       localCwd: '/workspace/test',
       onSelect: () => undefined,
       onManage: () => undefined,
@@ -49,7 +59,7 @@ function sidebarMarkup(
       onToggleCollapse: () => undefined,
       themeMode: 'dark',
       onCycleTheme: () => undefined,
-    }),
+    })),
   );
 }
 
@@ -87,8 +97,8 @@ describe('Sidebar session identity and health', () => {
     }]);
 
     expect(markup).toContain('Update required');
-    expect(markup).not.toContain('title="Argus running"');
-    expect(markup).not.toContain('running · 2m');
+    expect(markup).not.toContain('title="Argus background is online"');
+    expect(markup).not.toContain('Background online · 2m');
     expect(markup).not.toContain('aria-label="Resume"');
   });
 
@@ -101,8 +111,8 @@ describe('Sidebar session identity and health', () => {
       uptime_seconds: 120,
     }]);
 
-    expect(markup).toContain('title="Argus running"');
-    expect(markup).toContain('running · 2m');
+    expect(markup).toContain('title="Argus background is online"');
+    expect(markup).toContain('Background online · 2m');
     expect(markup).toContain('Update available');
     expect(markup).not.toContain('Update required');
     expect(markup).not.toContain('aria-label="Resume"');
@@ -117,16 +127,35 @@ describe('Sidebar session identity and health', () => {
       uptime_seconds: 120,
     }]);
 
-    expect(markup).toContain('title="stopped"');
-    expect(markup).not.toContain('running · 2m');
+    expect(markup).toContain('title="Background stopped"');
+    expect(markup).not.toContain('Background online · 2m');
     expect(markup).not.toContain('Update available');
   });
 
-  it('uses a compact, collapsible project group without exposing the full path', () => {
+  it('shows a single project directly without repeating its directory', () => {
     const markup = sidebarMarkup([rows[0]]);
-    expect(markup).toContain('aria-expanded="true"');
-    expect(markup).toContain('title="/workspace/test"');
-    expect(markup).toContain('>test</span>');
+    expect(markup).not.toContain('aria-expanded="true"');
+    expect(markup).not.toContain('>test</span>');
     expect(markup).not.toContain('>/workspace/test</');
+  });
+
+  it('shares the selected task state while other rows describe only their background process', () => {
+    const projects = rows.map(row => ({ ...row, daemon_alive: true, uptime_seconds: 120 }));
+    const activeWork = { sessionId: 'local', connected: true, status: {
+      state: 'paused', role: '', taskId: 'author-facts', title: 'Author details',
+      activityAt: null, activityAgeSeconds: null, reason: 'operator_input',
+    } satisfies WorkStatus };
+    const markup = sidebarMarkup(projects, activeWork);
+    expect(markup).toContain('This task is waiting for your reply');
+    expect(markup).toContain('data-session-work-state="paused"');
+    expect(markup).toContain('Background online · 2m');
+    expect(markup).not.toContain('running · 2m');
+    expect(markup).not.toContain('aria-label="Resume"');
+    const switching = sidebarMarkup(projects, { ...activeWork, sessionId: 'remote' });
+    expect(switching).not.toContain('This task is waiting for your reply');
+    expect(switching).not.toContain('data-session-work-state=');
+    const disconnected = sidebarMarkup(projects, { ...activeWork, connected: false });
+    expect(disconnected).toContain('Live connection lost');
+    expect(disconnected).not.toContain('This task is waiting for your reply');
   });
 });

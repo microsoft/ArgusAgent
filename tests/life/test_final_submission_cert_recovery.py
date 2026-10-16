@@ -6,23 +6,25 @@ from types import SimpleNamespace
 
 import pytest
 
-from argus_skill.core.manuscript_snapshot import manuscript_snapshot
-from argus_skill.core.stage_certificate import record_stage_review
-from argus_skill.life.context_packet import (
+from argus.core.manuscript_snapshot import manuscript_snapshot
+from argus.core.pipeline_state import read_pipeline_state, write_pipeline_state
+from argus.core.stage_certificate import record_stage_review
+from argus.core.venue_review import paper_review_snapshot
+from argus.life.context_packet import (
     create_mission_context,
     record_reviewed_handoff,
 )
-from argus_skill.life.event_log import JsonlEventSink
-from argus_skill.life.memory import BacklogItem, LifeMemory
-from argus_skill.life.supervisor import LifeBudget, LifeSupervisor, LifeSupervisorConfig
-from argus_skill.life.supervisor._planning_cycle_helpers import (
+from argus.life.event_log import JsonlEventSink
+from argus.life.memory import BacklogItem, LifeMemory
+from argus.life.supervisor import LifeBudget, LifeSupervisor, LifeSupervisorConfig
+from argus.life.supervisor._planning_cycle_helpers import (
     _PlanCycleState,
     _research_project_done_issue,
 )
-from argus_skill.life.terminal_state import build_project_state_signature
-from argus_skill.planner import PlannerVerdict
-from argus_skill.skills.vertical_select import persist_vertical
-from argus_skill.verticals.research.review_purchase import (
+from argus.life.terminal_state import build_project_state_signature
+from argus.planner import PlannerVerdict
+from argus.skills.vertical_select import persist_vertical
+from argus.verticals.research.review_purchase import (
     paper_review_purchase_defer_reason,
 )
 
@@ -48,6 +50,14 @@ class _Runner:
         self.manager = _CompletingManager()
 
 
+def _accepted_venue_review():
+    return {
+        "venue": "ICLR", "recommendation": "weak_accept", "acceptance_clear": True,
+        "rationale": "The current paper's matched controls establish a useful, novel boundary.",
+        "blocking_issues": [], "revision_required": False,
+    }
+
+
 def _make_final_review(
     tmp_path: Path,
     *,
@@ -66,7 +76,7 @@ def _make_final_review(
         "Decision: done\nThe final submission satisfies the review gate.\n",
         encoding="utf-8",
     )
-    persist_vertical(state_root, "research", research_target_level="exploratory")
+    persist_vertical(state_root, "research", research_target_level="exploratory", target_venue="ICLR")
     state_path = state_root / ".argus" / "PIPELINE_STATE.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["current_stage"] = "review"
@@ -117,6 +127,8 @@ def _make_final_review(
         operator_question="",
         review_source="reviewer" if bind_handoff else "",
         manuscript_snapshot=manuscript_snapshot(project) if bind_handoff else None,
+        venue_review=_accepted_venue_review(),
+        venue_review_snapshot=paper_review_snapshot(project),
     )
     record_reviewed_handoff(
         mission_context_path=mission_path,
@@ -133,6 +145,9 @@ def _make_final_review(
         manager_action="hold",
         manager_reason="The old runtime deferred final-stage consumption.",
         manuscript_binding=manuscript_snapshot(project),
+        contract_root=state_root,
+        venue_review=_accepted_venue_review(),
+        venue_review_snapshot=paper_review_snapshot(project),
     )
     memory.backlog.mark_done(
         item.id,
@@ -178,6 +193,43 @@ def test_certification_recovery_uses_separate_execution_workdir(
     assert supervisor._journal_has_final_certification() is True
 
 
+def test_old_weak_accept_cannot_close_a_new_strong_accept_goal(tmp_path: Path) -> None:
+    supervisor, _project, _item = _make_final_review(
+        tmp_path, scope="final_submission", bind_handoff=True, separate_roots=True,
+    )
+    state_root = supervisor._artifact_root()
+    state = read_pipeline_state(state_root)
+    state["venue_acceptance_minimum"] = "strong_accept"
+    write_pipeline_state(state_root, state)
+
+    assert supervisor._reconcile_reviewed_stage_empty_plan(None) != "complete"
+    assert not supervisor._journal_has_final_certification()
+
+
+def test_current_signature_cannot_hide_a_rating_below_the_operator_bar(tmp_path: Path) -> None:
+    supervisor, project, item = _make_final_review(
+        tmp_path, scope="final_submission", bind_handoff=True, separate_roots=True,
+    )
+    state_root = supervisor._artifact_root()
+    state = read_pipeline_state(state_root)
+    state["venue_acceptance_minimum"] = "strong_accept"
+    write_pipeline_state(state_root, state)
+    supervisor._emit({
+        "type": "life.mission.completed", "item_id": item.id,
+        "scope": "final_submission", "success": True, "status": "done",
+        "final_submission_certified": True,
+        "final_submission_signature": supervisor._final_submission_signature(),
+        "manuscript_snapshot": manuscript_snapshot(project),
+        "venue_review": _accepted_venue_review(),
+        "venue_review_snapshot": paper_review_snapshot(project),
+    })
+
+    assert not supervisor._journal_has_final_certification()
+    assert _research_project_done_issue(
+        state_root, supervisor.memory.journal.all(), evidence_root=project,
+    ) == "missing_exploratory_reviewer_certification"
+
+
 @pytest.mark.parametrize("completion_path", ["planner", "bounded"])
 @pytest.mark.parametrize("changed_path", ["paper/main.tex", "paper/main.pdf"])
 def test_completion_uses_separate_execution_workdir(
@@ -203,17 +255,20 @@ def test_completion_uses_separate_execution_workdir(
         "final_submission_certified": True,
         "final_submission_signature": supervisor._final_submission_signature(),
         "manuscript_snapshot": manuscript_snapshot(project),
+        "venue_review": _accepted_venue_review(),
+        "venue_review_snapshot": paper_review_snapshot(project),
     })
+    supervisor.memory.backlog.mark_done(item.id)
     assert supervisor._journal_has_final_certification() is True
     supervisor.config.final_certification_gate = False
     if completion_path == "bounded":
-        from argus_skill.skills import vertical_select
+        from argus.skills import vertical_select
 
         supervisor.config.open_ended = False
         monkeypatch.setattr(
             vertical_select,
-            "vertical_has_current_completion_certificate",
-            lambda *_args: True,
+            "vertical_completion_certificate_status",
+            lambda *_args: {"ok": True},
         )
 
     def certification_consumed() -> bool:

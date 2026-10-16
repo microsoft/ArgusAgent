@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from argus_skill.agent_cli.agent_cli_runner import AgentCliRunner
-from argus_skill.agent_cli.runner_backend import (
+from argus.agent_cli import runner_backend
+from argus.agent_cli.agent_cli_runner import AgentCliRunner
+from argus.agent_cli.runner_backend import (
     BACKEND_CODEX,
     BACKEND_COPILOT,
     BACKEND_GROK,
@@ -16,7 +18,7 @@ from argus_skill.agent_cli.runner_backend import (
     resolve_available_runner,
     resolve_runner_bin,
 )
-from argus_skill.core.knobs import resolve_runner_bin_setting
+from argus.core.knobs import resolve_runner_bin_setting
 
 
 def _write_runner_executable(path: Path, *, exit_code: int = 0) -> Path:
@@ -78,51 +80,65 @@ def test_persisted_runner_bin_stays_bound_to_its_backend() -> None:
     )
 
 
-def test_runner_resolves_user_local_bin_when_service_path_omits_it(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    executable = tmp_path / ".local" / "bin" / "copilot"
-    executable.parent.mkdir(parents=True)
-    executable = _write_runner_executable(executable)
+@pytest.mark.parametrize(("backend", "binary", "install_dir"), [
+    pytest.param(BACKEND_COPILOT, "copilot", ".local/bin", id="copilot-user-local"),
+    pytest.param(BACKEND_OPENCODE, "opencode", ".opencode/bin", id="opencode-standard-install"),
+    pytest.param(BACKEND_OPENCODE, "opencode", "", id="opencode-path"),
+    pytest.param(BACKEND_PI, "pi", "", id="pi-path"),
+    pytest.param(BACKEND_GROK, "grok", "", id="grok-path"),
+    pytest.param(BACKEND_QODER, "qodercli", "", id="qoder-path"),
+])
+def test_backend_binary_resolution(tmp_path: Path, monkeypatch, backend, binary, install_dir) -> None:
+    directory = tmp_path / install_dir
+    directory.mkdir(parents=True, exist_ok=True)
+    executable = _write_runner_executable(directory / binary)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    monkeypatch.setenv("PATH", str(tmp_path / "service-bin"))
-
-    _assert_same_path(resolve_runner_bin(BACKEND_COPILOT), executable)
-    _assert_same_path(AgentCliRunner(backend=BACKEND_COPILOT).agent_bin, executable)
-
-
-def test_opencode_runner_uses_opencode_binary(tmp_path: Path, monkeypatch) -> None:
-    executable = _write_runner_executable(tmp_path / "opencode")
-    monkeypatch.setenv("PATH", str(tmp_path))
-
-    _assert_same_path(resolve_runner_bin(BACKEND_OPENCODE), executable)
-    _assert_same_path(AgentCliRunner(backend=BACKEND_OPENCODE).agent_bin, executable)
+    monkeypatch.setenv("PATH", str(tmp_path / "service-bin" if install_dir else tmp_path))
+    _assert_same_path(resolve_runner_bin(backend), executable)
+    _assert_same_path(AgentCliRunner(backend=backend).agent_bin, executable)
 
 
-def test_pi_runner_uses_pi_binary(tmp_path: Path, monkeypatch) -> None:
-    executable = _write_runner_executable(tmp_path / "pi")
-    monkeypatch.setenv("PATH", str(tmp_path))
+@pytest.mark.parametrize("suffix", [".CMD", ".EXE"])
+def test_windows_runner_fallback_resolves_quoted_path_directory(
+    tmp_path: Path, monkeypatch, suffix: str,
+) -> None:
+    bindir = tmp_path / "研发 tools%ARGUS_LOOKUP_LITERAL%"
+    bindir.mkdir()
+    executable = bindir / f"pi{suffix}"
+    executable.write_text("local lookup fixture", encoding="utf-8")
+    monkeypatch.setattr(runner_backend, "os", SimpleNamespace(
+        name="nt", environ={
+            "PATH": f'"{bindir}"',
+            "PATHEXT": os.pathsep.join([".EXE", ".CMD"]),
+            "ARGUS_LOOKUP_LITERAL": "must-not-expand",
+        }, pathsep=os.pathsep,
+    ))
+    # Python's which() does not strip quotes from PATH entries. Exercise the
+    # existing fallback on every host, including mixed-case Windows suffixes.
+    monkeypatch.setattr(runner_backend.shutil, "which", lambda *_args: None)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
 
     _assert_same_path(resolve_runner_bin(BACKEND_PI), executable)
-    _assert_same_path(AgentCliRunner(backend=BACKEND_PI).agent_bin, executable)
 
 
-def test_grok_runner_uses_grok_binary(tmp_path: Path, monkeypatch) -> None:
-    executable = _write_runner_executable(tmp_path / "grok")
-    monkeypatch.setenv("PATH", str(tmp_path))
+def test_posix_runner_fallback_keeps_literal_path_quotes(tmp_path: Path, monkeypatch) -> None:
+    directory = f'"{tmp_path / "literal-directory"}"'
+    expected = Path(directory) / "pi"
+    inspected: list[Path] = []
 
-    _assert_same_path(resolve_runner_bin(BACKEND_GROK), executable)
-    _assert_same_path(AgentCliRunner(backend=BACKEND_GROK).agent_bin, executable)
+    def resolve_candidate(path: Path) -> str | None:
+        inspected.append(path)
+        return str(path) if path == expected else None
 
+    monkeypatch.setattr(runner_backend, "os", SimpleNamespace(
+        name="posix", environ={"PATH": directory}, pathsep=os.pathsep,
+    ))
+    monkeypatch.setattr(runner_backend.shutil, "which", lambda *_args: None)
+    monkeypatch.setattr(runner_backend, "_resolve_explicit_candidate", resolve_candidate)
 
-def test_qoder_runner_uses_qodercli_binary(tmp_path: Path, monkeypatch) -> None:
-    executable = _write_runner_executable(tmp_path / "qodercli")
-    monkeypatch.setenv("PATH", str(tmp_path))
-
-    _assert_same_path(resolve_runner_bin(BACKEND_QODER), executable)
-    _assert_same_path(AgentCliRunner(backend=BACKEND_QODER).agent_bin, executable)
+    assert resolve_runner_bin(BACKEND_PI) == str(expected)
+    assert inspected == [expected]
 
 
 def test_runner_skips_inaccessible_path_candidate(
@@ -146,19 +162,62 @@ def test_runner_skips_inaccessible_path_candidate(
     assert resolve_runner_bin("claude") is None
 
 
-def test_opencode_runner_resolves_standard_install_directory(
-    tmp_path: Path,
-    monkeypatch,
+def test_windows_runner_fallback_does_not_stat_unrelated_directory_entries(
+    tmp_path: Path, monkeypatch,
 ) -> None:
-    executable = tmp_path / ".opencode" / "bin" / "opencode"
-    executable.parent.mkdir(parents=True)
-    executable = _write_runner_executable(executable)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    monkeypatch.setenv("PATH", str(tmp_path / "service-bin"))
+    unrelated = tmp_path / "unrelated.dll"
+    unrelated.write_text("not a runner", encoding="utf-8")
+    executable = tmp_path / "Pi.CmD"
+    executable.write_text("@echo off\n", encoding="utf-8")
+    candidate = tmp_path / "pi"
+    inspected: list[Path] = []
+    original_is_file = Path.is_file
+    original_iterdir = Path.iterdir
 
-    _assert_same_path(resolve_runner_bin(BACKEND_OPENCODE), executable)
-    _assert_same_path(AgentCliRunner(backend=BACKEND_OPENCODE).agent_bin, executable)
+    def inspect(path: Path) -> bool:
+        inspected.append(path)
+        if path == unrelated:
+            raise PermissionError("unrelated file metadata is inaccessible")
+        return original_is_file(path)
+
+    monkeypatch.setattr(runner_backend, "os", SimpleNamespace(
+        name="nt", environ={"PATHEXT": os.pathsep.join([".EXE", ".CMD"])},
+        pathsep=os.pathsep,
+    ))
+    monkeypatch.setattr(runner_backend.shutil, "which", lambda *_args: None)
+    monkeypatch.setattr(Path, "is_file", inspect)
+    monkeypatch.setattr(Path, "iterdir", lambda path: (
+        iter([unrelated, executable]) if path == tmp_path else original_iterdir(path)
+    ))
+
+    assert runner_backend._resolve_explicit_candidate(candidate) == str(executable)
+    assert inspected == [candidate, executable]
+
+
+def test_windows_runner_fallback_rejects_directories_without_probing_unrelated_files(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    candidate = tmp_path / "pi"
+    matching_directory = tmp_path / "pi.EXE"
+    matching_directory.mkdir()
+    unrelated = tmp_path / "unrelated.dll"
+    unrelated.write_text("not a runner", encoding="utf-8")
+    inspected: list[Path] = []
+    original_is_file = Path.is_file
+
+    def inspect(path: Path) -> bool:
+        inspected.append(path)
+        return original_is_file(path)
+
+    monkeypatch.setattr(runner_backend, "os", SimpleNamespace(
+        name="nt", environ={"PATHEXT": os.pathsep.join([".EXE", ".CMD"])},
+        pathsep=os.pathsep,
+    ))
+    monkeypatch.setattr(runner_backend.shutil, "which", lambda *_args: None)
+    monkeypatch.setattr(Path, "is_file", inspect)
+
+    assert runner_backend._resolve_explicit_candidate(candidate) is None
+    assert inspected == [candidate, matching_directory]
 
 
 def test_missing_codex_falls_back_to_available_copilot(

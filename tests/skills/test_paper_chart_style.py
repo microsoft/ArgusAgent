@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from argus_skill.verticals.research.skills.engineer.figure_spec_scripts import (
+from argus.verticals.research.skills.engineer.figure_spec_scripts import (
     paper_chart_style as pcs,
 )
 
@@ -65,20 +65,64 @@ def test_column_layout_comes_from_researched_venue_profile(
     assert pcs.figure_size("double")[0] > pcs.figure_size("single")[0]
 
 
-def test_column_layout_defaults_to_two_column_without_profile(
+@pytest.mark.parametrize("profile", [None, "not json", "{}", '{"two_column":"false"}'])
+def test_column_layout_requires_template_choice_without_valid_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    profile: str | None,
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    assert pcs._project_two_column() is True
-    # A corrupt profile also falls back to the two-column default.
-    research = tmp_path / "research"
-    research.mkdir()
-    (research / "VENUE_PROFILE.json").write_text("not json", encoding="utf-8")
-    assert pcs._project_two_column() is True
+    if profile is not None:
+        research = tmp_path / "research"
+        research.mkdir()
+        (research / "VENUE_PROFILE.json").write_text(profile, encoding="utf-8")
+    with pytest.raises(ValueError, match="Read its current template"):
+        pcs.figure_size()
+    # An explicit choice works without a cached profile, including for ICLR's
+    # single-column template. Unknown metadata must not silently narrow it.
+    assert pcs.figure_size("single", two_column=False)[0] == 5.5
+    assert pcs.figure_size("single", two_column=True)[0] == 3.3
 
 
 # ---- matplotlib-backed behaviour ------------------------------------------
+
+@pytest.mark.parametrize("facecolor, expected", [
+    ("#CBE9D3", "black"),  # Pale green: white digits disappear at paper size.
+    ("#243D4E", "white"),
+    ("#808080", "black"),  # Black exceeds 5:1; white is below 4:1 here.
+    ("#00FF00", "black"),  # Green's luminance must not use an RGB mean.
+])
+def test_annotation_text_uses_visible_color_contrast(facecolor, expected) -> None:
+    pytest.importorskip("matplotlib")
+    assert pcs.contrast_text_color(facecolor) == expected
+
+
+def test_same_heatmap_value_needs_different_text_after_colormap_reversal() -> None:
+    colors = pytest.importorskip("matplotlib.colors")
+    cmap = colors.ListedColormap(["#CBE9D3", "#243D4E"])
+    norm = colors.Normalize(vmin=0, vmax=10)
+    assert pcs.contrast_text_color(cmap(norm(3))) == "black"
+    assert pcs.contrast_text_color(cmap.reversed()(norm(3))) == "white"
+
+
+def test_annotation_text_accounts_for_rgba_and_artist_opacity() -> None:
+    pytest.importorskip("matplotlib")
+    assert pcs.contrast_text_color("#243D4E", alpha=1.0) == "white"
+    assert pcs.contrast_text_color("#243D4E", alpha=0.2) == "black"
+    # Intrinsic 0.5 alpha and additional 0.9 artist opacity combine to 0.45;
+    # replacing intrinsic alpha with 0.9 would incorrectly choose white text.
+    assert pcs.contrast_text_color((0, 0, 0, 0.5), alpha=0.9) == "black"
+
+
+def test_annotation_text_composites_axes_and_canvas_backgrounds() -> None:
+    pytest.importorskip("matplotlib")
+    assert pcs.contrast_text_color((1, 1, 1, 0.25), background="black") == "white"
+    assert pcs.contrast_text_color((1, 1, 1, 0.25), background="white") == "black"
+    # Transparent cell and axes expose the actual dark figure background.
+    assert pcs.contrast_text_color("none", background="none", canvas="#243D4E") == "white"
+    assert pcs.contrast_text_color("none", background=(1, 1, 1, 0.25), canvas="black") == "white"
+    assert pcs.contrast_text_color("black", alpha=0.0, background="white") == "black"
+
 
 def test_set_pub_style_applies_and_returns_palette() -> None:
     pytest.importorskip("matplotlib")
@@ -103,7 +147,7 @@ def test_set_pub_style_unknown_palette_falls_back_to_default() -> None:
     pytest.importorskip("matplotlib")
     import matplotlib
     matplotlib.use("Agg")
-    colors = pcs.set_pub_style(palette="does-not-exist")
+    colors = pcs.set_pub_style(palette="does-not-exist", two_column=True)
     assert colors == pcs.PALETTES[pcs.DEFAULT_PALETTE]
 
 
@@ -121,7 +165,7 @@ def test_set_pub_style_requires_scienceplots(
 
     monkeypatch.setattr(pcs.importlib, "import_module", reject_scienceplots)
 
-    with pytest.raises(RuntimeError, match=r"argus-skill\[figures\]"):
+    with pytest.raises(RuntimeError, match=r"argus\[figures\]"):
         pcs.set_pub_style()
 
 
@@ -148,7 +192,7 @@ def test_research_data_figures_have_one_renderer_path() -> None:
         "Composing a conceptual paper figure"
     ) in normalized_router
     assert (
-        "Method pipeline or architecture overview | Drawing the method in SVG"
+        "Method pipeline or architecture overview | Composing a conceptual paper figure"
     ) in normalized_router
 
 

@@ -1,4 +1,3 @@
-import base64
 import re
 from io import BytesIO
 from pathlib import Path
@@ -6,10 +5,10 @@ from zipfile import ZipFile
 
 from fastapi.testclient import TestClient
 
-from argus_skill.core.session import SessionMeta, write_session_meta
-from argus_skill.core.transcript import append_turn
-from argus_skill.webapi.artifact_preview import HtmlPackage
-from argus_skill.webapi.server import create_app
+from argus.core.session import SessionMeta, write_session_meta
+from argus.core.transcript import append_turn
+from argus.webapi.artifact_preview import HtmlPackage
+from argus.webapi.server import create_app
 
 
 def site(root: Path) -> Path:
@@ -32,8 +31,11 @@ def test_packages_only_referenced_assets_and_resolves_nested_css(tmp_path):
     result = package.build()
     assert result["warnings"] == []
     assert set(package.files) == {"index.html", "styles/main.css", "image.svg", "app.js"}
-    css = re.search('data:text/css;base64,([^"#]+)', result["html"])[1]
-    assert "data:image/svg+xml;base64," in base64.b64decode(css).decode()
+    # The page's own stylesheet is inlined as a <style> block a strict host
+    # style policy accepts, not a data: URL it would refuse.
+    assert "data:text/css" not in result["html"]
+    css = re.search(r"<style>(.*?)</style>", result["html"], re.S)[1]
+    assert "data:image/svg+xml;base64," in css
     assert "data:text/javascript;base64," in result["html"]
     assert "<h1>Ready</h1>" in result["html"]
 
@@ -83,7 +85,7 @@ def test_module_imports_and_css_cycles_are_bounded(tmp_path):
 
 
 def test_large_assets_are_not_read_into_the_preview(tmp_path, monkeypatch):
-    import argus_skill.webapi.artifact_preview as module
+    import argus.webapi.artifact_preview as module
 
     monkeypatch.setattr(module, "MAX_BYTES", 300)
     entry = tmp_path / "index.html"
@@ -135,6 +137,7 @@ def test_preview_and_bundle_require_auth_and_an_allowlisted_html_entry(tmp_path)
     preview = client.get(f"{route}/preview", params={"path": "index.html"}, headers=headers)
     assert preview.status_code == 200
     assert preview.json()["file_count"] == 4
+    assert preview.json()["served_page"] is True
     assert preview.headers["cache-control"] == "private, no-store"
     bundle = client.get(f"{route}/bundle", params={"path": "index.html"}, headers=headers)
     assert bundle.status_code == 200
@@ -145,6 +148,31 @@ def test_preview_and_bundle_require_auth_and_an_allowlisted_html_entry(tmp_path)
     raw = client.get(f"{route}/raw", params={"path": "index.html"}, headers=headers)
     assert raw.headers["content-type"].startswith("text/plain")
     assert raw.headers["x-content-type-options"] == "nosniff"
+
+    # The served preview page carries a self-sandboxing policy so the site's own
+    # inline styles and scripts run, reachable by header or, for an iframe that
+    # cannot send one, the same token in the query.
+    page_route = f"{route}/preview/page"
+    assert client.get(page_route, params={"path": "index.html"}).status_code == 401
+    assert (
+        client.get(page_route, params={"path": "index.html", "token": "wrong"}).status_code == 401
+    )
+    for auth in ({"headers": headers}, {"params_token": "test-token"}):
+        params = {"path": "index.html"}
+        if "params_token" in auth:
+            params["token"] = auth["params_token"]
+        page = client.get(page_route, params=params, headers=auth.get("headers"))
+        assert page.status_code == 200
+        assert page.headers["content-type"].startswith("text/html")
+        csp = page.headers["content-security-policy"]
+        assert csp.startswith("sandbox ")
+        assert "script-src 'unsafe-inline'" in csp and "connect-src 'none'" in csp
+        assert page.headers["x-content-type-options"] == "nosniff"
+        assert "<style>" in page.text and "data:text/css" not in page.text
+    # A page path that is not an allowlisted HTML entry is refused.
+    assert (
+        client.get(page_route, params={"path": "app.js"}, headers=headers).status_code == 404
+    )
 
 
 def test_inline_svg_shapes_remain_siblings_after_packaging(tmp_path):

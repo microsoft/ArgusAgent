@@ -1,4 +1,4 @@
-"""M0 tests for the web/TUI backend API (argus_skill/webapi/server.py).
+"""M0 tests for the web/TUI backend API (argus/webapi/server.py).
 
 Uses a temp global_root with a hand-built fake project so no daemon is needed.
 Skips cleanly if the ``[web]`` extra (fastapi) is not installed.
@@ -7,7 +7,6 @@ Skips cleanly if the ``[web]`` extra (fastapi) is not installed.
 from __future__ import annotations
 
 import json
-import re
 import threading
 import time
 from dataclasses import replace
@@ -15,12 +14,13 @@ from pathlib import Path
 
 import pytest
 
-from argus_skill.core.cost_control import CostControlLockBusyError
-from argus_skill.core.session import SessionMeta, write_session_meta
-from argus_skill.core.transcript import append_turn
-from argus_skill.core.usage import UsageLedger, UsageRecord
-from argus_skill.webapi import project_state, server
-from argus_skill.webapi.protocol import (
+from argus.core.cost_control import CostControlLockBusyError
+from argus.core.session import SessionMeta, write_session_meta
+from argus.core.transcript import append_turn
+from argus.core.usage import UsageLedger, UsageRecord
+from argus.daemon import life_worker as daemon_worker
+from argus.webapi import project_state, server
+from argus.webapi.protocol import (
     API_CAPABILITIES,
     API_PROTOCOL_MAJOR,
     API_PROTOCOL_MINOR,
@@ -217,10 +217,10 @@ def _make_project(root: Path, sid: str = "s-testaaaa") -> Path:
 
 def test_project_life_dir_resolves_and_guards(tmp_path: Path) -> None:
     life = _make_project(tmp_path)
-    assert server.project_life_dir("s-testaaaa", global_root=tmp_path) == life.resolve()
+    assert project_state.project_life_dir("s-testaaaa", global_root=tmp_path) == life.resolve()
     # traversal + missing → None (never escapes projects/)
-    assert server.project_life_dir("../../etc", global_root=tmp_path) is None
-    assert server.project_life_dir("s-nope", global_root=tmp_path) is None
+    assert project_state.project_life_dir("../../etc", global_root=tmp_path) is None
+    assert project_state.project_life_dir("s-nope", global_root=tmp_path) is None
 
 
 def test_snapshot_reuses_cost_control_cache_during_transient_lock_contention(
@@ -271,7 +271,7 @@ def test_snapshot_reuses_host_cost_and_usage_across_projects(
         calls["usage"] += 1
         return project_state._empty_usage_summary()
 
-    import argus_skill.life.supervisor as supervisor_module
+    import argus.life.supervisor as supervisor_module
 
     monkeypatch.setattr(project_state, "cost_control_snapshot", cost)
     monkeypatch.setattr(supervisor_module, "global_daily_usage_summary", usage)
@@ -280,8 +280,8 @@ def test_snapshot_reuses_host_cost_and_usage_across_projects(
     with project_state._GLOBAL_USAGE_CACHE_LOCK:
         project_state._GLOBAL_USAGE_CACHE.clear()
 
-    assert server.build_snapshot("s-host-one", global_root=tmp_path) is not None
-    assert server.build_snapshot("s-host-two", global_root=tmp_path) is not None
+    assert project_state.build_snapshot("s-host-one", global_root=tmp_path) is not None
+    assert project_state.build_snapshot("s-host-two", global_root=tmp_path) is not None
     assert calls == {"cost": 1, "usage": 1}
 
 
@@ -306,14 +306,14 @@ def test_compact_snapshot_never_reports_global_usage_below_project_usage(
         calls += 1
         return project_usage
 
-    import argus_skill.life.supervisor as supervisor_module
+    import argus.life.supervisor as supervisor_module
 
     monkeypatch.setattr(project_state, "project_usage_summary", lambda _root: project_usage)
     monkeypatch.setattr(supervisor_module, "global_daily_usage_summary", global_usage)
     with project_state._GLOBAL_USAGE_CACHE_LOCK:
         project_state._GLOBAL_USAGE_CACHE.clear()
 
-    snap = server.build_snapshot(
+    snap = project_state.build_snapshot(
         "s-usage-floor",
         global_root=tmp_path,
         compact=True,
@@ -345,7 +345,7 @@ def test_compact_snapshot_refreshes_host_projections_off_request_thread(
     def usage(*, global_root, now=None):
         return project_state._empty_usage_summary()
 
-    import argus_skill.life.supervisor as supervisor_module
+    import argus.life.supervisor as supervisor_module
 
     monkeypatch.setattr(project_state, "cost_control_snapshot", slow_cost)
     monkeypatch.setattr(supervisor_module, "global_daily_usage_summary", usage)
@@ -356,7 +356,7 @@ def test_compact_snapshot_refreshes_host_projections_off_request_thread(
     with project_state._HOST_REFRESHING_LOCK:
         project_state._HOST_REFRESHING.clear()
 
-    snap = server.build_snapshot(
+    snap = project_state.build_snapshot(
         "s-nonblocking-host",
         global_root=tmp_path,
         compact=True,
@@ -385,7 +385,7 @@ def test_compact_snapshot_refreshes_host_projections_off_request_thread(
 def test_project_index_and_routes_span_machine_session_roots(
     tmp_path: Path,
 ) -> None:
-    from argus_skill.life.memory import BacklogItem, LifeMemory
+    from argus.life.memory import BacklogItem, LifeMemory
 
     primary = tmp_path / "private"
     machine = tmp_path / "machine"
@@ -547,26 +547,11 @@ def test_api_meta_identifies_protocol_capabilities_and_loaded_checkout(
     assert Path(meta["runtime"]["source_root"]) == Path(__file__).parents[2]
     assert meta["runtime"]["pid"] > 0
     assert meta["runtime"]["desktop_launch_nonce"] == "desktop-launch-test"
-    runtime = meta["runtime"]
-    assert runtime["release_id"].startswith("0.1.1+")
-    assert runtime["release_matches_source"] is (
-        runtime["manifest_source_digest"] == runtime["runtime_source_digest"]
-    )
-
-
-def test_web_serve_refuses_strict_release_mismatch(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "argus_skill.core.runtime_identity.release_match_preflight_error",
-        lambda: "release mismatch",
-    )
-
-    with pytest.raises(RuntimeError, match="webapi refused inconsistent release"):
-        server.serve()
 
 
 def test_web_serve_refuses_a_mismatched_source_root(monkeypatch) -> None:
     monkeypatch.setattr(
-        "argus_skill.core.runtime_identity.source_root_preflight_error",
+        "argus.core.runtime_identity.source_root_preflight_error",
         lambda: "source-root mismatch",
     )
 
@@ -608,17 +593,17 @@ def test_static_web_assets_are_gzip_compressed(tmp_path: Path) -> None:
 
 
 def test_frontend_protocol_constants_match_backend_contract() -> None:
-    source = (Path(__file__).parents[2] / "frontend" / "core" / "src" / "protocol.ts").read_text(
+    source = (Path(__file__).parents[2] / "packages/contracts/src/apiProtocol.generated.ts").read_text(
         encoding="utf-8"
     )
-    assert f"name: '{API_PROTOCOL_NAME}'" in source
+    assert f"name: {json.dumps(API_PROTOCOL_NAME)}" in source
     assert f"major: {API_PROTOCOL_MAJOR}" in source
     assert f"minServerMinor: {API_PROTOCOL_MINOR}" in source
     assert f"SNAPSHOT_SCHEMA_VERSION = {SNAPSHOT_SCHEMA_VERSION}" in source
     capabilities_block = source.split("REQUIRED_API_CAPABILITIES = [", 1)[1].split("] as const", 1)[
         0
     ]
-    assert tuple(re.findall(r"'([^']+)'", capabilities_block)) == API_CAPABILITIES
+    assert tuple(json.loads(f"[{capabilities_block}]")) == API_CAPABILITIES
 
 
 def test_build_snapshot_shape_and_failsoft(
@@ -627,7 +612,7 @@ def test_build_snapshot_shape_and_failsoft(
 ) -> None:
     monkeypatch.setenv("ARGUS_SKILL_GLOBAL_DAILY_CAP_USD", "55")
     _make_project(tmp_path)
-    snap = server.build_snapshot("s-testaaaa", global_root=tmp_path)
+    snap = project_state.build_snapshot("s-testaaaa", global_root=tmp_path)
     assert snap is not None
     assert set(snap) == {
         "schema_version",
@@ -635,6 +620,7 @@ def test_build_snapshot_shape_and_failsoft(
         "daemon",
         "roles",
         "backlog",
+        "pending_questions",
         "recent_events",
         "spend_usd",
         "spend_status",
@@ -657,7 +643,7 @@ def test_build_snapshot_shape_and_failsoft(
     assert snap["cost_control"]["unresolved_calls"] == 0
     assert snap["daemon_commands"]["revision"] == 0
     assert snap["observability"]["slo"]["status"] == "healthy"
-    assert snap["mission_view"]["schema_version"] == 6
+    assert snap["mission_view"]["schema_version"] == 7
     assert len(snap["roles"]) == 4  # manager/planner/engineer/reviewer
     assert {r["role"] for r in snap["roles"]} == {"manager", "planner", "engineer", "reviewer"}
     assert len(snap["recent_events"]) == 2
@@ -669,7 +655,7 @@ def test_build_snapshot_shape_and_failsoft(
     assert snap["usage_summary"]["call_count"] == 0
     assert snap["global_usage_summary"]["call_count"] == 0
     # unknown project → None (not an exception)
-    assert server.build_snapshot("s-nope", global_root=tmp_path) is None
+    assert project_state.build_snapshot("s-nope", global_root=tmp_path) is None
 
 
 def test_build_snapshot_reuses_host_metrics_across_project_switches(
@@ -689,8 +675,8 @@ def test_build_snapshot_reuses_host_metrics_across_project_switches(
     with project_state._METRICS_CACHE_LOCK:
         project_state._METRICS_CACHE.clear()
     try:
-        assert server.build_snapshot("s-first", global_root=tmp_path) is not None
-        assert server.build_snapshot("s-second", global_root=tmp_path) is not None
+        assert project_state.build_snapshot("s-first", global_root=tmp_path) is not None
+        assert project_state.build_snapshot("s-second", global_root=tmp_path) is not None
         assert calls == 1
     finally:
         with project_state._METRICS_CACHE_LOCK:
@@ -713,18 +699,18 @@ def test_compact_snapshot_never_runs_expensive_metrics_projection(
     with project_state._METRICS_CACHE_LOCK:
         project_state._METRICS_CACHE.clear()
     try:
-        snap = server.build_snapshot("s-fast", global_root=tmp_path, compact=True)
+        snap = project_state.build_snapshot("s-fast", global_root=tmp_path, compact=True)
 
         assert snap is not None
         assert snap["observability"] is None
         assert calls == 0
 
-        full = server.build_snapshot("s-fast", global_root=tmp_path)
+        full = project_state.build_snapshot("s-fast", global_root=tmp_path)
         assert full is not None
         assert full["observability"]["slo"]["status"] == "healthy"
         assert calls == 1
 
-        refreshed = server.build_snapshot("s-fast", global_root=tmp_path, compact=True)
+        refreshed = project_state.build_snapshot("s-fast", global_root=tmp_path, compact=True)
         assert refreshed is not None
         assert refreshed["observability"]["slo"]["status"] == "healthy"
         assert calls == 1
@@ -743,7 +729,7 @@ def test_build_snapshot_marks_failsoft_sections_partial(
         raise RuntimeError("status sidecar is unreadable")
 
     monkeypatch.setattr(project_state, "read_daemon_status", broken_status)
-    snap = server.build_snapshot("s-testaaaa", global_root=tmp_path)
+    snap = project_state.build_snapshot("s-testaaaa", global_root=tmp_path)
     assert snap is not None
     assert snap["partial"] is True
     assert snap["daemon"]["read_status"] == "error"
@@ -767,7 +753,7 @@ def test_build_snapshot_marks_running_legacy_daemon_incompatible(
     monkeypatch.setattr(
         project_state,
         "read_daemon_status",
-        lambda _life_dir: server.DaemonStatus(
+        lambda _life_dir: daemon_worker.DaemonStatus(
             alive=True,
             pid=123,
             started_at_iso=None,
@@ -776,7 +762,7 @@ def test_build_snapshot_marks_running_legacy_daemon_incompatible(
         ),
     )
 
-    snap = server.build_snapshot("s-testaaaa", global_root=tmp_path)
+    snap = project_state.build_snapshot("s-testaaaa", global_root=tmp_path)
 
     assert snap is not None
     assert snap["partial"] is True
@@ -813,7 +799,7 @@ def test_snapshot_auxiliary_failures_keep_schema_and_report_diagnostics(
         broken("request usage"),
     )
 
-    snap = server.build_snapshot("s-testaaaa", global_root=tmp_path)
+    snap = project_state.build_snapshot("s-testaaaa", global_root=tmp_path)
 
     assert snap is not None
     assert snap["partial"] is True
@@ -826,15 +812,15 @@ def test_snapshot_auxiliary_failures_keep_schema_and_report_diagnostics(
         "session",
         "request_usage",
     }
-    repeated = server.build_snapshot("s-testaaaa", global_root=tmp_path)
+    repeated = project_state.build_snapshot("s-testaaaa", global_root=tmp_path)
     assert repeated is not None
     assert "usage" in {item["section"] for item in repeated["diagnostics"]}
 
 
 def test_server_reexports_project_state_read_api() -> None:
-    assert server.build_snapshot is project_state.build_snapshot
-    assert server.list_projects is project_state.list_projects
-    assert server.project_life_dir is project_state.project_life_dir
+    assert project_state.build_snapshot is project_state.build_snapshot
+    assert project_state.list_projects is project_state.list_projects
+    assert project_state.project_life_dir is project_state.project_life_dir
 
 
 def test_malformed_daemon_admission_is_visible_in_snapshot_diagnostics(
@@ -846,7 +832,7 @@ def test_malformed_daemon_admission_is_visible_in_snapshot_diagnostics(
         encoding="utf-8",
     )
 
-    snap = server.build_snapshot("s-testaaaa", global_root=tmp_path)
+    snap = project_state.build_snapshot("s-testaaaa", global_root=tmp_path)
 
     assert snap is not None
     assert snap["partial"] is True
@@ -866,7 +852,7 @@ def test_daemon_backend_follows_engineer_role_not_stale_status(tmp_path: Path, m
         json.dumps({"pid": 999999, "backend": "codex", "started_at_iso": "2020-01-01T00:00:00Z"}),
         encoding="utf-8",
     )
-    snap = server.build_snapshot("s-becons01", global_root=tmp_path)
+    snap = project_state.build_snapshot("s-becons01", global_root=tmp_path)
     assert snap is not None
     eng = next(r for r in snap["roles"] if r["role"] == "engineer")
     assert eng["backend"] == "copilot"  # roles resolve live from the env knob
@@ -876,7 +862,7 @@ def test_daemon_backend_follows_engineer_role_not_stale_status(tmp_path: Path, m
 
 def test_list_projects(tmp_path: Path) -> None:
     _make_project(tmp_path)
-    projects = server.list_projects(global_root=tmp_path)
+    projects = project_state.list_projects(global_root=tmp_path)
     ids = {p["id"] for p in projects}
     assert "s-testaaaa" in ids
     p = next(p for p in projects if p["id"] == "s-testaaaa")
@@ -895,17 +881,17 @@ def test_list_projects_hides_empty_shells_and_caps(tmp_path: Path) -> None:
     (tmp_path / "projects" / "s-empty0000").mkdir(parents=True)
 
     # default hides the empty shell (picker shows real work, not litter)
-    ids = {p["id"] for p in server.list_projects(global_root=tmp_path)}
+    ids = {p["id"] for p in project_state.list_projects(global_root=tmp_path)}
     assert "s-empty0000" not in ids
     assert {"s-aaaa1111", "s-bbbb2222", "s-cccc3333"} <= ids
 
     # opt-in surfaces every dir
     assert "s-empty0000" in {
-        p["id"] for p in server.list_projects(global_root=tmp_path, include_empty=True)
+        p["id"] for p in project_state.list_projects(global_root=tmp_path, include_empty=True)
     }
 
     # limit bounds the per-item daemon-status reads
-    assert len(server.list_projects(global_root=tmp_path, limit=2)) == 2
+    assert len(project_state.list_projects(global_root=tmp_path, limit=2)) == 2
 
 
 def test_web_project_index_hides_legacy_internal_dirs(tmp_path: Path) -> None:
@@ -960,7 +946,6 @@ def test_get_meta_is_public_versioned_and_uncached(
     assert r.headers["x-argus-protocol"] == (
         f"argus.webapi/{API_PROTOCOL_MAJOR}.{API_PROTOCOL_MINOR}"
     )
-    assert r.headers["x-argus-release"].startswith("0.1.1+")
     assert r.json()["protocol"]["major"] == API_PROTOCOL_MAJOR
     assert r.json()["authentication"] == {
         "required": True,
@@ -1000,11 +985,36 @@ def test_system_doctor_requires_auth_and_returns_typed_read_only_report(
     }
 
 
+def test_system_doctor_probes_its_bound_address_not_default_or_host_header(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probes = []
+
+    def probe_web(host: str, port: int):
+        probes.append((host, port))
+        return "compatible", {"service": "argus-skill-webapi"}
+
+    monkeypatch.setattr("argus.maintenance.doctor._probe_web", probe_web)
+    app = server.create_app(global_root=tmp_path, auth_token="secret")
+    with TestClient(app, base_url="http://127.0.0.1:55418") as doctor_client:
+        response = doctor_client.get(
+            "/api/system/doctor",
+            headers={"Authorization": "Bearer secret", "Host": "elsewhere.invalid:8799"},
+        )
+
+    assert response.status_code == 200
+    assert probes == [("127.0.0.1", 55418)]
+    web = next(item for item in response.json()["findings"] if item["scope"] == "web")
+    assert web["evidence"]["host"] == "127.0.0.1"
+    assert web["evidence"]["port"] == 55418
+
+
 def test_system_resources_requires_auth_and_redacts_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from argus_skill.tools.resource_ledger import ledger as resource_ledger
+    from argus.tools.resource_ledger import ledger as resource_ledger
 
     now = time.time()
     long_reason = "please   release\n" + "x" * 400

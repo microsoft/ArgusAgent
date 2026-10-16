@@ -2,27 +2,23 @@ from __future__ import annotations
 
 import json
 
-from argus_skill.core.operator_messages import (
+import pytest
+
+from argus.core.operator_messages import (
     budget_refusal_reply,
     humanize_runtime_reason,
     publish_operator_message,
     render_operator_update,
 )
-from argus_skill.core.transcript import read_turns
+from argus.core.transcript import read_turns
 
 
-def test_unresolved_cost_reply_explains_accounting_without_claiming_backend_failure() -> None:
-    reason = (
-        "refused before start: unresolved provider cost: 1 call(s) awaiting "
-        "usage reconciliation (provider=codex, model=test-model)"
-    )
+def test_budget_reply_explains_known_limit_without_claiming_backend_failure() -> None:
+    reason = "refused before start: global daily budget exhausted ($0.000000 available)"
     reply = budget_refusal_reply(reason, language_hint="继续推进任务")
     assert reply is not None
-    assert "费用尚未核对完整" in reply
-    assert "cost-control.json" in reply
-    assert "终端" in reply
-    assert "不要删除账本" in reply
-    assert "provider=codex" in reply
+    assert "已达到全局日预算上限" in reply
+    assert reason in reply
     assert "backend is unavailable" not in reply
     assert "argus doctor --deep" not in reply
 
@@ -119,6 +115,56 @@ def test_operator_abort_is_not_rendered_as_a_failure_or_retry() -> None:
     assert "下一步" not in text
 
 
+@pytest.mark.parametrize(
+    ("hint", "resume"),
+    [
+        ("继续论文", "点击“运行”恢复任务；不会自动重试"),
+        ("Continue the paper", "click Run to resume; automatic retries are disabled"),
+    ],
+)
+def test_provider_fence_explains_explicit_recovery(hint: str, resume: str) -> None:
+    text = render_operator_update(
+        title="Research",
+        status="paused_provider_fence",
+        reason="HTTP 402: Insufficient trial tokens for this request.",
+        next_action="Check the trial quota.",
+        language_hint=hint,
+    )
+
+    assert "HTTP 402" in text
+    assert "Check the trial quota." in text
+    assert resume in text
+    assert "Argus 会诊断" not in text
+    assert "Argus will diagnose" not in text
+
+
+@pytest.mark.parametrize(
+    ("title", "hint", "waiting", "continuation"),
+    [
+        ("通信论文", "继续修订论文", "正在等待后台任务完成", "自动继续"),
+        ("communication paper", "Continue revising", "Waiting for background work", "automatically"),
+    ],
+)
+def test_healthy_background_wait_does_not_request_failure_recovery(
+    title: str, hint: str, waiting: str, continuation: str,
+) -> None:
+    text = render_operator_update(
+        title=title,
+        status="paused_external_work",
+        reason="healthy subagent job-1 is still running; released the mission slot",
+        language_hint=hint,
+    )
+
+    assert title in text
+    assert waiting in text
+    assert continuation in text
+    assert "未能完成" not in text
+    assert "Could not complete" not in text
+    assert "diagnose" not in text
+    assert "job-1" not in text
+    assert "mission slot" not in text
+
+
 def test_operator_update_leads_with_result() -> None:
     assert render_operator_update(
         title="repair the parser",
@@ -128,3 +174,20 @@ def test_operator_update_leads_with_result() -> None:
         "Completed: repair the parser.",
         "Reason: 18 focused tests passed.",
     ]
+
+
+def test_budget_refusal_reply_names_the_cost_policy_for_unsettled_copilot_calls() -> None:
+    reason = (
+        "refused before start: unresolved provider cost: 1 call(s) awaiting usage "
+        "reconciliation (call=057dea4e, provider=copilot, model=gpt-5.6-sol; "
+        "Copilot token billing is awaiting local CLI usage reconciliation)"
+    )
+    reply = budget_refusal_reply(reason, language_hint="帮我测一下 GPU")
+    assert reply is not None
+    assert "ARGUS_SKILL_UNPRICED_COST_POLICY" in reply
+    assert "allow" in reply
+    assert reason in reply
+    assert "backend is unavailable" not in reply
+    assert "argus doctor --deep" not in reply
+    english = budget_refusal_reply(reason)
+    assert english is not None and "cost policy" in english

@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { RELEASE_ID, RELEASE_SOURCE_DIGEST } from '../../../core/src/release.generated';
 import {
   API_PROTOCOL,
   REQUIRED_API_CAPABILITIES,
   SNAPSHOT_SCHEMA_VERSION,
 } from '../../../core/src/protocol';
+import { RELEASE_ID, RELEASE_SOURCE_DIGEST } from '../../../core/src/release.generated';
 
 const currentMeta = {
   service: 'argus-skill-webapi',
@@ -12,19 +12,19 @@ const currentMeta = {
   snapshot_schema_version: SNAPSHOT_SCHEMA_VERSION,
   capabilities: [...REQUIRED_API_CAPABILITIES],
   runtime: {
-    package_version: '0.1.1',
-    source_root: '/checkout/argus-skill',
-    configured_source_root: '/checkout/argus-skill',
+    package_version: RELEASE_ID.split('+')[0],
+    release_id: RELEASE_ID,
+    manifest_source_digest: RELEASE_SOURCE_DIGEST,
+    runtime_source_digest: RELEASE_SOURCE_DIGEST,
+    release_matches_source: true,
+    source_root: '/checkout/argus',
+    configured_source_root: '/checkout/argus',
     source_root_matches_config: true,
     revision: 'abc123',
     pid: 12,
     python_version: '3.13.0',
     executable: '/venv/bin/python',
     started_at: '2026-07-11T00:00:00Z',
-    release_id: RELEASE_ID,
-    manifest_source_digest: RELEASE_SOURCE_DIGEST,
-    runtime_source_digest: RELEASE_SOURCE_DIGEST,
-    release_matches_source: true,
   },
 };
 
@@ -136,6 +136,16 @@ describe('web API protocol handshake', () => {
     const { api } = await import('../api');
 
     await expect(api.listProjects()).rejects.toThrow(/does not expose \/api\/meta/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a mismatched release before any protected project read', async () => {
+    const fetchMock = vi.fn(async () => Response.json({ ...currentMeta,
+      runtime: { ...currentMeta.runtime, release_id: 'another-build' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { api } = await import('../api');
+    await expect(api.listProjects()).rejects.toThrow(/out of sync/);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -342,32 +352,6 @@ describe('web API protocol handshake', () => {
     expect(projectAttempts).toBe(2);
   });
 
-  it('allows source drift, warns, and still requests projects', async () => {
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const driftedMeta = {
-      ...currentMeta,
-      runtime: {
-        ...currentMeta.runtime,
-        release_matches_source: false,
-        runtime_source_digest: 'deadbeef',
-      },
-    };
-    const fetchMock = vi.fn(async (path: string, _init?: RequestInit) => {
-      const body = path === '/api/meta' ? driftedMeta : { projects: [] };
-      return Response.json(body);
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    const { api } = await import('../api');
-
-    await expect(api.listProjects()).resolves.toEqual([]);
-    expect(warning).toHaveBeenCalledWith(
-      'Argus API compatibility warning: python -m argus_skill.release_tools.build_release',
-    );
-    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
-      '/api/meta',
-      '/api/projects',
-    ]);
-  });
 
   it('passes cancellation signals to project reads', async () => {
     let receivedSignal: AbortSignal | undefined;
@@ -656,5 +640,47 @@ describe('web API protocol handshake', () => {
 
     expect(upload.attachments[0].attachment_id).toBe('att-123456789abc');
     expect(result.reply).toBe('ok');
+  });
+});
+
+describe('a page left open across a deployment', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.stubGlobal('window', { location: { search: '' } });
+    vi.stubGlobal('localStorage', { getItem: () => null });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('detects a newer snapshot after the cached handshake and stops old option parsing', async () => {
+    let updated = false;
+    const fetchMock = vi.fn(async (path: string) => Response.json(
+      path === '/api/meta' ? currentMeta : path.includes('/snapshot') ? currentSnapshot : { projects: [] },
+      { headers: { 'X-Argus-Release': updated ? 'next-release' : RELEASE_ID } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    const { api, LocalArgusUnavailableError } = await import('../api');
+    const { getPageUpdateAvailable, observePageRelease, PageUpdateRequiredError } = await import('../lib/pageUpdate');
+    await api.listProjects();
+    updated = true;
+    const failure = await api.activeSnapshot('s-one').catch(error => error);
+    expect(failure).toBeInstanceOf(PageUpdateRequiredError);
+    expect(failure).not.toBeInstanceOf(LocalArgusUnavailableError);
+    expect(getPageUpdateAvailable()).toBe(true);
+    observePageRelease(RELEASE_ID); // A delayed response from before deployment.
+    expect(getPageUpdateAvailable()).toBe(true);
+    expect(fetchMock.mock.calls.filter(([path]) => path === '/api/meta')).toHaveLength(1);
+    const calls = fetchMock.mock.calls.length;
+    await expect(api.answerDomain('s-one', 'intake-1', 'build', '')).rejects.toThrow(/Refresh/);
+    expect(fetchMock).toHaveBeenCalledTimes(calls);
+  });
+
+  it('delivers an already accepted mutation receipt while raising the update notice', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(
+      { kind: 'task', reply: 'Accepted' }, { headers: { 'X-Argus-Release': 'next-release' } },
+    )));
+    const { api } = await import('../api');
+    const { getPageUpdateAvailable } = await import('../lib/pageUpdate');
+    expect(await api.answerDomain('s-one', 'intake-1', 'direct', '')).toEqual({ kind: 'task', reply: 'Accepted' });
+    expect(getPageUpdateAvailable()).toBe(true);
   });
 });

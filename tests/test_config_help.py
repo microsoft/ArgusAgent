@@ -13,8 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from argus_skill.core.knobs import (
+from argus.core.knobs import (
     KNOBS,
+    cockpit_editable_names,
     format_config_help,
     normalize_cockpit_knob_value,
     resolve_budget_caps,
@@ -41,6 +42,13 @@ def test_registry_is_well_formed() -> None:
     assert all(k.doc and k.default and k.group for k in KNOBS), "every knob needs doc/default/group"
 
 
+def test_reviewer_validation_image_documents_the_disabled_default() -> None:
+    name = "ARGUS_SKILL_REVIEWER_VALIDATION_IMAGE"
+    knob = next(knob for knob in KNOBS if knob.name == name)
+    assert knob.default == "(unset)"
+    assert f"{name}  (default: (unset))  (default)" in format_config_help(env={})
+
+
 def test_registry_covers_the_key_operator_knobs() -> None:
     names = {k.name for k in KNOBS}
     for must in (
@@ -56,7 +64,6 @@ def test_registry_covers_the_key_operator_knobs() -> None:
         "ARGUS_SKILL_ENGINEER_REASONING_EFFORT",
         "ARGUS_SKILL_ENGINEER_FULL_ROUND_POLICY",
         "ARGUS_SKILL_PROVIDER_TURN_CAP",
-        "ARGUS_SKILL_REQUIRE_RELEASE_MATCH",
         "ARGUS_SKILL_SOURCE_ROOT",
         "ARGUS_SKILL_LETTER_INTERVAL_HOURS",
     ):
@@ -70,8 +77,8 @@ def test_registry_covers_the_key_operator_knobs() -> None:
 
 
 def test_mission_round_default_is_unbounded_and_consistent() -> None:
-    from argus_skill.engineer.round_config import SupervisedConfig
-    from argus_skill.loop import SkillLoopConfig
+    from argus.engineer.round_config import SupervisedConfig
+    from argus.loop import SkillLoopConfig
 
     max_rounds_knob = next(
         knob for knob in KNOBS if knob.name == "ARGUS_SKILL_MAX_ROUNDS"
@@ -93,6 +100,14 @@ def test_manager_planner_and_self_reasoning_defaults_are_high() -> None:
 def test_config_help_does_not_advertise_formal_vertical_override() -> None:
     assert all(k.name != "ARGUS_SKILL_VERTICAL" for k in KNOBS)
     assert "ARGUS_SKILL_VERTICAL" not in format_config_help(env={})
+
+
+def test_unpriced_cost_policy_is_explicit_and_defaults_to_block() -> None:
+    name = "ARGUS_SKILL_UNPRICED_COST_POLICY"
+    assert next(knob for knob in KNOBS if knob.name == name).default == "block"
+    assert name in cockpit_editable_names()
+    assert normalize_cockpit_knob_value(name, "allow") == "allow"
+    assert name in format_config_help(env={name: "block"})
 
 
 def test_registry_covers_the_active_team_knobs() -> None:
@@ -138,7 +153,7 @@ def test_format_redacts_sensitive_current_values() -> None:
 
 
 def test_format_shows_persisted_value_when_env_is_unset() -> None:
-    from argus_skill.core import knob_store
+    from argus.core import knob_store
 
     knob_store.write_persisted_knob("ARGUS_SKILL_GLOBAL_DAILY_CAP_USD", "75")
 
@@ -149,7 +164,7 @@ def test_format_shows_persisted_value_when_env_is_unset() -> None:
 
 
 def test_budget_caps_share_env_persisted_default_precedence() -> None:
-    from argus_skill.core import knob_store
+    from argus.core import knob_store
 
     assert resolve_budget_caps(env={}).global_daily_cap_usd == 1000.0
     knob_store.write_persisted_knob("ARGUS_SKILL_GLOBAL_DAILY_CAP_USD", "12.5")
@@ -242,7 +257,7 @@ def test_persisted_model_switch_survives_a_bare_env(monkeypatch, tmp_path) -> No
     fresh) and the switch was gone. resolve_role_model must now ALSO fall
     back to core.knob_store's persisted config.json when NO env var is set
     at all for this process, so "change it once" actually holds."""
-    from argus_skill.core import knob_store
+    from argus.core import knob_store
 
     monkeypatch.setenv("ARGUS_SKILL_HOME", str(tmp_path / "home"))
     knob_store.write_persisted_knob("ARGUS_SKILL_MODEL", "claude-sonnet-5")
@@ -253,7 +268,7 @@ def test_persisted_model_switch_survives_a_bare_env(monkeypatch, tmp_path) -> No
 
 
 def test_persisted_role_specific_model_beats_persisted_shared(monkeypatch, tmp_path) -> None:
-    from argus_skill.core import knob_store
+    from argus.core import knob_store
 
     monkeypatch.setenv("ARGUS_SKILL_HOME", str(tmp_path / "home"))
     knob_store.write_persisted_knob("ARGUS_SKILL_MODEL", "claude-sonnet-5")
@@ -269,7 +284,7 @@ def test_explicit_env_beats_a_persisted_switch(monkeypatch, tmp_path) -> None:
     a Docker -e flag) must always outrank a previously-persisted natural-
     language switch — a persisted "I said this in chat last week" default
     should never silently shadow a one-off override."""
-    from argus_skill.core import knob_store
+    from argus.core import knob_store
 
     monkeypatch.setenv("ARGUS_SKILL_HOME", str(tmp_path / "home"))
     knob_store.write_persisted_knob("ARGUS_SKILL_MODEL", "claude-sonnet-5")
@@ -282,7 +297,7 @@ def test_explicit_env_beats_a_persisted_switch(monkeypatch, tmp_path) -> None:
 
 def test_cli_config_help_exits_zero_and_prints_knobs() -> None:
     proc = subprocess.run(
-        [sys.executable, "-m", "argus_skill", "--config-help"],
+        [sys.executable, "-m", "argus", "--config-help"],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -296,7 +311,7 @@ def test_cli_config_help_exits_zero_and_prints_knobs() -> None:
 def test_cli_config_snapshot_writes_file(tmp_path) -> None:
     out = tmp_path / "argus_runtime_settings.md"
     proc = subprocess.run(
-        [sys.executable, "-m", "argus_skill", "--config-snapshot", str(out)],
+        [sys.executable, "-m", "argus", "--config-snapshot", str(out)],
         capture_output=True,
         text=True,
         encoding="utf-8",

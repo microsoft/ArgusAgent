@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from argus_skill.apps import tui_launcher
+from argus.apps import tui_launcher
 
 
 @pytest.fixture(autouse=True)
@@ -47,7 +47,10 @@ def launcher(monkeypatch, tmp_path):
         lambda _node: (22, 12, 0),
     )
     monkeypatch.setattr(tui_launcher, "_configure_tui_backend_bin", lambda: None)
-    monkeypatch.setattr(tui_launcher, "_export_tui_local_identity", lambda: None)
+    # The release identity shells out to git the first time it is asked; these
+    # tests replace subprocess.run, so answer it here instead of relying on an
+    # earlier test having warmed the cache.
+    monkeypatch.setattr(tui_launcher, "_tui_local_identity", lambda: {})
     return bundle
 
 

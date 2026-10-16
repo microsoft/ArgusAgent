@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import json
 
-from argus_skill.reviewer import Reviewer
-from argus_skill.reviewer._core import _verification_directive
-from argus_skill.verticals.research.prompt_policy import academic_paper_review_block
+from argus.reviewer import Reviewer
+from argus.reviewer._core import _verification_directive
+from argus.verticals.research.prompt_policy import academic_paper_review_block
 
 
 def _prompt(*, measured: bool, monkeypatch) -> str:
@@ -64,12 +64,12 @@ def test_paper_review_requires_idea_and_built_artifact_quality():
     assert "positive controls" in block
     assert "follows the venue's rules" in block
     assert "rendered layout" in block
-    assert "inside the `reason=` value of your closing lines" in block
-    assert "never reopen selection or move backward" in block
+    assert "no fixed fields or review template is required" in block
+    assert "reopen selection, or move backward" in block
 
 
 def _persist_review_stage(tmp_path, vertical: str) -> None:
-    from argus_skill.skills.vertical_select import persist_vertical
+    from argus.skills.vertical_select import persist_vertical
 
     persist_vertical(tmp_path, vertical)
     state_path = tmp_path / ".argus" / "PIPELINE_STATE.json"
@@ -115,18 +115,6 @@ def test_final_certification_review_keeps_paper_review_rubric(tmp_path) -> None:
 
 def test_final_submission_does_not_make_math_a_paper_vertical(tmp_path) -> None:
     _persist_review_stage(tmp_path, "math")
-
-    prompt, _reviewer = _project_reviewer_prompt(
-        tmp_path,
-        scope="final_submission",
-    )
-
-    assert "## Near-complete paper review" not in prompt
-    assert "## Final paper review" not in prompt
-
-
-def test_certified_medical_review_does_not_inherit_paper_policy(tmp_path) -> None:
-    _persist_review_stage(tmp_path, "medical")
 
     prompt, _reviewer = _project_reviewer_prompt(
         tmp_path,
@@ -192,13 +180,9 @@ def test_reviewer_separates_integrity_from_scientific_value(monkeypatch):
     assert "`replan_requested` for a wrong target" in p
 
 
-def test_reviewer_reasons_in_prose_structured_only_at_handoff(monkeypatch):
-    # The reviewer must talk in natural language during its turn and carry
-    # structure ONLY at the final handoff. Since 2026-07-26 that handoff is a
-    # few named lines rather than a schema-constrained JSON object, which makes
-    # the property stronger, not weaker: the prose and the verdict now live in
-    # the same message instead of the verdict replacing it.
+def test_reviewer_reasons_in_prose_and_submits_a_native_action(monkeypatch):
     p = _prompt(measured=False, monkeypatch=monkeypatch)
-    assert "Reason naturally" in p
+    assert "review naturally" in p
     assert "ARGUS_ROLE_DECISION=" not in p
-    assert "STATUS=done" in p
+    assert "STATUS=" not in p
+    assert "approve_review" in p

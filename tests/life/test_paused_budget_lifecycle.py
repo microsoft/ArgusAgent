@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
 import pytest
 
-from argus_skill.life.memory import BacklogItem, IllegalStateTransition, LifeMemory
-from argus_skill.life.supervisor import LifeBudget, LifeSupervisor, LifeSupervisorConfig
+from argus.life.memory import BacklogItem, IllegalStateTransition, LifeMemory
+from argus.life.supervisor import LifeBudget, LifeSupervisor, LifeSupervisorConfig
 
 
 class _Sink:
@@ -53,6 +54,21 @@ class _CompleteRunner:
         return _Outcome(success=True, status="done")
 
 
+class _ProviderFenceRunner:
+    def __init__(self) -> None:
+        self.usage_mission_ids: list[str] = []
+
+    def execute(self, **kwargs: Any) -> _Outcome:
+        self.usage_mission_ids.append(str(kwargs["usage_mission_id"]))
+        return _Outcome(
+            success=False,
+            status="paused_provider_fence",
+            stop_kind="provider_fence",
+            recoverable=True,
+            stop_reason="402 Payment Required: quota exhausted",
+        )
+
+
 def test_paused_budget_is_recoverable_with_fresh_usage_attempt(tmp_path) -> None:
     memory = LifeMemory.open(tmp_path / "life")
     runner = _PauseThenCompleteRunner()
@@ -66,7 +82,11 @@ def test_paused_budget_is_recoverable_with_fresh_usage_attempt(tmp_path) -> None
         ),
     )
     item = memory.backlog.add(
-        BacklogItem.new(title="research", objective="continue from checkpoint")
+        BacklogItem.new(
+            title="research",
+            objective="continue from checkpoint",
+            manager_decision={"routed": True, "vertical": "software"},
+        )
     )
 
     paused = supervisor.tick()
@@ -114,12 +134,62 @@ def test_budget_pause_backoff_never_starts_idle_timeout(tmp_path) -> None:
     assert supervisor._maybe_idle_timeout() == ""
 
 
+@pytest.mark.parametrize("cap", ["ARGUS_SKILL_COPILOT_DAILY_PREMIUM_CAP", "ARGUS_SKILL_COPILOT_DAILY_CALL_CAP"])
+def test_copilot_cap_holds_pause_without_new_attempts_until_cap_changes(tmp_path, monkeypatch, cap):
+    from argus.provider_integrations.copilot_guard import (
+        acquire_copilot_permit,
+        copilot_guard_snapshot,
+    )
+
+    monkeypatch.setenv("ARGUS_SKILL_HOME", str(tmp_path))
+    monkeypatch.setenv("ARGUS_SKILL_RUNNER_BACKEND", "copilot")
+    monkeypatch.setenv("ARGUS_SKILL_COPILOT_GUARD", "1")
+    monkeypatch.setenv(cap, "1")
+    permit = acquire_copilot_permit("engineer")
+    assert permit.allowed
+    permit.finish(premium_requests=1, success=True)
+    memory = LifeMemory.open(tmp_path / "projects" / "budget")
+    item = BacklogItem.new(title="keep existing progress", objective="finish", manager_decision={"routed": True, "vertical": "software"})
+    item.status = "paused_budget"
+    memory.backlog.add(item)
+    runner = _CompleteRunner()
+    supervisor = LifeSupervisor(
+        memory=memory, runner=runner, sink=_Sink(),
+        config=LifeSupervisorConfig(budget=LifeBudget(max_missions=2), poll_interval_seconds=0),
+    )
+    before = copilot_guard_snapshot()
+    for _ in range(3):
+        assert not supervisor._resume_automatic_pauses()
+        assert supervisor.run()["stopped_by"] == "global daily budget exhausted"
+        assert memory.backlog.all()[0].status == "paused_budget"
+        assert memory.backlog.all()[0].attempt == 1
+        assert not supervisor.config.budget.can_start(global_root=tmp_path)[0]
+    assert runner.calls == 0 and copilot_guard_snapshot() == before
+    monkeypatch.setenv(cap, "0")
+    resumed = supervisor._resume_automatic_pauses()
+    assert [(r.id, r.attempt) for r in resumed] == [(item.id, 2)]
+    assert supervisor.tick()["success"]
+    assert runner.calls == 1 and memory.backlog.all()[0].status == "done"
+
+
+def test_copilot_budget_does_not_block_a_different_configured_backend(tmp_path, monkeypatch):
+    from argus.provider_integrations.copilot_guard import acquire_copilot_permit
+
+    monkeypatch.setenv("ARGUS_SKILL_HOME", str(tmp_path))
+    monkeypatch.setenv("ARGUS_SKILL_COPILOT_GUARD", "1")
+    monkeypatch.setenv("ARGUS_SKILL_COPILOT_DAILY_CALL_CAP", "1")
+    permit = acquire_copilot_permit("engineer")
+    permit.finish(success=True)
+    monkeypatch.setenv("ARGUS_SKILL_RUNNER_BACKEND", "memory")
+    assert LifeBudget().can_start(global_root=tmp_path) == (True, "")
+
+
 @pytest.mark.parametrize(
     "status",
     [
         "paused_budget",
+        "paused_cost",
         "paused_provider_cooldown",
-        "paused_provider_fence",
         "paused_daemon_shutdown",
     ],
 )
@@ -128,7 +198,11 @@ def test_supervisor_auto_resumes_external_recoverable_pauses(
     status: str,
 ) -> None:
     memory = LifeMemory.open(tmp_path / "life")
-    item = BacklogItem.new(title="resume me", objective="continue")
+    item = BacklogItem.new(
+        title="resume me",
+        objective="continue",
+        manager_decision={"routed": True, "vertical": "software"},
+    )
     item.status = status
     memory.backlog.add(item)
     runner = _CompleteRunner()
@@ -151,9 +225,111 @@ def test_supervisor_auto_resumes_external_recoverable_pauses(
     assert summary["missions_run"] == 1
 
 
+@pytest.mark.parametrize("continuous", [False, True])
+def test_provider_fence_waits_across_passes_until_explicit_resume(
+    tmp_path,
+    monkeypatch,
+    continuous: bool,
+) -> None:
+    memory = LifeMemory.open(tmp_path / "life")
+    item = memory.backlog.add(BacklogItem.new(
+        title="quota held",
+        objective="continue from checkpoint",
+        manager_decision={"routed": True, "vertical": "software"},
+    ))
+    runner = _ProviderFenceRunner()
+    config = LifeSupervisorConfig(
+        poll_interval_seconds=0.0,
+        continuous=continuous,
+        continuous_objective="standing work" if continuous else "",
+    )
+
+    def no_planning(*_args, **_kwargs):
+        pytest.fail("a provider fence must not trigger another paid planning call")
+
+    monkeypatch.setattr(LifeSupervisor, "_plan_next_work", no_planning)
+    supervisor = LifeSupervisor(
+        memory=memory, runner=runner, sink=_Sink(), config=config,
+    )
+
+    first = supervisor.run()
+    assert first["stopped_by"] == "paused_provider_fence"
+    assert first["missions_run"] == 1
+    assert memory.backlog.all()[0].status == "paused_provider_fence"
+    for _ in range(3):
+        held = supervisor.run()
+        assert held["stopped_by"] == "paused_provider_fence"
+        assert held["missions_run"] == 0
+        assert held["suggested_sleep"] > 0
+        assert memory.backlog.all()[0].attempt == 1
+        assert runner.usage_mission_ids == [f"{item.id}:attempt:1"]
+
+    memory = LifeMemory.open(tmp_path / "life")
+    supervisor = LifeSupervisor(
+        memory=memory, runner=runner, sink=_Sink(), config=config,
+    )
+    assert supervisor.run()["stopped_by"] == "paused_provider_fence"
+    assert memory.backlog.all()[0].attempt == 1
+    resumed = memory.backlog.resume_all_paused()
+    assert [(row.id, row.attempt) for row in resumed] == [(item.id, 2)]
+    assert memory.backlog.resume_all_paused() == []
+
+    retried = supervisor.run()
+    assert retried["stopped_by"] == "paused_provider_fence"
+    assert retried["missions_run"] == 1
+    assert runner.usage_mission_ids == [
+        f"{item.id}:attempt:1",
+        f"{item.id}:attempt:2",
+    ]
+    held = supervisor.run()
+    assert held["stopped_by"] == "paused_provider_fence"
+    assert held["missions_run"] == 0
+    stored = memory.backlog.all()[0]
+    assert stored.status == "paused_provider_fence"
+    assert stored.attempt == 2
+    assert len(runner.usage_mission_ids) == 2
+
+
+def test_provider_fence_does_not_block_independent_ready_work(tmp_path) -> None:
+    memory = LifeMemory.open(tmp_path / "life")
+    held = BacklogItem.new(
+        title="quota held",
+        objective="wait for recovery",
+        manager_decision={"routed": True, "vertical": "software"},
+    )
+    held.status = "paused_provider_fence"
+    memory.backlog.add(held)
+    ready = memory.backlog.add(BacklogItem.new(
+        title="independent",
+        objective="finish independent work",
+        manager_decision={"routed": True, "vertical": "software"},
+    ))
+    runner = _CompleteRunner()
+    supervisor = LifeSupervisor(
+        memory=memory,
+        runner=runner,
+        sink=_Sink(),
+        config=LifeSupervisorConfig(poll_interval_seconds=0.0),
+    )
+
+    summary = supervisor.run()
+
+    stored = {item.id: item for item in memory.backlog.all()}
+    assert stored[held.id].status == "paused_provider_fence"
+    assert stored[held.id].attempt == 1
+    assert stored[ready.id].status == "done"
+    assert runner.calls == 1
+    assert summary["missions_run"] == 1
+    assert summary["stopped_by"] == "paused_provider_fence"
+
+
 def test_supervisor_does_not_auto_resume_operator_pause(tmp_path) -> None:
     memory = LifeMemory.open(tmp_path / "life")
-    item = BacklogItem.new(title="operator paused", objective="wait")
+    item = BacklogItem.new(
+        title="operator paused",
+        objective="wait",
+        manager_decision={"routed": True, "vertical": "software"},
+    )
     item.status = "paused_operator"
     memory.backlog.add(item)
     runner = _CompleteRunner()
@@ -170,3 +346,75 @@ def test_supervisor_does_not_auto_resume_operator_pause(tmp_path) -> None:
     assert stored.status == "paused_operator"
     assert runner.calls == 0
     assert summary["missions_run"] == 0
+
+
+@pytest.mark.parametrize("new_cap", ["0", "5"])
+def test_budget_change_resumes_original_task_without_rebuilding_supervisor(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    new_cap: str,
+) -> None:
+    from argus.core.knob_store import write_persisted_knob
+
+    monkeypatch.setenv("ARGUS_SKILL_HOME", str(tmp_path))
+    monkeypatch.delenv("ARGUS_SKILL_GLOBAL_DAILY_CAP_USD", raising=False)
+    monkeypatch.setattr(
+        "argus.life.supervisor._config.global_daily_spend",
+        lambda **_kwargs: 2.0,
+    )
+    assert write_persisted_knob("ARGUS_SKILL_GLOBAL_DAILY_CAP_USD", "1")
+    memory = LifeMemory.open(tmp_path / "projects" / "paper")
+    item = BacklogItem.new(
+        title="continue paper",
+        objective="revise current evidence",
+        manager_decision={"routed": True, "vertical": "software"},
+    )
+    item.status = "paused_budget"
+    memory.backlog.add(item)
+    runner = _CompleteRunner()
+    supervisor = LifeSupervisor(
+        memory=memory,
+        runner=runner,
+        sink=_Sink(),
+        config=LifeSupervisorConfig(
+            budget=LifeBudget(
+                global_daily_cap_usd=1.0,
+                max_missions=1,
+                follow_operator_config=True,
+            ),
+            poll_interval_seconds=0.0,
+        ),
+    )
+
+    assert supervisor._resume_automatic_pauses() == []
+    assert runner.calls == 0
+    assert write_persisted_knob("ARGUS_SKILL_GLOBAL_DAILY_CAP_USD", new_cap)
+
+    summary = supervisor.run()
+
+    stored = memory.backlog.all()
+    assert len(stored) == 1
+    assert stored[0].id == item.id
+    assert stored[0].status == "done"
+    assert stored[0].attempt == 2
+    assert runner.calls == 1
+    assert summary["missions_run"] == 1
+    assert supervisor.config.budget.global_daily_cap_usd == float(new_cap)
+
+
+def test_live_budget_keeps_explicit_environment_override(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ARGUS_SKILL_HOME", str(tmp_path))
+    monkeypatch.setenv("ARGUS_SKILL_GLOBAL_DAILY_CAP_USD", "1")
+    (tmp_path / "config.json").write_text(
+        json.dumps({"ARGUS_SKILL_GLOBAL_DAILY_CAP_USD": "0"}),
+    )
+    monkeypatch.setattr(
+        "argus.life.supervisor._config.global_daily_spend",
+        lambda **_kwargs: 2.0,
+    )
+    budget = LifeBudget(global_daily_cap_usd=0.0, follow_operator_config=True)
+
+    allowed, reason = budget.can_start(global_root=tmp_path)
+
+    assert allowed is False
+    assert "global daily budget exhausted" in reason

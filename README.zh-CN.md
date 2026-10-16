@@ -10,7 +10,7 @@
 
 让长期 Agent 能够规划、执行、验证、暂停，并在一次模型调用之后继续推进。
 
-**Argus v0.1.1 · 源码更新与桌面预览安装包是不同的安装渠道。**
+**Argus v0.1.6 · 源码更新与桌面预览安装包是不同的安装渠道。**
 
 [![GitHub Stars](https://img.shields.io/github/stars/lbx154/Argus?style=flat-square)](https://github.com/lbx154/Argus/stargazers)
 [![License](https://img.shields.io/github/license/lbx154/Argus?style=flat-square)](LICENSE)
@@ -30,6 +30,9 @@
 > **[microsoft/ArgusAgent](https://github.com/microsoft/ArgusAgent)**。
 > **[lbx154/Argus](https://github.com/lbx154/Argus)** 是开发预览仓库。
 > 开发更新通过同步进入官方仓库。从 `main` 安装源码，不等于安装已发布的桌面安装包。
+
+本仓库的 **`main` 是稳定源码分支**，**`dev` 是日常开发分支**。
+开发 PR 提交到 `dev`，经过审查和验证后再合入 `main`。详见[贡献说明](CONTRIBUTING.md)。
 
 ## Driver–Harness 模型
 
@@ -51,13 +54,24 @@
 
 它还能不重训就变强：被采纳的 Skill 和带来源链接的 Wiki 发现，会按"它被证明成立的范围"放进
 `project` → `vertical` → `global`；而新领域以 **vertical** 的形式接入一个不会改变的核心
-——目前 24 个，全部 53,871 行领域代码里对权限边界的引用为零。
+——内置 7 个，另有 17 个在社区包 [`argus-verticals`](https://github.com/Argus-AiTeam/argus-verticals) 中，
+全部领域代码里对权限边界的引用为零。
 
 正因为干活的人不能给自己打分，没有人需要盯着它：在 27 场战役、1,548 小时里，它平均**每约
 310 小时**才需要人做一次研究判断，占空比 **95–99%**。其余内容都在
 **[技术报告](https://arxiv.org/pdf/2608.05144)**里。
 
 **原生 Backend：** `GitHub Copilot CLI` · `Pi` · `OpenAI Codex CLI` · `Claude Code` · `Cursor CLI` · `OpenCode` · `Grok Build` · `Qoder` · `DeepSeek Harness`
+
+**Argus-Pi（可选试用）：** 我们也基于 [Pi](https://github.com/earendil-works/pi)
+维护了 [Argus-Pi](https://github.com/Argus-AiTeam/Argus-Pi)，主要做了少量面向
+Argus 任务的优化，包括任务提示、PDF 阅读以及执行与重试状态处理。当前提供源码
+预览版，欢迎按[试用步骤](#argus-pi-preview)体验；它不是必需依赖，也不影响继续使用其他后端。
+Argus 作为 Driver 负责调度、角色分配和任务生命周期；Argus-Pi 作为 Harness
+专注于模型和工具执行。
+
+普通 Pi 任务现已接入[项目工具自进化](docs/pi-runtime-learning.md)：在当前任务中
+生成、验证并使用可复用的 JSON 处理工具，再把 Skill 和 Wiki 留给后续任务，沿用当前任务预算。
 
 **Harbor 评测：** Harbor Framework 可以把完整的有界 Argus
 Manager/Planner/Engineer/Reviewer 运行时作为自定义 Agent 直接调用。配置和边界见
@@ -72,12 +86,12 @@ Manager/Planner/Engineer/Reviewer 运行时作为自定义 Agent 直接调用。
 
 ## 微信群
 
-扫码加入 Argus 交流群；点击图片可以查看原图。二维码有效期以图片中的提示为准；
-如果已经过期，请在 Issue 中联系维护者更新。
+扫码加入 Argus 交流群 2 群；点击图片可以查看原图。本次二维码在
+**2026 年 10 月 16 日前**有效（以图片提示为准）；过期后请在 Issue 中联系维护者更新。
 
 <p align="center">
-  <a href="docs/assets/argus-wechat-group-2.jpg?v=5fd55d09">
-    <img src="docs/assets/argus-wechat-group-2.jpg?v=5fd55d09" width="360" alt="Argus 微信交流 2 群二维码">
+  <a href="docs/assets/argus-wechat-group-2.png?v=20261009">
+    <img src="docs/assets/argus-wechat-group-2.png?v=20261009" width="360" alt="Argus 微信交流 2 群二维码">
   </a>
 </p>
 
@@ -107,6 +121,105 @@ Manager/Planner/Engineer/Reviewer 运行时作为自定义 Agent 直接调用。
 | Grok Build | `grok` | [官方安装说明](https://x.ai/cli) | `grok login` |
 | Qoder CLI | `qoder` | `npm install -g @qoder-ai/qodercli` | `qodercli login` |
 | DeepSeek Harness | `dsh` | `npm install -g @deepseek-ai/dsh` | 配置 `DEEPSEEK_API_KEY` 或 dsh Models 页面 |
+
+**给 Argus 配置独立 Copilot 账号：**运行
+`argus --setup --backend copilot --copilot-home "$HOME/.copilot-argus" --copilot-login`。
+通过浏览器登录目标账号，setup 成功后重启已有 Argus 进程；之后普通启动即使用该后端账号，
+不改变当前终端或外层 Agent 的登录。详见[账号绑定、优先级与恢复默认](docs/agent-install.md#dedicated-copilot-account)。
+
+**研究 Trace：**默认保留 Copilot 会话；显式启用会话回收或原始 I/O 轮转时，
+先保存并校验压缩归档，再回收在线文件。归档不会自动到期删除，请在设置中查看
+实际保留策略并关注磁盘空间，详见 [Trace 保留与导出](docs/trace-retention.zh-CN.md)。
+
+<a id="argus-pi-preview"></a>
+<details>
+<summary><strong>试用 Argus-Pi：安装、接入与回退</strong></summary>
+
+本流程假设已经安装 Argus，并准备好 Git、Node.js **22.19+** 和 npm。
+Argus-Pi 当前是**源码预览版**，尚无单独发布的 npm 包或桌面安装包；
+安装原版 Pi 的 npm 包不会安装 Argus-Pi。
+
+**1. 在新终端中单独构建。** 请逐条执行，上一条成功后再继续，不覆盖已有的全局 Pi。
+
+```bash
+git clone --branch main https://github.com/Argus-AiTeam/Argus-Pi.git
+cd Argus-Pi
+npm ci --ignore-scripts
+npm run hydrate:model-data
+npm run build:offline
+npm rebuild --workspace=@earendil-works/pi-coding-agent --ignore-scripts
+node packages/coding-agent/dist/bundle/cli.js --version
+node packages/coding-agent/dist/bundle/cli.js --list-models
+```
+
+默认复用 `~/.pi/agent` 中的 Pi 认证。尚未登录时，运行
+`node packages/coding-agent/dist/bundle/cli.js`，执行 `/login` 后退出。
+选择账户实际可用的模型，并带上 provider 前缀。列出模型不等于推理已成功，
+下面的 setup 会进行真实回合验收。不要把密钥贴进任务或 Issue。
+如果也想隔离 Pi 自身的配置，请在登录前及整个试用期间设置 `PI_CODING_AGENT_DIR`。
+
+**2. 配置当前试用终端。** 保持在刚才的源码目录根部，设置以下临时环境变量，将
+**`provider/model`** 替换为选好的模型。如果原来设置了每角色的 backend、model
+或 runner 环境覆盖，先在该终端清除，否则可能优先于通用配置。
+不要把这些试用设置写入 shell 启动文件或系统持久环境变量。
+
+macOS / Linux：
+
+```bash
+export ARGUS_SKILL_HOME="$HOME/.argus-pi-preview"
+export ARGUS_SKILL_RUNNER_BACKEND=pi
+export ARGUS_SKILL_RUNNER_BIN="$PWD/node_modules/.bin/argus-pi"
+export ARGUS_SKILL_MODEL="provider/model"
+"$ARGUS_SKILL_RUNNER_BIN" --version
+mkdir -p "$HOME/argus-pi-preview-workspace"
+cd "$HOME/argus-pi-preview-workspace"
+git init -q
+```
+
+Windows PowerShell：
+
+```powershell
+$env:ARGUS_SKILL_HOME = "$HOME\.argus-pi-preview"
+$env:ARGUS_SKILL_RUNNER_BACKEND = "pi"
+$env:ARGUS_SKILL_RUNNER_BIN = (Resolve-Path ".\node_modules\.bin\argus-pi.cmd" -ErrorAction Stop).Path
+$env:ARGUS_SKILL_MODEL = "provider/model"
+& $env:ARGUS_SKILL_RUNNER_BIN --version
+New-Item -ItemType Directory -Force "$HOME\argus-pi-preview-workspace" | Out-Null
+Set-Location "$HOME\argus-pi-preview-workspace"
+git init -q
+```
+
+请使用新的空目录，不要拿正式项目或 Argus-Pi 源码目录做试用工作区。
+Backend 名称仍是 **`pi`**，通过明确的可执行文件路径选择定制版。
+独立的 Argus 状态目录将试用配置、任务记录与正式环境分开，但这**不是文件系统沙箱**。
+
+**3. 验证后启动。** 在同一终端、同一试用工作目录中逐条执行，任何一步报错就停止：
+
+```bash
+argus --setup --backend pi --non-interactive
+argus --backend pi doctor --deep --advisor none
+argus --config-help
+argus
+```
+
+确认 `ARGUS_SKILL_RUNNER_BIN` 指向刚构建的 Argus-Pi，再尝试一个仅在试用目录内
+执行的小型、可逆任务。setup、深度诊断和任务都可能消耗所选模型服务的额度或产生费用；
+“试用”指软件预览，并不代表免费推理。
+
+**4. 停止并回退。** 退出界面后，保持试用终端的环境变量和工作目录，执行：
+
+```bash
+argus --daemon-stop --drain
+argus --status
+```
+
+确认试用 daemon 已停止，再关闭这个终端，在新终端里按原来的方式启动 Argus。
+如果已经关闭试用终端，先重新设置试用的 `ARGUS_SKILL_HOME` 并进入试用工作目录，
+再执行停止命令；仅关闭终端不一定会停止后台任务。
+不需要卸载原版 Pi，也不必删除试用记录。
+`PI_HARNESS_PROFILE=stock` 只是切换定制版内部的兼容行为，**不等于换回原版可执行文件**。
+
+</details>
 
 **先选安装渠道。**下面命令直接从 GitHub 安装官方源码仓库的 `main`，不依赖 PyPI。
 如果明确要体验开发预览版，请把对应平台安装和更新命令中的 `microsoft/ArgusAgent`
@@ -143,7 +256,7 @@ Agent 将遵循 **[安装执行规范](docs/agent-install.md)**。
 py --version
 node --version
 py -m pip install --upgrade pip
-py -m pip install --upgrade --force-reinstall "argus-skill @ https://github.com/microsoft/ArgusAgent/archive/refs/heads/main.zip"
+py -m pip install --upgrade --force-reinstall "argus @ https://github.com/microsoft/ArgusAgent/archive/refs/heads/main.zip"
 $Scripts = py -c "import sysconfig; print(sysconfig.get_path('scripts'))"
 $Argus = Join-Path $Scripts "argus.exe"
 if (-not (Test-Path $Argus)) { throw "Argus entry point not found at $Argus" }
@@ -177,7 +290,7 @@ Windows 当前支持安装、Manager 对话、配对、Web/TUI、终端作用域
 uv --version
 node --version
 uv tool install --force --python 3.12 \
-  "argus-skill @ https://github.com/microsoft/ArgusAgent/archive/refs/heads/main.zip"
+  "argus @ https://github.com/microsoft/ArgusAgent/archive/refs/heads/main.zip"
 ARGUS_BIN="$(uv tool dir --bin)/argus"
 test -x "$ARGUS_BIN"
 "$ARGUS_BIN" --version
@@ -319,6 +432,14 @@ argus --web
 
 首选地址：[http://127.0.0.1:8799](http://127.0.0.1:8799)；被占用时会自动顺延。
 
+研究地图区分任务历史与项目交付：审查器故障显示为“当次审查异常”，不代表科学否决。
+后续最终审稿通过后，地图提供审稿任务与项目成果入口，保留旧异常记录，不把旧任务改成成功。
+已通过审阅的中间任务仍计为完成，不因当时项目尚未结束而降为未完成。
+地图卡片的标题、摘要、状态和阶段信息使用固定排版，随画布一起缩放，不再按缩放比例自动折叠或替换文字；任务展开和历史切换仍保留。
+
+Reviewer 通过原生工具动作提交通过、返修、等待、操作员决策或计划调整，审稿正文自由表达，不解析 `STATUS`、JSON 或关键词，也不额外调用模型转译。
+等待后台实验不等于审查失败；最终论文仍须达到所选会议的验收标准。工具动作通道支持 Pi、Copilot、Codex 和 Claude/Qoder；不支持的后端明确报错，不回退到文本解析。
+
 ```bash
 argus --web --web-port 8800  # 使用其他端口
 ```
@@ -364,7 +485,7 @@ Telegram、飞书 / Lark 和网页版都可以在手机上使用。两个聊天�
 
 ```bash
 # 飞书 / Lark —— WebSocket 长连接，无需配置请求地址
-pip install 'argus-skill[feishu]'
+pip install 'argus[feishu]'
 export ARGUS_SKILL_ENABLE_FEISHU=1
 export ARGUS_SKILL_FEISHU_APP_ID=cli_xxx ARGUS_SKILL_FEISHU_APP_SECRET=xxx
 
@@ -410,7 +531,32 @@ export ARGUS_SKILL_AUTONOMY_MODE=autonomous
 
 后续的 **[架构精简规划](docs/architecture-simplification-plan.md)** 把普通工程短链与完整研究团队分开，设计由 Host 生成的单一任务上下文，并规划兼容优先的 Vertical 拆库路径。
 
+维护者可从 **[Runtime 维护地图与重构任务](docs/runtime-maintainability.md)** 查找代码入口、状态所有权、恢复边界和当前分批任务。
+
 由那份审计推出的是 **[精简计划](docs/simplification-plan.zh-CN.md)**：一组排好序的删除、一条用来机械分拣 2,277 个异常处理器的判据、一份明确的"不能删"清单，以及要避开的陷阱——把删掉的机械换成一个"统一系统"，那会变成同一个错误。
+
+### Verticals
+
+Argus 本体内置 7 个 vertical：`research`、`software`、`argus_maintenance`、`kernel_engineering`、
+`math`、`math_synth`、`learning`。其余 17 个——`quant`、`speedrun`、`kernelbench`、`nanochat`、
+`nanogpt_speedrun`、`chip_design`、`digital_circuit`、`digital_circuit_benchmark`、`medical`、
+`materials`、`physics`、`ale_last_exam`、`fiction_writing`、`prose`、`modern_poetry`、
+`classical_poetry`、`literary_editor`——放在社区仓库
+**[argus-verticals](https://github.com/Argus-AiTeam/argus-verticals)**。
+**Vertical Store（垂直商店）**从该仓库的 release 逐个安装它们，不用 `pip`：在 cockpit 的
+Verticals 页面，或者命令行：
+
+```bash
+argus verticals list                       # 内置、已安装、可安装的 vertical
+argus verticals install materials          # 下载、校验 sha256、解包到 ~/.argus-skill/verticals
+argus verticals install chip_design        # 会连带装上它 requires 的 digital_circuit
+argus verticals remove chip_design         # digital_circuit 保留
+```
+
+商店会列出每个 vertical 的 Python 依赖并标出缺失的，但不会代为安装。磁盘布局、托管模式与
+API 见 **[docs/vertical-store.md](docs/vertical-store.md)**（英文）。整包仍可用 pip 装进运行
+Argus 的 Python 环境（`pip install "argus-verticals @ git+https://github.com/Argus-AiTeam/argus-verticals.git"`）；
+同名 vertical 以 pip 装的那份为准。无论哪种方式，`git pull` Argus 都不会安装社区 vertical。
 
 ### 创建自己的 Vertical
 
@@ -465,7 +611,7 @@ Linux 源码安装执行 `"$HOME/Argus/.venv/bin/argus" update`。
 Windows 首次引导更新：
 
 ```powershell
-py -m pip install --upgrade --force-reinstall "argus-skill @ https://github.com/microsoft/ArgusAgent/archive/refs/heads/main.zip"
+py -m pip install --upgrade --force-reinstall "argus @ https://github.com/microsoft/ArgusAgent/archive/refs/heads/main.zip"
 $Argus = Join-Path (py -c "import sysconfig; print(sysconfig.get_path('scripts'))") "argus.exe"
 & $Argus --version
 & $Argus doctor --advisor none --verify
@@ -475,7 +621,7 @@ macOS 首次引导更新：
 
 ```bash
 uv tool install --force --python 3.12 \
-  "argus-skill @ https://github.com/microsoft/ArgusAgent/archive/refs/heads/main.zip"
+  "argus @ https://github.com/microsoft/ArgusAgent/archive/refs/heads/main.zip"
 "$(uv tool dir --bin)/argus" --version
 "$(uv tool dir --bin)/argus" doctor --advisor none --verify
 ```
@@ -497,16 +643,56 @@ git -C "$HOME/Argus" pull --ff-only
 打包的 Desktop EXE 使用独立的桌面签名更新渠道。CLI 更新器不会替换签名 EXE，
 参见 [Windows Desktop](docs/windows-desktop.md)。
 
+## 重命名:argus-skill → argus
+
+2026-09-14 起,Python 包 `argus_skill` 改名为 `argus`,pip 发行名 `argus-skill` 改为 `argus`,
+命令 `argus-skill` 并入 `argus`。`argus` 原本就是驾驭舱启动器,它的管理参数与子命令
+(`argus --status`、`argus doctor`、`argus --daemon`、`argus --web --web-host H --web-port P` 等)
+现在走 Python 命令行;任务启动与守护进程客户端参数(`--objective`、`--resume`、`--continue`、`--new`、
+`--drain`、`--trial`、`--json`、`--host/--port`)仍属于驾驭舱。无人值守的自动化请用 `python -m argus ...`:
+纯命令行,不会启动 Node 驾驭舱。
+
+**没有变的东西。** 所有 `ARGUS_SKILL_*` 环境变量与 knob(`~/.argus-skill/config.json` 里的键)、
+状态根目录 `~/.argus-skill`(项目、种子技能、日志)、Web API 的 `argus-skill-webapi` 服务标识,
+以及其它磁盘标记(`/tmp/argus-skill-role-slots`、`~/argus-skill-tasks`、`~/.local/share/argus-skill` 等)。
+`~/.argus-skill` 下的任何内容都不需要搬。
+
+**保留一个发布周期。** `import argus_skill` 与 `import argus` 是同一个包对象(两文件别名,不是副本),
+`python -m argus_skill ...` 运行同样的模块,`argus-skill` 命令仍然存在(stderr 打一行弃用提示),
+旧名字启动的 teammate 与 trial 容器仍被识别,注册在旧 entry-point 组下的社区垂直仍会被发现(带 warning)。
+
+**迁移已有安装。** 先卸载旧发行再装新发行,然后重启正在运行的守护进程或 `--web` 服务:
+
+```bash
+# 可编辑 checkout(Linux / macOS venv)
+"$HOME/Argus/.venv/bin/python" -m pip uninstall -y argus-skill && "$HOME/Argus/.venv/bin/python" -m pip install -e "$HOME/Argus"
+```
+
+```bash
+# macOS uv tool
+uv tool uninstall argus-skill
+uv tool install --force --python 3.12 \
+  "argus @ https://github.com/microsoft/ArgusAgent/archive/refs/heads/main.zip"
+```
+
+对仍叫 `argus-skill` 的 pip 安装,`argus update` 会自己先卸载;旧名字的 `uv tool` 环境会被拒绝并给出
+上面两条命令。PyPI 上的 `argus` 属于一个不相关的项目:Argus 一直从 Git 安装,与本文其它章节一致。
+
+升级后立刻启动的驾驭舱可能还会连到旧 `argus-skill` 启动的 Web API。驾驭舱把同一 venv 里的 `argus` 与
+`argus-skill` 视为同一个后端,所以原有的 ownership 记录仍然有效;如果它仍报
+`incompatible Argus API at <host>:<port>: ... — ownership could not be proven`,请停掉旧的 `--web` 后端
+(PID 记在 `~/.argus-skill/runtime/webapi-<host>-<port>.owner.json` 里,`kill <pid>`),或换一个端口启动驾驭舱。
+
 ## 卸载
 
 ```powershell
 # Windows
-py -m pip uninstall argus-skill
+py -m pip uninstall argus
 ```
 
 ```bash
 # macOS
-uv tool uninstall argus-skill
+uv tool uninstall argus
 ```
 
 Linux 请先停止 Argus、保留所需工作，再删除 `$HOME/Argus` checkout 及其中的
@@ -515,11 +701,11 @@ Linux 请先停止 Argus、保留所需工作，再删除 `$HOME/Argus` checkout
 
 ## 安装排障
 
-- `unresolved provider cost` 表示费用尚未核对完整，不代表登录失败或余额不足。
-  Argus 会在新调用前重新核对 Copilot 迟到或部分上报的费用，包括旧版对账缓存留下的记录；
-  其他 token 记录中的模型已有定价且 token 数量完整时，
-  会补齐待定费用。未知价格或缺失用量仍会阻止调用，不会被当作免费。
-  请查看报错中的 provider、model 和原因，以及 Argus 数据目录的 `cost-control.json`
+- 未知价格或缺失用量会保留展示并继续对账，不会单独阻止新调用或中断运行中的调用，
+  也不会被当作免费。Argus 会重新核对 Copilot 迟到或部分上报的费用；
+  其他 token 记录中的模型已有定价且 token 数量完整时，会补齐待定费用。
+  已知结算费用与运行中观测到的费用仍受全局日预算限制，后端速率限额和试用密钥的服务端额度仍有效。
+  请查看待对账记录中的 provider、model 和原因，以及 Argus 数据目录的 `cost-control.json`
   和对应项目的 `usage.jsonl`，不要删除账本。诊断命令应在终端运行，不要直接发到 Web 聊天框。
 
 - PowerShell 用 `Get-Command argus -All`，macOS/Linux 用 `type -a argus`
@@ -537,6 +723,22 @@ Linux 请先停止 Argus、保留所需工作，再删除 `$HOME/Argus` checkout
 - `argus doctor --advisor none --verify` 只做确定性诊断；需要本机 Agent 直接检查和
   修复 Argus 时，明确使用 `argus doctor --advisor auto`。
 - 用 `argus --config-help` 检查实际 backend/model，再判断 setup 或鉴权是否失败。
+
+## 仓库布局
+
+- `argus/` —— Python 包本体；`argus`、`argus` 与守护进程运行的全部代码。
+- `argus/core/`、`proof_ledger/` —— 内核：模型、端口、契约、路径。目标是叶子：不得 import 任何更高层；今天残余的向上边钉在不变量测试（`tests/test_architecture_invariants.py`）里，第 1 阶段移除。
+- `argus/agent_cli/`、`adapters/`、`provider_integrations/`、`advisor/` —— 模型 CLI（codex、claude、copilot……）的驱动与外部顾问侧信道。
+- `argus/skills/`、`tools/`、`wiki/`、`cli/` —— 能力：Skill 库、操作者批准的工具、项目 Wiki、终端渲染。
+- `argus/verticals/`、`domains/`、`builtin_skills/` —— 领域知识：7 个内置垂直（另外 17 个由 `argus-verticals` 以 entry point 接入）、overlay、种子 Skill。
+- `argus/roles/`、`planner/`、`engineer/`、`reviewer/` —— 持久角色：提示词目录（`roles/`）加 Planner、Engineer、Reviewer 的代码（Manager 的代码在 `manager/`）。
+- `argus/life/`、`manager/`、`messaging/` —— 运行时：项目记忆、backlog、supervisor、Manager 控制面与跨项目消息。
+- `argus/daemon/`、`team/` —— 脱离终端的 7x24 worker 与 Agent Teams。
+- `argus/apps/`、`webapi/`、`plugin/`、`maintenance/`、`trial/` —— 交付面：CLI、Web API、宿主插件、Doctor、托管试用。
+- `frontend/` —— Ink 终端 cockpit（`tui`）、React Web cockpit（`web`）、共享 TypeScript（`core`）。
+- `desktop-tauri/` —— Tauri 桌面壳（发布 Windows 版；CI 四个目标）；`plugins/` —— 可安装的宿主插件；`tests/` —— pytest 测试。
+
+完整地图与声明的分层见 [docs/LAYOUT.md](docs/LAYOUT.md)。
 
 ## Argus 目前取得的成果
 

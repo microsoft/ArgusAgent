@@ -1,29 +1,26 @@
 import {
-  startTransition,
   useCallback,
   useEffect,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
-import { type ThemeMode } from './components/TopBar';
+import { useWorkbenchTheme } from './useWorkbenchTheme';
 import { readLocalStorage, writeLocalStorage } from './lib/storage';
-import {
-  readThemeStyle,
-  THEME_STYLE_STORAGE_KEY,
-  type ThemeStyle,
-} from './lib/themePreference';
+import { preferredPreviewWidth, PREVIEW_DEFAULT_WIDTH, PREVIEW_MAX_WIDTH } from './lib/previewLayout';
+
+type WorkspaceView = 'mission' | 'activity' | 'workbench' | 'map';
+const WORKSPACE_VIEWS: readonly WorkspaceView[] = ['mission', 'activity', 'workbench', 'map'];
+// Start existing workspaces on the map once, then remember explicit choices.
+const WORKSPACE_VIEW_KEY = 'argus.workspace.view.v3';
+
+function isWorkspaceView(value: string | null): value is WorkspaceView {
+  return WORKSPACE_VIEWS.includes(value as WorkspaceView);
+}
 
 function storedBoolean(key: string, fallback: boolean): boolean {
   const value = readLocalStorage(key);
   return value == null ? fallback : value === 'true';
-}
-
-function publishThemeMode(themeMode: ThemeMode): void {
-  document.documentElement.dataset.theme = themeMode;
-  if (window.parent !== window) {
-    window.parent.postMessage({ type: 'argus:theme-changed', payload: themeMode }, '*');
-  }
 }
 
 export function useWorkbenchLayout() {
@@ -34,83 +31,54 @@ export function useWorkbenchLayout() {
   const [showReasoning, setShowReasoning] = useState(
     () => storedBoolean('argus.reasoning.visible.v1', false),
   );
-  const [workspaceView, setWorkspaceView] = useState<'mission' | 'activity' | 'workbench' | 'map'>(
-    () => {
-      const requested = params.get('view');
-      if (requested === 'mission' || requested === 'activity' || requested === 'workbench' || requested === 'map') return requested;
-      const stored = readLocalStorage('argus.workspace.view');
-      return stored === 'mission' || stored === 'activity' || stored === 'workbench' || stored === 'map' ? stored : 'map';
-    },
-  );
+  const [workspaceView, setWorkspaceViewState] = useState<WorkspaceView>(() => {
+    const requested = params.get('view');
+    if (isWorkspaceView(requested)) return requested;
+    const stored = readLocalStorage(WORKSPACE_VIEW_KEY);
+    return isWorkspaceView(stored) ? stored : 'map';
+  });
+  const setWorkspaceView = useCallback((view: WorkspaceView) => {
+    writeLocalStorage(WORKSPACE_VIEW_KEY, view);
+    setWorkspaceViewState(view);
+  }, []);
   const [mobileView, setMobileView] = useState<'activity' | 'preview'>('activity');
-  const [rightPanelOpen, setRightPanelOpen] = useState(() => storedBoolean('argus.preview.expanded.v5', true));
+  const [rightPanelOpen, setRightPanelOpen] = useState(() => storedBoolean('argus.preview.expanded.v6', false));
   const [leftWidth, setLeftWidth] = useState(() => {
     const value = Number(readLocalStorage('argus.sidebar.width.v2') || 256);
     return Number.isFinite(value) ? Math.max(220, Math.min(400, value)) : 256;
   });
   const [rightWidth, setRightWidth] = useState(() => {
-    const value = Number(readLocalStorage('argus.preview.width.v2') || 440);
-    return Number.isFinite(value) ? Math.max(320, Math.min(600, value)) : 440;
+    const value = Number(readLocalStorage('argus.preview.width.v2') || PREVIEW_DEFAULT_WIDTH);
+    return Number.isFinite(value) ? Math.max(320, Math.min(PREVIEW_MAX_WIDTH, value)) : PREVIEW_DEFAULT_WIDTH;
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [leftPanelOpen, setLeftPanelOpen] = useState(() => storedBoolean('argus.sidebar.expanded.v4', true));
-  const [manualTheme, setManualTheme] = useState<ThemeMode | null>(() => {
-    const stored = readLocalStorage('argus.theme');
-    return stored === 'light' || stored === 'dark' ? stored : null;
-  });
-  const [themeStyle, setThemeStyleState] = useState<ThemeStyle>(readThemeStyle);
-  const [systemDark, setSystemDark] = useState(
-    () => window.matchMedia('(prefers-color-scheme: dark)').matches,
-  );
-  const themeMode: ThemeMode = manualTheme ?? (systemDark ? 'dark' : 'light');
-  const themeModeRef = useRef(themeMode);
+  const { themeMode, themeStyle, cycleTheme } = useWorkbenchTheme();
   const shellRef = useRef<HTMLDivElement>(null);
   const resizeFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
     writeLocalStorage('argus.sidebar.expanded.v4', String(leftPanelOpen));
-    writeLocalStorage('argus.preview.expanded.v5', String(rightPanelOpen));
+    writeLocalStorage('argus.preview.expanded.v6', String(rightPanelOpen));
     writeLocalStorage('argus.sidebar.width.v2', String(leftWidth));
     writeLocalStorage('argus.preview.width.v2', String(rightWidth));
   }, [leftPanelOpen, leftWidth, rightPanelOpen, rightWidth]);
 
   useEffect(() => {
-    writeLocalStorage('argus.workspace.view', workspaceView);
-  }, [workspaceView]);
-
-  useEffect(() => {
     writeLocalStorage('argus.reasoning.visible.v1', String(showReasoning));
   }, [showReasoning]);
 
-  useEffect(() => {
-    const media = window.matchMedia('(prefers-color-scheme: dark)');
-    const syncSystemTheme = () => setSystemDark(media.matches);
-    syncSystemTheme();
-    media.addEventListener('change', syncSystemTheme);
-    return () => media.removeEventListener('change', syncSystemTheme);
-  }, []);
-
-  useEffect(() => {
-    themeModeRef.current = themeMode;
-    publishThemeMode(themeMode);
-  }, [themeMode]);
-
-  useEffect(() => {
-    document.documentElement.dataset.themeStyle = themeStyle;
-  }, [themeStyle]);
-
-  const cycleTheme = useCallback(() => {
-    const next = themeModeRef.current === 'light' ? 'dark' : 'light';
-    themeModeRef.current = next;
-    publishThemeMode(next);
-    writeLocalStorage('argus.theme', next);
-    startTransition(() => setManualTheme(next));
-  }, []);
-
-  const setThemeStyle = useCallback((next: ThemeStyle) => {
-    setThemeStyleState(next);
-    writeLocalStorage(THEME_STYLE_STORAGE_KEY, next);
-  }, []);
+  const openPreview = useCallback(() => {
+    setRightPanelOpen(true);
+    setMobileView('preview');
+    const width = shellRef.current?.clientWidth ?? window.innerWidth;
+    // Mobile already dedicates a full screen to reading. Desktop grows only
+    // on an explicit open action, never on a background query refresh.
+    if (width >= 1024) {
+      const preferred = preferredPreviewWidth(width, leftWidth, leftPanelOpen);
+      setRightWidth((current) => Math.max(current, preferred));
+    }
+  }, [leftPanelOpen, leftWidth]);
 
   const resizeSidebar = useCallback((
     side: 'left' | 'right',
@@ -126,12 +94,12 @@ export function useWorkbenchLayout() {
     document.body.style.userSelect = 'none';
     const move = (pointer: PointerEvent) => {
       if (side === 'left') {
-        const occupiedRight = rightPanelOpen ? rightWidth + 8 : 56;
+        const occupiedRight = rightPanelOpen ? rightWidth + 8 : 0;
         const max = Math.max(220, Math.min(400, rect.width - occupiedRight - 360 - 8));
         pendingWidth = Math.max(220, Math.min(max, pointer.clientX - rect.left));
       } else {
         const occupiedLeft = leftPanelOpen ? leftWidth + 8 : 56;
-        const max = Math.max(320, Math.min(600, rect.width - occupiedLeft - 360 - 8));
+        const max = Math.max(320, Math.min(PREVIEW_MAX_WIDTH, rect.width - occupiedLeft - 360 - 8));
         pendingWidth = Math.max(320, Math.min(max, rect.right - pointer.clientX));
       }
       if (resizeFrameRef.current != null) return;
@@ -169,7 +137,7 @@ export function useWorkbenchLayout() {
       if (window.innerWidth < 1024 || !shellRef.current) return;
       const shellWidth = shellRef.current.clientWidth;
       const left = leftPanelOpen ? leftWidth : 56;
-      const right = rightPanelOpen ? rightWidth : 56;
+      const right = rightPanelOpen ? rightWidth : 0;
       const handles = (leftPanelOpen ? 8 : 0) + (rightPanelOpen ? 8 : 0);
       const availableForSides = Math.max(540, shellWidth - 360 - handles);
       if (left + right <= availableForSides) return;
@@ -196,6 +164,7 @@ export function useWorkbenchLayout() {
     leftPanelOpen,
     leftWidth,
     mobileView,
+    openPreview,
     resizeSidebar,
     rightPanelOpen,
     rightWidth,
@@ -207,7 +176,6 @@ export function useWorkbenchLayout() {
     setRightWidth,
     setShowReasoning,
     setSidebarOpen,
-    setThemeStyle,
     setWorkspaceView,
     shellRef,
     showReasoning,

@@ -11,10 +11,10 @@ from typing import Any
 
 import pytest
 
-import argus_skill.daemon.life_worker as life_worker_mod
-import argus_skill.daemon.state as daemon_state
-from argus_skill.daemon.config import LifeWorkerConfig
-from argus_skill.daemon.life_worker import LifeWorker
+import argus.daemon.life_worker as life_worker_mod
+import argus.daemon.state as daemon_state
+from argus.daemon.config import LifeWorkerConfig
+from argus.daemon.life_worker import LifeWorker
 
 _STARTED = "2026-08-13T08:00:00+00:00"
 
@@ -90,11 +90,17 @@ def test_worker_consumes_pid_bound_stop_without_console_signal(
     )
     worker = LifeWorker(LifeWorkerConfig(life_dir=tmp_path))
 
-    worker._install_signal_handlers()
-    assert worker._stop.wait(timeout=2.0)
-    assert worker._operator_stop_requested is True
-    assert worker._mission_stop.is_set() is mission_interrupted
-    assert signal.SIGTERM in handlers
+    try:
+        worker._install_signal_handlers()
+        assert worker._stop.wait(timeout=2.0)
+        assert worker._operator_stop_requested is True
+        assert worker._mission_stop.is_set() is mission_interrupted
+        assert signal.SIGTERM in handlers
+    finally:
+        worker._mission_stop.set()
+        if worker._control_thread is not None:
+            worker._control_thread.join(timeout=2.0)
+            assert not worker._control_thread.is_alive()
 
 
 def test_worker_upgrades_drain_request_to_immediate_interrupt(
@@ -119,19 +125,25 @@ def test_worker_upgrades_drain_request_to_immediate_interrupt(
         drain=True,
     )
     worker = LifeWorker(LifeWorkerConfig(life_dir=tmp_path))
-    worker._install_signal_handlers()
+    try:
+        worker._install_signal_handlers()
 
-    assert worker._stop.wait(timeout=2.0)
-    assert worker._mission_stop.is_set() is False
+        assert worker._stop.wait(timeout=2.0)
+        assert worker._mission_stop.is_set() is False
 
-    daemon_state.request_daemon_control_stop(
-        tmp_path,
-        pid=os.getpid(),
-        started_at_iso=_STARTED,
-        drain=False,
-    )
+        daemon_state.request_daemon_control_stop(
+            tmp_path,
+            pid=os.getpid(),
+            started_at_iso=_STARTED,
+            drain=False,
+        )
 
-    assert worker._mission_stop.wait(timeout=2.0)
+        assert worker._mission_stop.wait(timeout=2.0)
+    finally:
+        worker._mission_stop.set()
+        if worker._control_thread is not None:
+            worker._control_thread.join(timeout=2.0)
+            assert not worker._control_thread.is_alive()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows signal semantics")

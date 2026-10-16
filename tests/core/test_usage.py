@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from argus_skill.core.token_usage import TokenUsage, extract_token_usage
-from argus_skill.core.usage import (
+from argus.core.token_usage import TokenUsage, extract_token_usage
+from argus.core.usage import (
     UsageLedger,
     UsageRecord,
     build_usage_record,
@@ -19,9 +19,9 @@ from argus_skill.core.usage import (
     project_usage_summary,
     usage_recorded_event,
 )
-from argus_skill.life.supervisor import global_daily_spend
-from argus_skill.life.supervisor._cost import _CostTrackingSink
-from argus_skill.webapi.server import _settled_spend
+from argus.life.supervisor import global_daily_spend
+from argus.life.supervisor._cost import _CostTrackingSink
+from argus.webapi.project_state import settled_spend as _settled_spend
 
 
 class _Sink:
@@ -44,11 +44,23 @@ def _known_usage(*, input_tokens: int, output_tokens: int) -> TokenUsage:
     )
 
 
+def _record(**overrides) -> UsageRecord:
+    defaults = dict(
+        mission_id="mission-1",
+        model="gpt-5.6-sol",
+        run_label="engineer-r1",
+        started_at=1.0,
+        completed_at=2.0,
+        status="completed",
+    )
+    return build_usage_record(**(defaults | overrides))
+
+
 def test_usage_process_caches_are_bounded(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    from argus_skill.core import usage
+    from argus.core import usage
 
     monkeypatch.setattr(usage, "_CALL_ID_CACHE_MAX_PROJECTS", 2)
     monkeypatch.setattr(usage, "_CALL_ID_CACHE_MAX_IDS", 2)
@@ -112,16 +124,10 @@ def test_real_copilot_fixture_preserves_matcher_and_scientist_output_tokens(
 def test_usage_ledger_is_idempotent_by_call_id(tmp_path: Path) -> None:
     project = tmp_path / "projects" / "p1"
     ledger = UsageLedger(project, migrate_legacy=False)
-    record = build_usage_record(
+    record = _record(
         call_id="call-1",
         project_root=project,
-        mission_id="mission-1",
         provider="codex",
-        model="gpt-5.6-sol",
-        run_label="engineer-r1",
-        started_at=1.0,
-        completed_at=2.0,
-        status="completed",
         token_usage=_known_usage(input_tokens=1000, output_tokens=200),
     )
     assert ledger.append(record) is True
@@ -130,24 +136,86 @@ def test_usage_ledger_is_idempotent_by_call_id(tmp_path: Path) -> None:
     assert len((project / "usage.jsonl").read_text().splitlines()) == 1
 
 
+@pytest.mark.parametrize(
+    ("stop_reason", "error_message"),
+    [
+        ("error", ""),
+        ("aborted", ""),
+        ("pending", "provider unavailable"),
+    ],
+)
+def test_pi_empty_failure_usage_does_not_settle_unknown_cost(
+    tmp_path: Path,
+    stop_reason: str,
+    error_message: str,
+) -> None:
+    events = []
+    if stop_reason == "pending":
+        events.append(
+            {
+                "type": "attempt_error",
+                "error": error_message,
+            }
+        )
+    events.append(
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [],
+                "stopReason": stop_reason,
+                "errorMessage": error_message,
+                "usage": {
+                    "input": 0,
+                    "output": 0,
+                    "cacheRead": 0,
+                    "cacheWrite": 0,
+                    "totalTokens": 0,
+                    "cost": {
+                        "input": 0,
+                        "output": 0,
+                        "cacheRead": 0,
+                        "cacheWrite": 0,
+                        "total": 0,
+                    },
+                },
+            },
+        }
+    )
+    usage = extract_token_usage(events)
+    record = _record(
+        call_id="retry-exhausted",
+        project_root=tmp_path,
+        mission_id="finance",
+        provider="pi",
+        run_label="probe",
+        status="error",
+        token_usage=usage,
+        provider_cost_usd=usage.provider_cost_usd,
+        error=error_message,
+    )
+
+    assert usage.observed is False
+    assert usage.provider_cost_usd is None
+    assert record.pricing_status == "partial"
+    assert record.cost_usd is None
+
+
 def test_pending_tokens_are_reconciled_and_persisted_when_pricing_becomes_available(
     tmp_path: Path, monkeypatch,
 ) -> None:
-    from argus_skill.core.pricing import MODEL_PRICES_USD_PER_MTOK
+    from argus.core.pricing import MODEL_PRICES_USD_PER_MTOK
 
     model = "test-newly-priced-model"
     project = tmp_path / "project"
     ledger = UsageLedger(project, migrate_legacy=False)
-    record = build_usage_record(
+    record = _record(
         call_id="pending-price",
         project_root=project,
         mission_id=None,
         provider="codex",
         model=model,
         run_label="manager-frontdoor-classify",
-        started_at=1.0,
-        completed_at=2.0,
-        status="completed",
         token_usage=_known_usage(input_tokens=1000, output_tokens=200),
     )
     ledger.append(record)
@@ -187,16 +255,13 @@ def test_token_reconciliation_does_not_guess_or_overwrite_provider_billing(
     tmp_path: Path, provider: str, model: str, usage: TokenUsage, extra: dict,
 ) -> None:
     ledger = UsageLedger(tmp_path, migrate_legacy=False)
-    record = build_usage_record(
+    record = _record(
         call_id="unchanged",
         project_root=tmp_path,
         mission_id=None,
         provider=provider,
         model=model,
         run_label="manager",
-        started_at=1.0,
-        completed_at=2.0,
-        status="completed",
         token_usage=usage,
         **extra,
     )
@@ -210,7 +275,7 @@ def test_token_reconciliation_does_not_guess_or_overwrite_provider_billing(
 def test_usage_reconciliation_uses_a_process_lock_without_fcntl(
     tmp_path: Path, monkeypatch,
 ) -> None:
-    from argus_skill.core import usage
+    from argus.core import usage
 
     calls = []
     monkeypatch.setattr(usage, "fcntl", None)
@@ -226,16 +291,13 @@ def test_token_reconciliation_keeps_a_provider_settlement_that_arrives_after_the
     tmp_path: Path,
 ) -> None:
     ledger = UsageLedger(tmp_path, migrate_legacy=False)
-    completed = build_usage_record(
+    completed = _record(
         call_id="late-provider",
         project_root=tmp_path,
         mission_id=None,
         provider="opencode",
         model="gpt-5.5",
         run_label="manager",
-        started_at=1.0,
-        completed_at=2.0,
-        status="completed",
         token_usage=_known_usage(input_tokens=100, output_tokens=20),
         provider_cost_usd=0.0123,
     )
@@ -254,16 +316,11 @@ def test_opencode_provider_reported_cost_is_authoritative(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "projects" / "p1"
-    record = build_usage_record(
+    record = _record(
         call_id="opencode-call",
         project_root=project,
-        mission_id="mission-1",
         provider="opencode",
         model="openai/gpt-5.4",
-        run_label="engineer-r1",
-        started_at=1.0,
-        completed_at=2.0,
-        status="completed",
         token_usage=_known_usage(input_tokens=1000, output_tokens=200),
         provider_cost_usd=0.0123,
     )
@@ -274,68 +331,26 @@ def test_opencode_provider_reported_cost_is_authoritative(
     assert record.cost_usd == pytest.approx(0.0123)
 
 
-def test_stale_copilot_resume_error_is_read_as_not_billed() -> None:
-    record = UsageRecord.from_jsonable({
-        "call_id": "stale-resume",
-        "project_id": "s-1",
-        "provider": "copilot",
-        "status": "error",
-        "pricing_status": "partial",
-        "pricing_tier": "premium_request_only",
-        "cost_usd": None,
-        "model_usage": [],
-        "total_nano_aiu": None,
-        "error": "Error: No session, task, or name matched 'old-thread'.",
-    })
-
-    assert record.pricing_status == "not_billed"
-    assert record.pricing_tier == "not_started"
-    assert record.cost_usd == 0.0
-
-
-def test_daemon_stop_before_provider_start_is_read_as_not_billed() -> None:
-    record = UsageRecord.from_jsonable({
-        "call_id": "stopped-before-start",
-        "project_id": "s-1",
-        "provider": "copilot",
-        "status": "error",
-        "pricing_status": "partial",
-        "pricing_tier": "premium_request_only",
-        "cost_usd": None,
-        "model_usage": [],
-        "total_nano_aiu": None,
-        "error": "refused before start: daemon stop requested",
-    })
-
-    assert record.pricing_status == "not_billed"
-    assert record.cost_usd == 0.0
-
-
-@pytest.mark.parametrize(
-    "provider,error",
-    [
-        ("copilot", "copilot wrapper: real Copilot CLI binary not found"),
-        ("copilot", "Error: No authentication information found."),
-        ("opencode", "Error: Token refresh failed: 401"),
-    ],
-)
-def test_local_backend_refusal_is_read_as_not_billed(
-    provider: str,
-    error: str,
-) -> None:
+@pytest.mark.parametrize("provider,prior_tier,error", [
+    ("copilot", "premium_request_only", "Error: No session, task, or name matched 'old-thread'."),
+    ("copilot", "premium_request_only", "refused before start: daemon stop requested"),
+    ("copilot", "unknown", "copilot wrapper: real Copilot CLI binary not found"),
+    ("copilot", "unknown", "Error: No authentication information found."),
+    ("opencode", "unknown", "Error: Token refresh failed: 401"),
+])
+def test_pre_provider_refusal_is_read_as_not_billed(provider, prior_tier, error):
     record = UsageRecord.from_jsonable({
         "call_id": f"{provider}-pre-provider",
         "project_id": "s-1",
         "provider": provider,
         "status": "error",
         "pricing_status": "partial",
-        "pricing_tier": "unknown",
+        "pricing_tier": prior_tier,
         "cost_usd": None,
         "model_usage": [],
         "total_nano_aiu": None,
         "error": error,
     })
-
     assert record.pricing_status == "not_billed"
     assert record.pricing_tier == "not_started"
     assert record.cost_usd == 0.0
@@ -360,20 +375,25 @@ def test_stale_resume_error_with_observed_premium_usage_stays_partial() -> None:
     assert record.cost_usd is None
 
 
-@pytest.mark.parametrize("error", [
-    "Error: Access denied by policy settings. Your Copilot CLI policy is disabled.",
-    "Your Copilot subscription does not include this feature",
-    "Required policies have not been enabled for Copilot CLI",
-    "Error: Failed to load models (Request ID: request-1)",
-    "Copilot could not retrieve the list of available models.",
+@pytest.mark.parametrize(("provider", "error"), [
+    ("copilot", "Error: Access denied by policy settings. Your Copilot CLI policy is disabled."),
+    ("copilot", "Your Copilot subscription does not include this feature"),
+    ("copilot", "Required policies have not been enabled for Copilot CLI"),
+    ("copilot", "Error: Failed to load models (Request ID: request-1)"),
+    ("copilot", "Copilot could not retrieve the list of available models."),
+    ("codex",
+        '{"type":"error","status":400,"error":{"type":"invalid_request_error",'
+        '"message":"The \'gpt-5.4-mini\' model is not supported when using Codex '
+        'with a ChatGPT account."}}',
+    ),
 ])
-def test_copilot_startup_policy_refusal_is_unbilled_for_new_and_existing_records(
-    tmp_path: Path, error: str
+def test_startup_policy_refusal_is_unbilled_for_new_and_existing_records(
+    tmp_path: Path, provider: str, error: str,
 ) -> None:
-    record = build_usage_record(
+    record = _record(
         call_id="policy-startup", project_root=tmp_path / "p1", mission_id=None,
-        provider="copilot", model="gpt-5.6-sol", run_label="reviewer",
-        started_at=1, completed_at=2, status="error", error=error,
+        provider=provider, run_label="reviewer",
+        status="error", error=error,
         copilot_token_billing_expected=True,
     )
     assert record.pricing_status == "not_billed"
@@ -400,10 +420,10 @@ def test_policy_error_after_metered_work_preserves_billing(
         "premium": {"premium_requests": 1.0},
         "provider_cost": {"provider_cost_usd": 1.25},
     }[evidence]
-    record = build_usage_record(
+    record = _record(
         call_id="policy-after-work", project_root=tmp_path / "p1", mission_id=None,
         provider="opencode" if evidence == "provider_cost" else "copilot",
-        model="gpt-5.6-sol", run_label="reviewer", started_at=1, completed_at=2,
+        run_label="reviewer",
         status="error", error=error,
         **kwargs,
     )
@@ -416,16 +436,13 @@ def test_policy_error_after_metered_work_preserves_billing(
 
 def test_usage_recorded_event_v2_is_self_contained(tmp_path: Path) -> None:
     project = tmp_path / "projects" / "p1"
-    record = build_usage_record(
+    record = _record(
         call_id="call-1",
         project_root=project,
-        mission_id="mission-1",
         provider="copilot",
-        model="gpt-5.6-sol",
         run_label="simple-1",
         started_at=10.0,
         completed_at=11.25,
-        status="completed",
         token_usage=_known_usage(input_tokens=100, output_tokens=20),
         premium_requests=1.0,
         total_nano_aiu=2_000_000_000,
@@ -465,16 +482,11 @@ def test_usage_recorded_event_v2_is_self_contained(tmp_path: Path) -> None:
 def test_copilot_premium_request_quote_settles_without_token_price(
     tmp_path: Path,
 ) -> None:
-    record = build_usage_record(
+    record = _record(
         call_id="premium-only",
         project_root=tmp_path / "p1",
-        mission_id="mission-1",
         provider="copilot",
-        model="gpt-5.6-sol",
         run_label="manager-frontdoor-classify",
-        started_at=1.0,
-        completed_at=2.0,
-        status="completed",
         premium_requests=1.0,
     )
 
@@ -488,16 +500,11 @@ def test_copilot_premium_request_quote_settles_without_token_price(
 def test_copilot_missing_premium_and_token_prices_remains_partial(
     tmp_path: Path,
 ) -> None:
-    record = build_usage_record(
+    record = _record(
         call_id="unknown-copilot",
         project_root=tmp_path / "p1",
-        mission_id="mission-1",
         provider="copilot",
-        model="gpt-5.6-sol",
         run_label="planner",
-        started_at=1.0,
-        completed_at=2.0,
-        status="completed",
     )
 
     assert record.pricing_status == "partial"
@@ -516,10 +523,10 @@ def test_copilot_missing_premium_and_token_prices_remains_partial(
 def test_modern_token_billing_distinguishes_missing_usage_from_refusals(
     tmp_path: Path, status, error, premium_requests, expected_status
 ) -> None:
-    record = build_usage_record(
+    record = _record(
         call_id="modern", project_root=tmp_path / "p1", mission_id=None,
-        provider="copilot", model="gpt-5.6-sol", run_label="engineer-r1",
-        started_at=1.0, completed_at=2.0, status=status, error=error,
+        provider="copilot",
+        status=status, error=error,
         premium_requests=premium_requests, copilot_token_billing_expected=True,
     )
     assert record.pricing_status == expected_status
@@ -527,16 +534,11 @@ def test_modern_token_billing_distinguishes_missing_usage_from_refusals(
 
 
 def test_non_copilot_still_requires_token_pricing(tmp_path: Path) -> None:
-    record = build_usage_record(
+    record = _record(
         call_id="unknown-codex",
         project_root=tmp_path / "p1",
-        mission_id="mission-1",
         provider="codex",
-        model="gpt-5.6-sol",
         run_label="planner",
-        started_at=1.0,
-        completed_at=2.0,
-        status="completed",
         premium_requests=1.0,
     )
 
@@ -550,16 +552,11 @@ def test_copilot_token_cost_takes_precedence_without_double_charging(
 ) -> None:
     project = tmp_path / "p1"
     ledger = UsageLedger(project, migrate_legacy=False)
-    record = build_usage_record(
+    record = _record(
         call_id="token-and-premium",
         project_root=project,
-        mission_id="mission-1",
         provider="copilot",
-        model="gpt-5.6-sol",
         run_label="manager-frontdoor-classify",
-        started_at=1.0,
-        completed_at=2.0,
-        status="completed",
         premium_requests=1.0,
         total_nano_aiu=2_000_000_000,
     )
@@ -588,16 +585,11 @@ def test_summary_deduplicates_copilot_usage_event_across_calls(
         "cost_usd": 0.01,
     }
     for call_id in ("call-1", "call-2"):
-        ledger.append(build_usage_record(
+        ledger.append(_record(
             call_id=call_id,
             project_root=project,
-            mission_id="mission-1",
             provider="copilot",
-            model="gpt-5.6-sol",
             run_label=call_id,
-            started_at=1.0,
-            completed_at=2.0,
-            status="completed",
             token_usage=_known_usage(input_tokens=100, output_tokens=10),
             total_nano_aiu=1_000_000_000,
             model_usage=[usage],
@@ -815,12 +807,10 @@ def test_copilot_reconcile_does_not_reuse_usage_or_price_denials(
     ledger.append(first)
     assert UsageLedger(project).records()[0].cost_usd == pytest.approx(0.08)
 
-    second = build_usage_record(
+    second = _record(
         call_id="denied",
         project_root=project,
-        mission_id="mission-1",
         provider="copilot",
-        model="gpt-5.6-sol",
         run_label="reviewer",
         started_at=1_783_763_965.96,
         completed_at=1_783_763_965.97,
@@ -884,42 +874,34 @@ def test_copilot_reconcile_does_not_reprice_settled_premium_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "argus_skill.core.usage._copilot_reconcile_enabled_for",
+        "argus.core.usage._copilot_reconcile_enabled_for",
         lambda _project_root: True,
     )
     monkeypatch.setattr(
-        "argus_skill.core.usage.find_copilot_usage_near",
+        "argus.core.usage.find_copilot_usage_near",
         lambda **_kwargs: None,
     )
     project = tmp_path / "projects" / "p1"
     ledger = UsageLedger(project, migrate_legacy=False)
 
     monkeypatch.setenv("ARGUS_SKILL_COPILOT_USD_PER_PREMIUM_REQUEST", "0.04")
-    ledger.append(build_usage_record(
+    ledger.append(_record(
         call_id="old-rate",
         project_root=project,
-        mission_id="mission-1",
         provider="copilot",
-        model="gpt-5.6-sol",
         run_label="manager-frontdoor-classify",
-        started_at=1.0,
-        completed_at=2.0,
-        status="completed",
         premium_requests=1.0,
     ))
     assert ledger.ensure_copilot_usage_reconciled() == 0
 
     monkeypatch.setenv("ARGUS_SKILL_COPILOT_USD_PER_PREMIUM_REQUEST", "0.10")
-    ledger.append(build_usage_record(
+    ledger.append(_record(
         call_id="new-rate",
         project_root=project,
-        mission_id="mission-1",
         provider="copilot",
-        model="gpt-5.6-sol",
         run_label="planner",
         started_at=3.0,
         completed_at=4.0,
-        status="completed",
         premium_requests=1.0,
     ))
 
@@ -938,22 +920,18 @@ def test_partial_token_charge_never_falls_back_to_a_premium_request_estimate(
     tmp_path: Path, monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        "argus_skill.core.usage._copilot_reconcile_enabled_for", lambda _root: True,
+        "argus.core.usage._copilot_reconcile_enabled_for", lambda _root: True,
     )
     monkeypatch.setattr(
-        "argus_skill.core.usage.find_copilot_usage_near", lambda **_kwargs: None,
+        "argus.core.usage.find_copilot_usage_near", lambda **_kwargs: None,
     )
     ledger = UsageLedger(tmp_path, migrate_legacy=False)
-    record = build_usage_record(
+    record = _record(
         call_id="partial-token-charge",
         project_root=tmp_path,
         mission_id=None,
         provider="copilot",
-        model="gpt-5.6-sol",
         run_label="manager",
-        started_at=1.0,
-        completed_at=2.0,
-        status="completed",
         premium_requests=1.0,
         total_nano_aiu=17,
         thread_id="session-1",
@@ -1059,16 +1037,13 @@ def test_call_mission_project_and_daily_aggregates_match(
     ledger = UsageLedger(project, migrate_legacy=False)
     now = time.time()
     records = [
-        build_usage_record(
+        _record(
             call_id=f"call-{index}",
             project_root=project,
-            mission_id="mission-1",
             provider="codex",
-            model="gpt-5.6-sol",
             run_label=label,
             started_at=now - 1,
             completed_at=now,
-            status="completed",
             token_usage=_known_usage(
                 input_tokens=1000 * index,
                 output_tokens=100 * index,
@@ -1102,16 +1077,13 @@ def test_completed_call_counts_after_mission_is_killed_before_completion_event(
     project = root / "projects" / "p1"
     ledger = UsageLedger(project, migrate_legacy=False)
     now = time.time()
-    record = build_usage_record(
+    record = _record(
         call_id="completed-before-kill",
         project_root=project,
         mission_id="mission-killed",
         provider="codex",
-        model="gpt-5.6-sol",
-        run_label="engineer-r1",
         started_at=now - 1,
         completed_at=now,
-        status="completed",
         token_usage=_known_usage(input_tokens=10_000, output_tokens=2_000),
     )
     ledger.append(record)
@@ -1138,38 +1110,29 @@ def test_missing_usage_and_unknown_model_are_never_rendered_as_zero(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "p"
-    missing = build_usage_record(
+    missing = _record(
         call_id="missing",
         project_root=project,
         mission_id="m",
         provider="codex",
-        model="gpt-5.6-sol",
-        run_label="engineer-r1",
-        started_at=1,
-        completed_at=2,
         status="error",
         token_usage=TokenUsage(),
     )
-    unknown = build_usage_record(
+    unknown = _record(
         call_id="unknown",
         project_root=project,
         mission_id="m",
         provider="codex",
         model="future-model",
         run_label="reviewer",
-        started_at=1,
-        completed_at=2,
-        status="completed",
         token_usage=_known_usage(input_tokens=100, output_tokens=20),
     )
-    denied = build_usage_record(
+    denied = _record(
         call_id="denied",
         project_root=project,
         mission_id="m",
         provider="codex",
-        model="gpt-5.6-sol",
         run_label="matcher",
-        started_at=1,
         completed_at=1,
         status="denied",
     )
@@ -1181,3 +1144,226 @@ def test_missing_usage_and_unknown_model_are_never_rendered_as_zero(
     assert summary.cost_usd is None
     assert summary.pricing_status == "partial"
     assert format_usage_cost(summary) == "partial"
+
+
+def test_copilot_reconcile_prices_a_pending_acp_turn_from_the_session_event_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A warm ``copilot --acp`` turn leaves no store row; the session event log
+    still settles it, so the daemon is not held on a phantom liability."""
+    copilot_home = tmp_path / "copilot"
+    copilot_home.mkdir()
+    monkeypatch.setenv("COPILOT_HOME", str(copilot_home))
+    monkeypatch.setattr(
+        "argus.core.usage._copilot_reconcile_enabled_for", lambda _root: True,
+    )
+    started_at = 1_790_751_193.42
+    completed_at = 1_790_751_200.36
+    events = copilot_home / "session-state" / "acp-1" / "events.jsonl"
+    events.parent.mkdir(parents=True)
+    events.write_text(
+        json.dumps({
+            "type": "session.start",
+            "data": {"sessionId": "acp-1", "selectedModel": "gpt-5.6-sol"},
+            "timestamp": "2026-09-30T06:53:14.415Z",
+        })
+        + "\n"
+        + json.dumps({
+            "type": "session.usage_checkpoint",
+            "data": {"totalNanoAiu": 2_946_700_000, "totalPremiumRequests": 1},
+            "timestamp": "2026-09-30T06:53:19.562Z",
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+    project = tmp_path / "projects" / "p1"
+    project.mkdir(parents=True)
+    ledger = UsageLedger(project, migrate_legacy=False)
+    ledger.append(
+        replace(
+            _record(
+                call_id="acp-turn",
+                project_root=project,
+                mission_id=None,
+                provider="copilot",
+                run_label="manager-classify-fast",
+                started_at=started_at,
+                completed_at=completed_at,
+                premium_requests=1.0,
+                thread_id="acp-1",
+                copilot_token_billing_expected=True,
+            ),
+            cost_usd=None,
+            pricing_status="partial",
+            pricing_tier="copilot_token_pending",
+        )
+    )
+    pending = ledger.records()[0]
+    assert pending.pricing_tier == "copilot_token_pending"
+
+    assert ledger.ensure_copilot_usage_reconciled() == 1
+
+    settled = ledger.records()[0]
+    assert settled.cost_usd == pytest.approx(0.029467)
+    assert settled.pricing_status == "priced"
+    assert settled.pricing_tier == "copilot_token"
+    assert settled.cost_basis == "token"
+    assert settled.total_nano_aiu == 2_946_700_000
+    assert settled.input_tokens is None
+    assert settled.model_usage[0]["usage_event_id"] == 1
+    # A second pass has nothing left to settle.
+    assert ledger.ensure_copilot_usage_reconciled() == 0
+
+
+# --- turns Argus itself interrupted before the Copilot CLI recorded them ---
+
+
+def _interrupt_receipt(for_call: str, **overrides) -> dict:
+    receipt = {
+        "type": "agent.io.complete", "io_kind": "complete", "call_id": for_call,
+        "run_label": "manager-supervision", "backend": "copilot", "model": "gpt-5.6-sol",
+        "exit_code": -15, "thread_id": "acp-b4c1", "provider_session_id": "acp-b4c1",
+        "turn_completed": False, "turn_failed": True,
+        "fatal_error": "External interrupt: Manager supervision superseded",
+        "tool_activity_observed": False, "input_tokens": 0, "cached_input_tokens": 0,
+        "cache_write_tokens": 0, "output_tokens": 0, "reasoning_output_tokens": 0,
+        "premium_requests": None, "premium_requests_present": False, "total_nano_aiu": None,
+        "agent_message_count": 0, "agent_message_chars": 0, "stdout_line_count": 0,
+        "stderr_line_count": 0, "json_event_count": 0,
+    }
+    receipt.update(overrides)
+    return receipt
+
+
+def test_interrupted_empty_acp_turn_settles_as_one_request_when_recorded() -> None:
+    from argus.core.pricing import copilot_usd_per_premium_request
+    from argus.core.usage import INTERRUPTED_REQUEST_TIER
+
+    record = _record(
+        call_id="superseded",
+        project_root=Path("/tmp/p1"),
+        mission_id=None,
+        provider="copilot",
+        run_label="manager-supervision",
+        status="error",
+        error="External interrupt: Manager supervision superseded",
+        copilot_token_billing_expected=True,
+        thread_id="acp-b4c1",
+        startup_receipt=_interrupt_receipt("superseded"),
+    )
+    assert record.pricing_status == "priced"
+    assert record.pricing_tier == INTERRUPTED_REQUEST_TIER
+    assert record.cost_basis == "premium_request"
+    assert record.cost_usd == pytest.approx(copilot_usd_per_premium_request())
+    assert record.premium_request_cost_usd == pytest.approx(copilot_usd_per_premium_request())
+    assert record.premium_requests is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"agent_message_chars": 120, "agent_message_count": 1},
+        {"tool_activity_observed": True},
+        {"premium_requests": 1.0, "premium_requests_present": True},
+        {"fatal_error": "acp prompt ended without a response"},
+        {"call_id": "another-call"},
+    ],
+)
+def test_interrupted_turn_with_any_recorded_activity_stays_pending(overrides: dict) -> None:
+    record = _record(
+        call_id="superseded",
+        project_root=Path("/tmp/p1"),
+        mission_id=None,
+        provider="copilot",
+        run_label="manager-supervision",
+        status="error",
+        error="External interrupt: Manager supervision superseded",
+        copilot_token_billing_expected=True,
+        thread_id="acp-b4c1",
+        startup_receipt=_interrupt_receipt("superseded", **overrides),
+    )
+    assert record.pricing_status == "partial"
+    assert record.pricing_tier == "copilot_token_pending"
+    assert record.cost_usd is None
+
+
+def test_copilot_reconcile_settles_a_pending_interrupted_turn_from_its_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rows written before this rule existed are settled by reconciliation, and
+    the settlement no longer holds admission under the block policy."""
+    from argus.core.cost_control import _unresolved_costs
+    from argus.core.pricing import copilot_usd_per_premium_request
+    from argus.core.usage import INTERRUPTED_REQUEST_TIER
+
+    copilot_home = tmp_path / "copilot"
+    copilot_home.mkdir()
+    monkeypatch.setenv("COPILOT_HOME", str(copilot_home))
+    monkeypatch.setattr(
+        "argus.core.usage._copilot_reconcile_enabled_for", lambda _root: True,
+    )
+    project = tmp_path / "projects" / "p1"
+    project.mkdir(parents=True)
+    (project / "events.jsonl").write_text(
+        json.dumps(_interrupt_receipt("superseded")) + "\n", encoding="utf-8",
+    )
+    ledger = UsageLedger(project, migrate_legacy=False)
+    ledger.append(
+        replace(
+            _record(
+                call_id="superseded",
+                project_root=project,
+                mission_id=None,
+                provider="copilot",
+                run_label="manager-supervision",
+                status="error",
+                error="External interrupt: Manager supervision superseded",
+                started_at=1_790_755_911.2,
+                completed_at=1_790_755_913.2,
+                copilot_token_billing_expected=True,
+                thread_id="acp-b4c1",
+            ),
+            cost_usd=None,
+            pricing_status="partial",
+            pricing_tier="copilot_token_pending",
+            cost_basis="none",
+        )
+    )
+    pending = ledger.records()[0]
+    assert pending.pricing_status == "partial"
+    assert _unresolved_costs([pending], []), "the old row blocks admission"
+
+    assert ledger.ensure_copilot_usage_reconciled() == 1
+    settled = ledger.records()[0]
+    assert settled.pricing_status == "priced"
+    assert settled.pricing_tier == INTERRUPTED_REQUEST_TIER
+    assert settled.cost_usd == pytest.approx(copilot_usd_per_premium_request())
+    assert _unresolved_costs([settled], []) == []
+    assert ledger.ensure_copilot_usage_reconciled() == 0
+
+    # If the CLI does record the session later, the exact charge replaces the
+    # request estimate.
+    events = copilot_home / "session-state" / "acp-b4c1" / "events.jsonl"
+    events.parent.mkdir(parents=True)
+    events.write_text(
+        json.dumps({
+            "type": "session.start",
+            "data": {"sessionId": "acp-b4c1", "selectedModel": "gpt-5.6-sol"},
+            "timestamp": "2026-09-30T08:11:51.300Z",
+        })
+        + "\n"
+        + json.dumps({
+            "type": "session.usage_checkpoint",
+            "data": {"totalNanoAiu": 1_100_000_000, "totalPremiumRequests": 1},
+            "timestamp": "2026-09-30T08:11:53.100Z",
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+    assert ledger.ensure_copilot_usage_reconciled() == 1
+    exact = ledger.records()[0]
+    assert exact.pricing_tier == "copilot_token"
+    assert exact.cost_basis == "token"
+    assert exact.cost_usd == pytest.approx(0.011)

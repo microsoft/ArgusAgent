@@ -32,13 +32,13 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from argus_skill.core.models import ReviewDecision
-from argus_skill.manager import Manager
-from argus_skill.manager.stage_decider import (
+from argus.core.models import ReviewDecision
+from argus.manager import Manager
+from argus.manager.stage_decider import (
     final_stage_completion_blockers,
     stage_position_is_the_only_completion_blocker,
 )
-from argus_skill.skills.vertical_select import persist_vertical
+from argus.skills.vertical_select import persist_vertical
 
 ORDER = ("idea", "build", "experiment", "paper", "review")
 
@@ -61,6 +61,9 @@ def _decide(
     state_root = tmp_path / "state"
     workdir = tmp_path / "worktree"
     workdir.mkdir()
+    (workdir / "paper").mkdir()
+    (workdir / "paper/main.tex").write_text("Current manuscript")
+    (workdir / "paper/main.pdf").write_bytes(b"Current rendered manuscript")
     persist_vertical(
         state_root,
         "research",
@@ -72,15 +75,29 @@ def _decide(
     payload["current_stage"] = "review"
     state_path.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setattr(
-        "argus_skill.skills.stage_machine._ensure_stage_completion",
+        "argus.skills.stage_machine._ensure_stage_completion",
         lambda *_args, **_kwargs: None,
     )
+    if review is None:
+        review = _review()
+        if mission_scope == "final_submission":
+            from argus.core.venue_review import (
+                enforce_venue_acceptance,
+                paper_review_snapshot,
+            )
+
+            review.venue_review = {
+                "venue": "EMNLP", "recommendation": "weak_accept", "acceptance_clear": True,
+                "rationale": "The reviewed evidence supports a useful contribution for this venue.",
+                "blocking_issues": [],
+            }
+            enforce_venue_acceptance(review, venue="EMNLP", before=paper_review_snapshot(workdir), artifact_root=workdir)
     decision = Manager(
         project_root=state_root,
         execution_workdir=workdir,
         runner=object(),
     ).decide_stage_transition(
-        review=review if review is not None else _review(),
+        review=review,
         project_root=state_root,
         mission_scope=mission_scope,
         open_ended=False,
@@ -152,6 +169,15 @@ def test_an_uncertified_review_still_cannot_move_the_project(
     assert state["current_stage"] == "review"
 
 
+def test_done_without_a_venue_recommendation_cannot_close_the_paper(tmp_path, monkeypatch) -> None:
+    decision, state = _decide(
+        tmp_path, monkeypatch, mission_scope="final_submission", review=_review(),
+    )
+    assert decision.action == "hold"
+    assert decision.source == "venue_acceptance_hold"
+    assert state["current_stage"] == "review"
+
+
 def test_the_blockers_report_every_refusal_not_just_the_first() -> None:
     """A short-circuiting list cannot tell "only position" from "position too"."""
     blockers = final_stage_completion_blockers(
@@ -205,7 +231,7 @@ def test_the_prompt_no_longer_invites_completion_from_an_earlier_stage() -> None
     certified ... and every later stage is inapplicable", which is advice to do
     the one thing that could not work.
     """
-    from argus_skill.roles.prompts import manager as manager_prompts
+    from argus.roles.prompts import manager as manager_prompts
 
     with open(manager_prompts.__file__, encoding="utf-8") as handle:
         text = handle.read()

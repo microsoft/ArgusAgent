@@ -19,10 +19,10 @@ import time
 
 import pytest
 
-from argus_skill.agent_cli import _run_exec
-from argus_skill.agent_cli._env import _provider_turn_cap
-from argus_skill.agent_cli.agent_cli_runner import AgentCliRunner, RunnerOptions
-from argus_skill.agent_cli.runner_backend import (
+from argus.agent_cli import _run_exec as runner_exec
+from argus.agent_cli._env import _provider_turn_cap
+from argus.agent_cli.agent_cli_runner import AgentCliRunner, RunnerOptions
+from argus.agent_cli.runner_backend import (
     BACKEND_CLAUDE,
     BACKEND_CODEX,
     BACKEND_COPILOT,
@@ -141,8 +141,11 @@ def _capped_runner(
     backend: str = BACKEND_COPILOT,
 ) -> tuple[AgentCliRunner, list[str]]:
     terminations: list[str] = []
+    # These are stream-loop unit doubles, not Windows HANDLEs. Stub the owned
+    # spawn boundary rather than handing an incomplete fake to real Job APIs.
+    # Actual Windows spawn/ownership remains covered by real subprocess tests.
     monkeypatch.setattr(
-        _run_exec, "spawn_owned_process", lambda *args, **kwargs: process
+        runner_exec, "spawn_owned_process", lambda *args, **kwargs: process
     )
     monkeypatch.setattr(
         AgentCliRunner, "_resolve_executable", staticmethod(lambda value: value)
@@ -186,6 +189,32 @@ def test_engineer_call_winds_down_at_the_provider_turn_allowance(
     assert "ARGUS_SKILL_PROVIDER_TURN_CAP" in str(result.fatal_error)
 
 
+@pytest.mark.parametrize("provider_failure", [False, True])
+def test_turn_allowance_after_tool_errors_keeps_the_right_terminal_reason(monkeypatch, provider_failure):
+    class ToolThenTurns(_LiveFakeProc):
+        def _endless_turns(self):
+            yield json.dumps({"type": "tool.execution_complete", "data": {
+                "success": False, "error": {"code": "failure", "message": "Synthetic tool error"},
+            }})
+            if provider_failure:
+                yield json.dumps({"type": "session.error", "data": {
+                    "code": "provider_usage_missing", "message": "Synthetic provider failure",
+                }})
+            yield from super()._endless_turns()
+
+    monkeypatch.setenv("ARGUS_SKILL_PROVIDER_TURN_CAP", "3")
+    process = ToolThenTurns()
+    runner, terminations = _capped_runner(monkeypatch, process)
+    result = runner.run_exec(prompt="fixture", resume_thread_id=None, options=RunnerOptions(), run_label="engineer-r1")
+    assert terminations == ["terminate"]
+    assert result.provider_turn_cap_hit and result.provider_turns == 3
+    if provider_failure:
+        assert result.fatal_error.startswith("provider_usage_missing:")
+    else:
+        assert result.fatal_error.startswith("Provider turn cap reached:")
+        assert "Synthetic tool error" not in result.fatal_error
+
+
 def test_call_under_the_allowance_completes_untouched(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -211,7 +240,7 @@ def test_call_under_the_allowance_completes_untouched(
 def test_native_subagent_turns_do_not_exhaust_the_parent_allowance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("ARGUS_SKILL_PROVIDER_TURN_CAP", raising=False)
+    monkeypatch.setenv("ARGUS_SKILL_PROVIDER_TURN_CAP", "40")
     # Copilot multiplexes the twelve native task agents into the same stdout.
     # The parent has its own growing transcript and must still get 40 turns.
     process = _LiveFakeProc(native_subagents=12)
@@ -247,7 +276,7 @@ def test_native_subagent_turns_do_not_exhaust_the_parent_allowance(
 def test_completed_native_fanout_keeps_only_parent_provider_turns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("ARGUS_SKILL_PROVIDER_TURN_CAP", raising=False)
+    monkeypatch.setenv("ARGUS_SKILL_PROVIDER_TURN_CAP", "40")
     lines = _copilot_turn_lines(1)
     for turn in range(4):
         for agent in range(12):
@@ -274,17 +303,24 @@ def test_completed_native_fanout_keeps_only_parent_provider_turns(
     assert result.agent_messages[-1] == "all done"
 
 
-def test_zero_disables_the_allowance(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ARGUS_SKILL_PROVIDER_TURN_CAP", "0")
+@pytest.mark.parametrize("configured", [None, "0"])
+@pytest.mark.parametrize("run_label", ["engineer-r1", "reviewer"])
+def test_default_and_zero_allow_more_than_120_interactions(
+    monkeypatch: pytest.MonkeyPatch, configured: str | None, run_label: str,
+) -> None:
+    if configured is None:
+        monkeypatch.delenv("ARGUS_SKILL_PROVIDER_TURN_CAP", raising=False)
+    else:
+        monkeypatch.setenv("ARGUS_SKILL_PROVIDER_TURN_CAP", configured)
     runner, terminations = _capped_runner(
-        monkeypatch, _ExitedFakeProc(_copilot_turn_lines(4, with_result=True))
+        monkeypatch, _ExitedFakeProc(_copilot_turn_lines(125, with_result=True))
     )
 
     result = runner.run_exec(
         prompt="task",
         resume_thread_id=None,
         options=RunnerOptions(),
-        run_label="engineer-r1",
+        run_label=run_label,
     )
 
     assert terminations == []
@@ -309,7 +345,8 @@ def test_manager_labels_are_never_cut(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.turn_completed is True
 
 
-def test_allowance_applies_to_reviewer_labels() -> None:
+def test_explicit_allowance_applies_to_reviewer_labels(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ARGUS_SKILL_PROVIDER_TURN_CAP", "40")
     assert _provider_turn_cap("reviewer") == 40
     assert _provider_turn_cap("reviewer-cold-read") == 40
     assert _provider_turn_cap("engineer-r7") == 40
@@ -321,7 +358,7 @@ def test_allowance_applies_to_reviewer_labels() -> None:
 def test_wind_down_call_gets_only_a_small_allowance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("ARGUS_SKILL_PROVIDER_TURN_CAP", raising=False)
+    monkeypatch.setenv("ARGUS_SKILL_PROVIDER_TURN_CAP", "40")
     assert _provider_turn_cap("engineer-r3.winddown") == 8
     monkeypatch.setenv("ARGUS_SKILL_PROVIDER_TURN_CAP", "4")
     assert _provider_turn_cap("engineer-r3.winddown") == 4

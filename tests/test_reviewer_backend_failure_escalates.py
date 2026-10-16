@@ -17,13 +17,13 @@ from pathlib import Path
 
 import pytest
 
-from argus_skill.core.models import ReviewDecision, RunnerResult
-from argus_skill.engineer.runner import (
+from argus.core.models import ReviewDecision, RunnerResult
+from argus.engineer.runner import (
     EngineerConfig,
     SupervisedConfig,
     SupervisedEngineer,
 )
-from argus_skill.reviewer import Reviewer, ReviewerConfig
+from argus.reviewer import Reviewer, ReviewerConfig
 
 
 # --------------------------------------------------------------------------- #
@@ -84,20 +84,17 @@ def test_empty_clean_output_is_reviewer_failure_not_engineer_work() -> None:
     assert decision.backend_unavailable is True
 
 
-def test_process_decision_succeeds_without_final_reviewer_message() -> None:
+def test_native_action_succeeds_without_final_reviewer_message() -> None:
     class _DecisionRunner:
         def run_exec(self, **_kwargs):
+            from argus.core.role_tool_bridge import bridge_request
+
+            bridge_request("ARGUS_PLUGIN_REVIEW", "approve_review", {
+                "review": "The focused check passed.",
+            }, env=_kwargs["options"].extension_env)
             return RunnerResult(
                 exit_code=0,
                 agent_messages=[],
-                role_decisions=[{
-                    "role": "reviewer",
-                    "payload": {
-                        "status": "done",
-                        "reason": "The focused check passed.",
-                        "next_action": "",
-                    },
-                }],
             )
 
     decision = _evaluate(Reviewer(runner=_DecisionRunner()))
@@ -294,7 +291,13 @@ def test_loop_escalates_to_error_on_reviewer_backend_death(tmp_path: Path) -> No
     assert engineer.calls == 1
     assert reviewer.calls == 2  # retried up to backend_failure_threshold
     assert len(rounds) == 1
-    assert "reviewer backend unavailable" in reason.lower()
+    # The operator reads this sentence when the task stops: plain words,
+    # the count of attempts, and the Reviewer's own record after it.
+    assert reason.startswith(
+        "The Reviewer could not reach a judgment 2 times in a row, so Argus "
+        "stopped this task rather than settle the round without a real judgment. "
+    )
+    assert "Reviewer backend returned no output" in reason
 
     alerts = [e for e in events if e.get("type") == "round.reviewer_backend_failure"]
     assert len(alerts) == 2
@@ -426,7 +429,8 @@ def test_watchdog_retry_exhaustion_fails_loudly(tmp_path: Path) -> None:
     assert runner.resume_thread_ids == [None, None]
     assert reviewer.calls == 0
     assert len(rounds) == 2
-    assert "backend failed" in reason.lower()
+    assert reason.startswith("The model service dropped the Engineer's session")
+    assert "consecutive failures=2, limit=2" in reason
     watchdog_events = [
         event for event in events if event["type"].startswith("round.watchdog.retry")
     ]

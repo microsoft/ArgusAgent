@@ -30,12 +30,8 @@ from __future__ import annotations
 
 import pytest
 
-from argus_skill.manager.stage_decider import final_stage_completion_decision
-from argus_skill.verticals._base import (
-    load_vertical,
-    vertical_checklist_stage_order,
-    vertical_completion_gate,
-)
+from argus.manager.stage_decider import final_stage_completion_decision
+from argus.verticals._base import load_vertical_contract
 
 
 class _CertifiedReview:
@@ -46,13 +42,13 @@ class _CertifiedReview:
 
 
 def _every_vertical() -> list[str]:
-    from argus_skill.skills import vertical_select
+    from argus.skills import vertical_select
 
     return sorted(vertical_select.VERTICALS)
 
 
 def _decide(vertical: str, *, scope: str):
-    order = vertical_checklist_stage_order(load_vertical(vertical))
+    order = load_vertical_contract(vertical).stage_order
     if not order:
         return None, ()
     decision = final_stage_completion_decision(
@@ -77,7 +73,7 @@ def test_every_vertical_can_complete_with_the_scope_it_can_actually_carry() -> N
     """
     unable: list[str] = []
     for vertical in _every_vertical():
-        gate = vertical_completion_gate(load_vertical(vertical))
+        gate = load_vertical_contract(vertical).completion_gate
         # The scope the enqueue boundary will actually persist for this
         # vertical: `final_submission` survives only on the paper track.
         carried = "final_submission" if gate == "certified" else "bounded"
@@ -111,7 +107,7 @@ def test_the_paper_track_still_completes_on_its_own_transport() -> None:
     assert decision is not None and decision.action == "complete"
 
 
-@pytest.mark.parametrize("vertical", ["software", "kernelbench", "physics"])
+@pytest.mark.parametrize("vertical", ["software", "math_synth", "kernel_engineering"])
 def test_the_verticals_seen_livelocked_now_complete(vertical: str) -> None:
     """``software`` is the one caught live; the others share its gate shape."""
     decision, order = _decide(vertical, scope="bounded")
@@ -122,7 +118,7 @@ def test_the_verticals_seen_livelocked_now_complete(vertical: str) -> None:
 
 def test_a_non_final_stage_never_completes() -> None:
     """Widening the scope rule must not let a mid-pipeline mission end anything."""
-    order = vertical_checklist_stage_order(load_vertical("research"))
+    order = load_vertical_contract("research").stage_order
     assert len(order) > 1
 
     decision = final_stage_completion_decision(
@@ -138,14 +134,14 @@ def test_a_non_final_stage_never_completes() -> None:
 
 def test_an_unreadable_vertical_keeps_the_strict_rule() -> None:
     """Fail closed: an unreadable declaration demands the strict transport."""
-    from argus_skill.manager.stage_decider import _mission_scope_can_complete
+    from argus.manager.stage_decider import _mission_scope_can_complete
 
     assert _mission_scope_can_complete("final_submission", "no-such-vertical") is True
     assert _mission_scope_can_complete("bounded", "no-such-vertical") is False
 def test_project_local_vertical_completion_uses_project_root(tmp_path) -> None:
     """A data-domain gate must not silently fall back to research."""
-    from argus_skill.manager.stage_decider import _mission_scope_can_complete
-    from argus_skill.verticals import _data_domain as data_domain
+    from argus.manager.stage_decider import _mission_scope_can_complete
+    from argus.verticals import _data_domain as data_domain
 
     data_domain.write_data_domain(
         tmp_path,
@@ -176,7 +172,7 @@ def test_a_completion_that_overrode_a_hold_does_not_read_as_a_hold() -> None:
     reading it cannot tell whether the stage completed or was held, which is the
     one question stage_history exists to answer.
     """
-    from argus_skill.manager.stage_decider import completion_trigger_reason
+    from argus.manager.stage_decider import completion_trigger_reason
 
     overridden = completion_trigger_reason("hold", "manager held (default)")
 
@@ -188,7 +184,7 @@ def test_a_completion_that_overrode_a_hold_does_not_read_as_a_hold() -> None:
 
 
 def test_a_trigger_that_agreed_keeps_its_own_words() -> None:
-    from argus_skill.manager.stage_decider import completion_trigger_reason
+    from argus.manager.stage_decider import completion_trigger_reason
 
     agreed = "delivery checklist satisfied by reviewer-run pytest"
 
@@ -196,6 +192,6 @@ def test_a_trigger_that_agreed_keeps_its_own_words() -> None:
 
 
 def test_a_hold_with_no_reason_still_reads_as_an_override() -> None:
-    from argus_skill.manager.stage_decider import completion_trigger_reason
+    from argus.manager.stage_decider import completion_trigger_reason
 
     assert "overriding" in completion_trigger_reason("hold", "")

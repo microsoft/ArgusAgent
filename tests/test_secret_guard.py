@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from argus_skill.adapters.agent_cli_backend import AgentCliBackend
-from argus_skill.core import secret_guard
-from argus_skill.core.models import ReviewDecision
-from argus_skill.core.secret_guard import (
+from argus.adapters.agent_cli_backend import AgentCliBackend
+from argus.core import secret_guard
+from argus.core.models import ReviewDecision
+from argus.core.secret_guard import (
     ArtifactChangedDuringScrubError,
     _write_redacted,
     known_secret_values,
@@ -19,13 +19,13 @@ from argus_skill.core.secret_guard import (
     redact_secrets_text_with_count,
     scrub_recent_text_artifacts,
 )
-from argus_skill.engineer.external_work import parse_external_wait_request
-from argus_skill.engineer.runner import (
+from argus.engineer.external_work import parse_external_wait_request
+from argus.engineer.runner import (
     _apply_round_secret_guard,
     _review_event_payload,
     parse_continue_work_request,
 )
-from argus_skill.life.event_log import JsonlEventSink
+from argus.life.event_log import JsonlEventSink
 
 
 def test_redacts_sensitive_headers_and_known_environment_values() -> None:
@@ -574,7 +574,7 @@ def test_agent_io_persistence_and_stream_callback_are_redacted(
         "copilot.stdout",
         "Authorization: Bearer live-secret-value-123",
     )
-    backend._close_io_context("call")
+    backend._io_logger.close("call")
 
     rendered = path.read_text(encoding="utf-8")
     raw_rendered = path.with_name("agent_io.jsonl").read_text(encoding="utf-8")

@@ -3,21 +3,29 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
-from argus_skill.core.vertical_contract import VerticalLibraryContext
-from argus_skill.skills.vertical_select import reset_stage_for_new_intent
-from argus_skill.team import task_board
-from argus_skill.verticals.research.idea_portfolio import (
+from argus.core.vertical_contract import VerticalLibraryContext
+from argus.skills.loop_skill_library import SkillLibraryMixin
+from argus.skills.loop_state import MissionContext
+from argus.skills.vertical_select import reset_stage_for_new_intent
+from argus.team import task_board
+from argus.verticals.research.idea_portfolio import (
     SELECTION_POLICY,
     TEAM_ID,
+    _terminal_retry_allowed,
     ensure_idea_portfolio,
     idea_portfolio_completion_issues,
     idea_portfolio_selection,
+    portfolio_route_count,
+    portfolio_size,
     portfolio_tasks,
+    reconcile_idea_portfolio_campaign,
 )
-from argus_skill.verticals.research.library_preparation import (
+from argus.verticals.research.library_preparation import (
     prepare_skill_libraries,
 )
+from argus.verticals.research.stages import planner_task_issues
 
 
 def _state(root: Path) -> None:
@@ -35,6 +43,29 @@ def _state(root: Path) -> None:
         }),
         encoding="utf-8",
     )
+
+
+def test_terminal_retry_policy_is_bounded_and_reason_aware() -> None:
+    assert _terminal_retry_allowed({"state": "done", "attempts": 1})
+    assert _terminal_retry_allowed({
+        "state": "failed",
+        "attempts": 0,
+        "reason": "healthy subagent is still running",
+    })
+    assert not _terminal_retry_allowed({
+        "state": "failed",
+        "attempts": 0,
+        "reason": "authentication failed",
+    })
+    assert not _terminal_retry_allowed({
+        "state": "failed",
+        "attempts": 2,
+        "reason": "invalid output",
+    })
+    assert not _terminal_retry_allowed({
+        "state": "waiting_external",
+        "attempts": 0,
+    })
 
 
 def _shard(root: Path, owner: str, task: dict) -> str:
@@ -128,7 +159,7 @@ def _complete_selector(
             "unresolved_risks": [long_text or "Scale"] * 20,
             "rejections": {
                 f"route-{index:02d}": long_text or "Weaker direct case."
-                for index in range(1, 13)
+                for index in range(1, portfolio_size() + 1)
                 if f"route-{index:02d}" != selected["target"]
             },
         }),
@@ -138,15 +169,56 @@ def _complete_selector(
     return output
 
 
-def test_portfolio_is_twelve_source_only_routes_plus_twelve_reviews() -> None:
+def test_portfolio_defaults_to_three_source_only_routes_plus_reviews() -> None:
     tasks = portfolio_tasks()
 
-    assert sum(task["role"] == "idea-route" for task in tasks) == 12
-    assert sum(task["role"] == "idea-review" for task in tasks) == 12
+    assert portfolio_size() == 3
+    assert sum(task["role"] == "idea-route" for task in tasks) == 3
+    assert sum(task["role"] == "idea-review" for task in tasks) == 3
     assert all(task["owns_paths"][0].startswith(".argus/teams/") for task in tasks)
     text = " ".join(task["objective"] for task in tasks).lower()
     assert "do not execute candidate code" in text
     assert "request an experiment during selection" in text
+
+
+def test_portfolio_size_is_an_operator_setting_with_bounds(monkeypatch) -> None:
+    monkeypatch.setenv("ARGUS_RESEARCH_PORTFOLIO_ROUTES", "5")
+    tasks = portfolio_tasks()
+    assert sum(task["role"] == "idea-route" for task in tasks) == 5
+    selector = [task for task in tasks if task["role"] == "idea-route"]
+    assert selector[-1]["target"] == "route-05"
+    monkeypatch.setenv("ARGUS_RESEARCH_PORTFOLIO_ROUTES", "40")
+    assert portfolio_size() == 12
+    monkeypatch.setenv("ARGUS_RESEARCH_PORTFOLIO_ROUTES", "1")
+    assert portfolio_size() == 2
+    monkeypatch.setenv("ARGUS_RESEARCH_PORTFOLIO_ROUTES", "many")
+    assert portfolio_size() == 3
+
+
+def test_a_portfolio_already_on_disk_keeps_its_route_count(tmp_path: Path, monkeypatch) -> None:
+    """Lowering the default must not re-form a live twelve-route team."""
+    _state(tmp_path)
+    monkeypatch.setenv("ARGUS_RESEARCH_PORTFOLIO_ROUTES", "12")
+    root = ensure_idea_portfolio(tmp_path, direction="reliable agents")
+    assert portfolio_route_count(root) == 12
+    first = task_board.snapshot(root)
+
+    monkeypatch.delenv("ARGUS_RESEARCH_PORTFOLIO_ROUTES")
+    assert ensure_idea_portfolio(tmp_path, direction="reliable agents") == root
+    assert portfolio_route_count(root) == 12
+    assert [task["task_id"] for task in task_board.snapshot(root)] == [
+        task["task_id"] for task in first
+    ]
+    # ...and it still completes with twelve rejections, not the new default.
+    routes = _complete_routes_and_reviews(tmp_path, root)
+    ensure_idea_portfolio(tmp_path, direction="reliable agents")
+    monkeypatch.setenv("ARGUS_RESEARCH_PORTFOLIO_ROUTES", "12")
+    _complete_selector(tmp_path, routes[0])
+    monkeypatch.delenv("ARGUS_RESEARCH_PORTFOLIO_ROUTES")
+    ensure_idea_portfolio(tmp_path, direction="reliable agents")
+    assert idea_portfolio_completion_issues(tmp_path) == ()
+    selected = idea_portfolio_selection(tmp_path)
+    assert selected is not None and len(selected["rejections"]) == 11
 
 
 def test_selector_does_not_exist_until_all_route_reviews_finish(
@@ -170,11 +242,48 @@ def test_selector_does_not_exist_until_all_route_reviews_finish(
     assert idea_portfolio_selection(tmp_path) is None
 
 
+def test_background_reconciliation_creates_and_materializes_selector(
+    tmp_path: Path,
+) -> None:
+    _state(tmp_path)
+    root = ensure_idea_portfolio(tmp_path, direction="reliable agents")
+    routes = _complete_routes_and_reviews(tmp_path, root)
+    marker = {
+        "team_id": TEAM_ID + "-g1",
+        "team_root": str(root),
+        "cwd": str(tmp_path),
+    }
+
+    reconcile_idea_portfolio_campaign(
+        project_root=tmp_path,
+        state_root=tmp_path,
+        marker=marker,
+    )
+    state = json.loads(
+        (tmp_path / ".argus" / "PIPELINE_STATE.json").read_text(encoding="utf-8")
+    )
+    selector_root = (
+        tmp_path / ".argus" / "teams" / state["idea_portfolio"]["selection_team_id"]
+    )
+    assert len(task_board.snapshot(selector_root)) == 1
+
+    _complete_selector(tmp_path, routes[0])
+    reconcile_idea_portfolio_campaign(
+        project_root=tmp_path,
+        state_root=tmp_path,
+        marker=marker,
+    )
+
+    selected = idea_portfolio_selection(tmp_path)
+    assert selected is not None
+    assert selected["route_id"] == routes[0]["target"]
+
+
 def test_team_local_owner_ids_and_compact_handoff(tmp_path: Path) -> None:
-    from argus_skill.life.supervisor._planning_cycle_enqueue import (
+    from argus.life.supervisor._planning_cycle_enqueue import (
         _automatic_stage_target,
     )
-    from argus_skill.verticals.research.stages import CHECKLIST_STAGE_ORDER
+    from argus.verticals.research.stages import CHECKLIST_STAGE_ORDER
 
     _state(tmp_path)
     root = ensure_idea_portfolio(tmp_path, direction="reliable agents")
@@ -200,7 +309,7 @@ def test_team_local_owner_ids_and_compact_handoff(tmp_path: Path) -> None:
     assert "winner_detail" not in selected
     notes = (tmp_path / "RESEARCH_NOTES.md").read_text(encoding="utf-8")
     assert notes.startswith("# Research notes — Idea stage\n")
-    assert notes.count("\n- **route-") == 11
+    assert notes.count("\n- **route-") == portfolio_size() - 1
     assert ("evidence " * 4000).strip() in notes
 
 
@@ -307,6 +416,112 @@ def test_direct_idea_only_research_does_not_prepare_a_paper_portfolio(
     assert idea_portfolio_completion_issues(tmp_path) == ()
 
 
+def test_preparation_exposes_the_only_canonical_portfolio_to_engineer(
+    tmp_path: Path,
+) -> None:
+    _state(tmp_path)
+    prompt_blocks: list[str] = []
+
+    prepare_skill_libraries(
+        VerticalLibraryContext(
+            workdir=tmp_path,
+            state_root=tmp_path,
+            stage="idea",
+            objective="select one strong idea",
+            direction="reliable agents",
+            workflow_mode="staged",
+            paper_mission=True,
+            team_task_id=None,
+            runner=None,
+            model=None,
+            emit=lambda _event: None,
+            prompt_blocks=prompt_blocks,
+        )
+    )
+
+    assert len(prompt_blocks) == 1
+    assert f".argus/teams/{TEAM_ID}-g1" in prompt_blocks[0]
+    assert "only authorized Idea portfolio" in prompt_blocks[0]
+    assert "Do not call `team form`" in prompt_blocks[0]
+    assert "Do not launch a shell command or background subagent" in prompt_blocks[0]
+
+
+def test_skill_library_state_includes_vertical_prompt_blocks() -> None:
+    class Harness(SkillLibraryMixin):
+        engineer_mission = SimpleNamespace(
+            libraries=lambda **_kwargs: SimpleNamespace(block="library index")
+        )
+        reviewer = SimpleNamespace(
+            mission=SimpleNamespace(
+                libraries=lambda: SimpleNamespace(block="reviewer index")
+            )
+        )
+
+        def _prepare_vertical_libraries(
+            self,
+            _mission: MissionContext,
+        ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+            return (("required.md",), ("runtime-owned portfolio",))
+
+    state = Harness()._prepare_skill_libraries(
+        MissionContext(
+            workdir=Path("/project"),
+            run_id="run-1",
+            task="task",
+            skill_task="task",
+            request_anchor="request",
+            active_vertical="research",
+            engineer_role_banner="",
+            seed_thread_id=None,
+            scope="",
+        )
+    )
+
+    assert state.skill_text == "library index\n\nruntime-owned portfolio"
+    assert state.reviewer_skill_block == "reviewer index"
+
+
+def test_planner_cannot_claim_a_second_idea_portfolio_path(
+    tmp_path: Path,
+) -> None:
+    task = SimpleNamespace(
+        title="Select an idea tournament",
+        objective="Produce twelve routes and twelve independent reviews.",
+        acceptance_check="The portfolio has one selector.",
+        owns_paths=[".argus/teams/idea-tournament-20260913", "RESEARCH_NOTES.md"],
+    )
+
+    issues = planner_task_issues("idea", tmp_path, task)
+
+    assert len(issues) == 1
+    assert "runtime owns the canonical Idea portfolio" in issues[0]
+    assert planner_task_issues("experiment", tmp_path, task) == ()
+
+
+def test_planner_may_use_nonportfolio_team_in_idea_stage(tmp_path: Path) -> None:
+    task = SimpleNamespace(
+        title="Audit one source",
+        objective="Delegate one bounded citation audit.",
+        acceptance_check="The citation is checked.",
+        owns_paths=[".argus/teams/citation-audit"],
+    )
+
+    assert planner_task_issues("idea", tmp_path, task) == ()
+
+
+def test_planner_may_benchmark_twelve_items_in_a_nonportfolio_team(
+    tmp_path: Path,
+) -> None:
+    task = SimpleNamespace(
+        title="Benchmark kernels",
+        objective="Benchmark 12 kernels in parallel.",
+        acceptance_check="All measurements are recorded.",
+        owns_paths=[".argus/teams/kernel-benchmark"],
+    )
+
+    assert planner_task_issues("idea", tmp_path, task) == ()
+
+
 def test_locked_paper_idea_uses_playbook_without_reselection(
     tmp_path: Path,
 ) -> None:
@@ -363,3 +578,179 @@ def test_direct_nonpaper_research_still_requires_idea_playbook(
     )
 
     assert required == ["research-idea-playbook.md"]
+
+
+def test_routes_grounded_by_arxiv_doi_or_fetched_sources_are_valid(tmp_path: Path) -> None:
+    """Three finished routes cited arXiv ids and `.argus/sources/` texts and no
+    URL; the URL-only check reopened all six tasks (2026-09-16 04:02)."""
+    from argus.verticals.research.idea_portfolio import _route_output_present
+
+    task = {"owns_paths": ["routes/r.md"]}
+    route = tmp_path / "routes" / "r.md"
+    route.parent.mkdir(parents=True)
+    for text in (
+        "Avron et al. (ICML 2014 / arXiv:1412.8293): QMC feature maps.",
+        "See doi 10.1137/22M1466244 for the SISC version.",
+        "Primary source: https://arxiv.org/abs/1506.02785",
+    ):
+        route.write_text(text, encoding="utf-8")
+        assert _route_output_present(tmp_path, task), text
+    (tmp_path / ".argus" / "sources").mkdir(parents=True)
+    (tmp_path / ".argus" / "sources" / "abc123.txt").write_text("fetched", encoding="utf-8")
+    route.write_text("Source: `.argus/sources/abc123.txt` (fetched 2026-09-16).", encoding="utf-8")
+    assert _route_output_present(tmp_path, task)
+    route.write_text("Source: `.argus/sources/missing.txt`.", encoding="utf-8")
+    assert not _route_output_present(tmp_path, task)
+    route.write_text("A mechanism with no sources at all.", encoding="utf-8")
+    assert not _route_output_present(tmp_path, task)
+
+
+def test_reopened_portfolio_tasks_say_why(tmp_path: Path) -> None:
+    _state(tmp_path)
+    root = ensure_idea_portfolio(tmp_path, direction="reliable agents")
+    task = task_board.claim_top(root, "w1", now=time.time())
+    assert task is not None and task["role"] == "idea-route"
+    output = tmp_path / task["owns_paths"][0]
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("A mechanism with no sources at all.", encoding="utf-8")
+    task_board.complete(root, task["task_id"], shard=_shard(root, "w1", task))
+
+    ensure_idea_portfolio(tmp_path, direction="reliable agents")
+
+    reopened = next(t for t in task_board.snapshot(root) if t["task_id"] == task["task_id"])
+    assert reopened["state"] == "pending" and reopened["attempts"] == 1
+    assert reopened["reason"].startswith("reopened: route file names no source")
+
+
+def test_ensure_claims_runtime_ownership_of_a_marker_written_without_one(tmp_path: Path) -> None:
+    """The trial's portfolio marker predated ownership; without it the lead
+    polled the team instead of waiting (2026-09-16 04:08)."""
+    from argus.team import registry
+
+    _state(tmp_path)
+    root = ensure_idea_portfolio(tmp_path, direction="reliable agents")
+    team_id = root.name
+    marker = registry.marker_path(tmp_path, team_id)
+    stale = json.loads(marker.read_text(encoding="utf-8"))
+    stale.pop("owner", None)
+    marker.write_text(json.dumps(stale), encoding="utf-8")
+
+    ensure_idea_portfolio(tmp_path, direction="reliable agents")
+
+    fresh = json.loads(marker.read_text(encoding="utf-8"))
+    assert fresh["owner"] == "runtime"
+    assert fresh["created_ts"] == stale["created_ts"] and fresh["team_root"] == stale["team_root"]
+
+
+def _complete_routes_with_verdicts(
+    project: Path,
+    root: Path,
+    verdict_for: "dict[str, str]",
+) -> list[dict]:
+    """Finish every route/review pair, rejecting routes named in ``verdict_for``."""
+    routes: list[dict] = []
+    index = 0
+    while task := task_board.claim_top(root, f"worker-{index:02d}", now=time.time()):
+        owner = f"worker-{index:02d}"
+        index += 1
+        output = project / task["owns_paths"][0]
+        output.parent.mkdir(parents=True, exist_ok=True)
+        if task["role"] == "idea-route":
+            output.write_text(
+                f"# {task['target']}\nhttps://example.org/primary\n", encoding="utf-8"
+            )
+            routes.append(task)
+        else:
+            verdict = verdict_for.get(task["target"], "qualified")
+            output.write_text(
+                json.dumps({
+                    "schema_version": 2,
+                    "route_id": task["target"],
+                    "verdict": verdict,
+                    "summary": f"{task['target']} {verdict}",
+                    "fatal_concerns": (
+                        [f"{task['target']} rests on a benchmark that cannot separate the mechanism"]
+                        if verdict == "rejected"
+                        else []
+                    ),
+                }),
+                encoding="utf-8",
+            )
+        task_board.complete(root, task["task_id"], shard=_shard(root, owner, task))
+    return routes
+
+
+def test_all_rejected_routes_regenerate_once_with_reviewer_feedback(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    monkeypatch.delenv("ARGUS_RESEARCH_PORTFOLIO_MAX_REGENERATIONS", raising=False)
+    _state(tmp_path)
+    root = ensure_idea_portfolio(tmp_path, direction="reliable agents")
+    routes = _complete_routes_with_verdicts(
+        tmp_path, root, {f"route-{i:02d}": "rejected" for i in range(1, portfolio_size() + 1)}
+    )
+    ensure_idea_portfolio(tmp_path, direction="reliable agents")
+
+    payload = json.loads((tmp_path / ".argus" / "PIPELINE_STATE.json").read_text(encoding="utf-8"))
+    assert payload["idea_portfolio"]["regenerations"] == 1
+    assert "selection_team_id" not in payload["idea_portfolio"]
+    board = {t["task_id"]: t for t in task_board.snapshot(root)}
+    for route in routes:
+        reopened = board[route["task_id"]]
+        assert reopened["state"] == "pending"
+        assert "every route in this portfolio was rejected" in reopened["reason"]
+        assert "cannot separate the mechanism" in reopened["reason"]
+        assert board[f"{route['task_id']}-review"]["state"] == "pending"
+
+    # The regenerated routes are rejected again: the bounded budget is spent,
+    # so selection proceeds and the selector is told to pick the most
+    # repairable route.
+    _complete_routes_with_verdicts(
+        tmp_path, root, {f"route-{i:02d}": "rejected" for i in range(1, portfolio_size() + 1)}
+    )
+    ensure_idea_portfolio(tmp_path, direction="reliable agents")
+    payload = json.loads((tmp_path / ".argus" / "PIPELINE_STATE.json").read_text(encoding="utf-8"))
+    assert payload["idea_portfolio"]["regenerations"] == 1
+    selection_root = tmp_path / ".argus" / "teams" / payload["idea_portfolio"]["selection_team_id"]
+    selector = next(t for t in task_board.snapshot(selection_root) if t["role"] == "idea-selector")
+    assert "most repairable" in selector["objective"]
+    assert '"review_verdict": "rejected"' in selector["objective"]
+
+
+def test_selection_is_restricted_to_qualified_routes(tmp_path: Path) -> None:
+    _state(tmp_path)
+    root = ensure_idea_portfolio(tmp_path, direction="reliable agents")
+    routes = _complete_routes_with_verdicts(tmp_path, root, {"route-01": "rejected"})
+    ensure_idea_portfolio(tmp_path, direction="reliable agents")
+    payload = json.loads((tmp_path / ".argus" / "PIPELINE_STATE.json").read_text(encoding="utf-8"))
+    assert "regenerations" not in payload["idea_portfolio"]
+    selection_root = tmp_path / ".argus" / "teams" / payload["idea_portfolio"]["selection_team_id"]
+    selector = next(t for t in task_board.snapshot(selection_root) if t["role"] == "idea-selector")
+    assert "Only routes whose independent review outcome is `qualified` are eligible" in selector["objective"]
+    assert "route-01" not in selector["objective"].split("eligible (")[1].split(")")[0]
+
+    rejected = next(r for r in routes if r["target"] == "route-01")
+    _complete_selector(tmp_path, rejected)
+    ensure_idea_portfolio(tmp_path, direction="reliable agents")
+    assert idea_portfolio_selection(tmp_path) is None
+    selector = next(t for t in task_board.snapshot(selection_root) if t["role"] == "idea-selector")
+    assert selector["state"] == "pending"
+
+    qualified = next(r for r in routes if r["target"] != "route-01")
+    _complete_selector(tmp_path, qualified)
+    ensure_idea_portfolio(tmp_path, direction="reliable agents")
+    selected = idea_portfolio_selection(tmp_path)
+    assert selected is not None and selected["route_id"] == qualified["target"]
+
+
+def test_regeneration_budget_is_an_operator_setting(monkeypatch) -> None:
+    from argus.verticals.research.idea_portfolio import max_regenerations
+
+    monkeypatch.delenv("ARGUS_RESEARCH_PORTFOLIO_MAX_REGENERATIONS", raising=False)
+    assert max_regenerations() == 1
+    monkeypatch.setenv("ARGUS_RESEARCH_PORTFOLIO_MAX_REGENERATIONS", "9")
+    assert max_regenerations() == 3
+    monkeypatch.setenv("ARGUS_RESEARCH_PORTFOLIO_MAX_REGENERATIONS", "0")
+    assert max_regenerations() == 0
+    monkeypatch.setenv("ARGUS_RESEARCH_PORTFOLIO_MAX_REGENERATIONS", "many")
+    assert max_regenerations() == 1

@@ -1,45 +1,37 @@
 """Small round budgets must retain the guards that can meaningfully fire.
 
-The semantic-stall guard is driven only by the Reviewer's structured
-``FORWARD_PROGRESS=false`` judgment. These tests exercise the real
+The semantic-stall guard is driven only by the Reviewer's native action
+with ``forward_progress=False``. These tests exercise the real
 Engineer -> Reviewer -> settlement path so arithmetic-only tests cannot hide a
 disconnected runtime counter again.
 """
 
 from __future__ import annotations
 
-import json
-
-from argus_skill.adapters.memory_backend import CannedResponse, MemoryBackend
-from argus_skill.core.models import ReviewDecision, RunnerResult
-from argus_skill.engineer import round_settlement
-from argus_skill.engineer.round_state import EngineerTurnOutcome, RoundLoopState
-from argus_skill.engineer.runner import (
+from argus.adapters.memory_backend import CannedResponse, MemoryBackend
+from argus.core.models import ReviewDecision, RunnerResult
+from argus.engineer import round_settlement
+from argus.engineer.round_state import EngineerTurnOutcome, RoundLoopState
+from argus.engineer.runner import (
     EngineerConfig,
     SupervisedConfig,
     SupervisedEngineer,
 )
-from argus_skill.reviewer import Reviewer, ReviewerConfig
+from argus.reviewer import Reviewer, ReviewerConfig
 
 
-def _review_json(
+def _review_action(
     status: str,
     *,
     forward_progress: bool | None,
     reason: str = "Residual still open.",
-) -> str:
+) -> tuple[str, dict]:
     payload: dict[str, object] = {
-        "status": status,
-        "reason": reason,
-        "next_action": "Discharge the next conjunct." if status == "continue" else "",
-        "operator_question": None,
+        "review": reason + ("\nDischarge the next conjunct." if status == "continue" else ""),
     }
     if forward_progress is not None:
-        payload["planner_report"] = {
-            "forward_progress": forward_progress,
-            "plan_signal": "continue",
-        }
-    return json.dumps(payload)
+        payload["forward_progress"] = forward_progress
+    return ("approve_review" if status == "done" else "revise_review"), payload
 
 
 def _engineer(backend: MemoryBackend) -> SupervisedEngineer:
@@ -65,7 +57,7 @@ def _queue_round(
     backend.queue(
         "reviewer",
         CannedResponse(
-            message=_review_json(
+            review_action=_review_action(
                 status,
                 forward_progress=forward_progress,
                 reason=(
@@ -426,9 +418,9 @@ def test_waiting_on_a_healthy_job_is_not_stalling(tmp_path) -> None:
     not finished, so four such rounds retired the mission for doing exactly what
     it was asked to do. Work that is stalled or needs attention still counts.
     """
-    from argus_skill.core.models import ReviewDecision
-    from argus_skill.engineer import round_settlement
-    from argus_skill.engineer.external_work import ExternalWorkState, ExternalWorkStatus
+    from argus.core.models import ReviewDecision
+    from argus.engineer import round_settlement
+    from argus.engineer.external_work import ExternalWorkState, ExternalWorkStatus
 
     review = ReviewDecision(
         status="continue", reason="job still running", next_action=""

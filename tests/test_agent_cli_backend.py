@@ -1,13 +1,13 @@
-"""Tests for ``argus_skill.adapters.agent_cli_backend``.
+"""Tests for ``argus.adapters.agent_cli_backend``.
 
 We do NOT spawn a real codex / claude CLI in CI. Instead we monkey-patch
 the underlying ``AgentCliRunner.run_exec`` to return a synthetic
 ``AgentRunResult``, then verify our adapter:
 
-  * Translates argus-skill ``RunnerOptions`` → the bundled runner's own
+  * Translates argus ``RunnerOptions`` → the bundled runner's own
     ``RunnerOptions`` correctly (model, reasoning_effort, working_dir,
     extra_args, full_auto, skip_git_repo_check, dangerous_yolo).
-  * Translates ``AgentRunResult`` → argus-skill ``RunnerResult``
+  * Translates ``AgentRunResult`` → argus ``RunnerResult``
     correctly, including agent_messages, stdout/stderr lines, thread_id,
     fatal_error.
   * Sums token counts from the JSON event stream (last non-zero wins).
@@ -20,51 +20,49 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from contextvars import ContextVar
 from pathlib import Path
-from types import ModuleType
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
-from argus_skill.adapters.agent_cli_backend import (
+from argus.adapters.agent_cli_backend import (
     AgentCliBackend,
     build_agent_cli_backend_from_env,
 )
-from argus_skill.adapters.agent_cli_backend._core import _RepeatedToolCallGuard
-from argus_skill.core.models import RunnerOptions
-from argus_skill.core.token_usage import extract_token_usage, sum_token_counts
-from argus_skill.provider_integrations.authorization_retry import (
+from argus.adapters.agent_cli_backend._core import _RepeatedToolCallGuard
+from argus.agent_cli.agent_cli_runner import AgentCliRunner
+from argus.agent_cli.agent_cli_runner import RunnerOptions as CliRunnerOptions
+from argus.agent_cli.models import AgentRunResult
+from argus.core.models import RunnerOptions
+from argus.core.token_usage import extract_token_usage, sum_token_counts
+from argus.provider_integrations.authorization_retry import (
     BackendLoginRequired,
 )
-from argus_skill.provider_integrations.copilot_usage import (
+from argus.provider_integrations.copilot_usage import (
     CopilotCallUsage,
     CopilotModelUsage,
 )
 
 
-def test_repeated_tool_guard_only_interrupts_consecutive_identical_calls() -> None:
+@pytest.mark.parametrize("dialect", ["claude", "cursor"])
+def test_repeated_tool_guard_only_interrupts_consecutive_identical_calls(dialect) -> None:
     guard = _RepeatedToolCallGuard(limit=3)
 
     def tool(call_id: str, path: str) -> None:
-        guard.observe(
-            "stdout",
-            json.dumps({
+        payload = {"name": "Read", "input": {"file_path": path}}
+        event = (
+            {"type": "tool_call", "subtype": "started", "tool_call": payload}
+            if dialect == "cursor" else {
                 "type": "assistant",
-                "message": {
-                    "content": [{
-                        "type": "tool_use",
-                        "id": call_id,
-                        "name": "Read",
-                        "input": {"file_path": path},
-                    }]
-                },
-            }),
+                "message": {"content": [{"type": "tool_use", "id": call_id, **payload}]},
+            }
         )
+        guard.observe("stdout", json.dumps(event))
 
     def result(call_id: str, *, failed: bool) -> None:
         guard.observe(
@@ -101,118 +99,6 @@ def test_repeated_tool_guard_only_interrupts_consecutive_identical_calls() -> No
     assert guard.interrupt_reason() == ""
 
 
-@dataclass
-class FakeCliRunnerOptions:
-    model: str = "gpt-5.4-mini"
-    reasoning_effort: str = "medium"
-    dangerous_yolo: bool = False
-    full_auto: bool = False
-    skip_git_repo_check: bool = False
-    sandbox_mode: str | None = None
-    force_safe_mode: bool = False
-    disable_tools: bool = False
-    extra_args: list[str] | None = None
-    working_dir: str | None = None
-    skill_paths: list[str] | None = None
-    external_interrupt_reason_provider: Any | None = None
-    inactivity_callback: Any | None = None
-    watchdog_soft_idle_seconds: int = 0
-    watchdog_stalled_idle_seconds: int = 0
-    watchdog_hard_idle_seconds: int = 0
-
-
-@dataclass
-class AgentRunResult:
-    command: list[str]
-    exit_code: int
-    thread_id: str | None
-    agent_messages: list[str]
-    json_events: list[dict[str, Any]]
-    stdout_lines: list[str]
-    stderr_lines: list[str]
-    turn_completed: bool
-    turn_failed: bool
-    fatal_error: str | None = None
-    usage_model: str = ""
-
-
-class AgentCliRunner:
-    def __init__(
-        self,
-        *,
-        agent_bin: str | None = None,
-        backend: str = "codex",
-        event_callback: Any | None = None,
-        default_extra_args: list[str] | None = None,
-        before_exec: Any | None = None,
-    ) -> None:
-        self.agent_bin = agent_bin
-        self.backend = backend
-        self.event_callback = event_callback
-        self.default_extra_args = list(default_extra_args or [])
-        self.before_exec = before_exec
-
-    def run_exec(self, *, prompt, resume_thread_id, options, run_label):
-        raise NotImplementedError
-
-
-@pytest.fixture(autouse=True)
-def fake_agent_cli(monkeypatch: pytest.MonkeyPatch) -> None:
-    pkg = ModuleType("argus_skill.agent_cli")
-    # Fake the runner boundary while allowing newly imported supervisor
-    # helpers to resolve untouched bundled modules such as process control.
-    setattr(pkg, "__path__", [str(Path(__file__).resolve().parents[1] / "argus_skill" / "agent_cli")])
-
-    runner_mod = ModuleType("argus_skill.agent_cli.agent_cli_runner")
-    runner_mod.__dict__["AgentCliRunner"] = AgentCliRunner
-    runner_mod.__dict__["RunnerOptions"] = FakeCliRunnerOptions
-
-    backend_mod = ModuleType("argus_skill.agent_cli.runner_backend")
-    backend_mod.__dict__["BACKEND_CLAUDE"] = "claude"
-    backend_mod.__dict__["BACKEND_CODEX"] = "codex"
-    backend_mod.__dict__["BACKEND_COPILOT"] = "copilot"
-    backend_mod.__dict__["BACKEND_GROK"] = "grok"
-    backend_mod.__dict__["BACKEND_OPENCODE"] = "opencode"
-    backend_mod.__dict__["BACKEND_PI"] = "pi"
-    backend_mod.__dict__["DEFAULT_RUNNER_BACKEND"] = "codex"
-
-    def default_runner_bin() -> str | None:
-        return "codex"
-
-    def normalize_runner_backend(backend: str | None) -> str:
-        return (backend or "codex").lower()
-
-    backend_mod.__dict__["default_runner_bin"] = default_runner_bin
-    backend_mod.__dict__["normalize_runner_backend"] = normalize_runner_backend
-
-    models_mod = ModuleType("argus_skill.agent_cli.models")
-    models_mod.__dict__["AgentRunResult"] = AgentRunResult
-
-    setattr(pkg, "agent_cli_runner", runner_mod)
-    setattr(pkg, "runner_backend", backend_mod)
-    setattr(pkg, "models", models_mod)
-
-    # ``load_agent_cli_runtime()`` only ever imports from the bundled
-    # ``argus_skill.agent_cli`` package, so that is the only surface we
-    # need to mock here.
-    monkeypatch.setitem(sys.modules, "argus_skill.agent_cli", pkg)
-    monkeypatch.setitem(
-        sys.modules,
-        "argus_skill.agent_cli.agent_cli_runner",
-        runner_mod,
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "argus_skill.agent_cli.runner_backend",
-        backend_mod,
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "argus_skill.agent_cli.models",
-        models_mod,
-    )
-
-
 def _make_cli_result(
     *,
     command: list[str] | None = None,
@@ -240,6 +126,13 @@ def _make_cli_result(
     )
 
 
+@pytest.fixture
+def cli_call(monkeypatch):
+    call = Mock(return_value=_make_cli_result(agent_messages=["ok"]))
+    monkeypatch.setattr(AgentCliRunner, "run_exec", call)
+    return call
+
+
 def _configure_relay_credential(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -247,7 +140,7 @@ def _configure_relay_credential(
     *,
     environment_token: str | None = None,
 ) -> Path:
-    from argus_skill.provider_integrations import authorization_retry
+    from argus.provider_integrations import authorization_retry
 
     codex_home = tmp_path / "codex"
     codex_home.mkdir()
@@ -443,19 +336,12 @@ def test_run_exec_translates_options_and_result(
     backend.set_usage_context(project_root=tmp_path / ".argus")
     captured: dict[str, Any] = {}
 
-    def fake_run_exec(
-        self: Any,
-        *,
-        prompt: Any,
-        resume_thread_id: Any,
-        options: Any,
-        run_label: str,
-    ) -> AgentRunResult:
+    def fake_run_exec(self, prompt, resume_thread_id, options, run_label, **kwargs) -> AgentRunResult:
         captured["prompt"] = prompt
         captured["resume_thread_id"] = resume_thread_id
         captured["options"] = options
         captured["run_label"] = run_label
-        assert isinstance(options, FakeCliRunnerOptions)
+        assert isinstance(options, CliRunnerOptions)
         return _make_cli_result(
             agent_messages=["hello world", "final answer"],
             json_events=[
@@ -529,93 +415,44 @@ def test_run_exec_translates_options_and_result(
     assert result.call_id_log_correlated is True
 
 
-def test_opencode_success_persists_provider_reported_cost(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend = AgentCliBackend(backend="opencode")
+@pytest.mark.parametrize("provider,model,usage_model,event", [
+    pytest.param("opencode", "anthropic/claude-sonnet-4-5", "", {
+        "type": "step_finish",
+        "part": {
+            "tokens": {
+                "input": 100, "output": 20, "reasoning": 5,
+                "cache": {"read": 40, "write": 0},
+            },
+            "cost": 0.0123, "reason": "stop",
+        },
+    }, id="opencode"),
+    pytest.param("pi", "gpt-5.4-mini", "gpt-5.4-mini", {
+        "type": "message_end",
+        "message": {
+            "role": "assistant", "model": "gpt-5.4-mini",
+            "usage": {
+                "input": 100, "output": 20, "cacheRead": 40, "cacheWrite": 0,
+                "reasoning": 5, "cost": {"total": 0.0123},
+            },
+        },
+    }, id="pi"),
+])
+def test_success_persists_provider_reported_cost(
+    tmp_path, monkeypatch, provider, model, usage_model, event,
+):
+    backend = AgentCliBackend(backend=provider)
     project = tmp_path / ".argus"
     backend.set_usage_context(project_root=project)
-
     monkeypatch.setattr(
-        backend._runner.__class__,
-        "run_exec",
+        AgentCliRunner, "run_exec",
         lambda self, **kwargs: _make_cli_result(
-            json_events=[
-                {
-                    "type": "step_finish",
-                    "part": {
-                        "tokens": {
-                            "input": 100,
-                            "output": 20,
-                            "reasoning": 5,
-                            "cache": {"read": 40, "write": 0},
-                        },
-                        "cost": 0.0123,
-                        "reason": "stop",
-                    },
-                }
-            ],
-            thread_id="opencode-cost-thread",
+            json_events=[event], thread_id=f"{provider}-cost-thread", usage_model=usage_model,
         ),
-        raising=True,
     )
-
     result = backend.run_exec(
-        prompt="priced OpenCode call",
-        options=RunnerOptions(model="anthropic/claude-sonnet-4-5"),
+        prompt=f"priced {provider} call", options=RunnerOptions(model=model),
         run_label="engineer-r1",
     )
-
-    usage_row = json.loads((project / "usage.jsonl").read_text().strip())
-    assert result.cost_usd == pytest.approx(0.0123)
-    assert result.pricing_status == "priced"
-    assert usage_row["cost_usd"] == pytest.approx(0.0123)
-    assert usage_row["pricing_tier"] == "provider_reported"
-    assert usage_row["cost_basis"] == "provider_reported"
-
-
-def test_pi_success_persists_provider_reported_cost(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend = AgentCliBackend(backend="pi")
-    project = tmp_path / ".argus"
-    backend.set_usage_context(project_root=project)
-
-    monkeypatch.setattr(
-        backend._runner.__class__,
-        "run_exec",
-        lambda self, **kwargs: _make_cli_result(
-            json_events=[
-                {
-                    "type": "message_end",
-                    "message": {
-                        "role": "assistant",
-                        "model": "gpt-5.4-mini",
-                        "usage": {
-                            "input": 100,
-                            "output": 20,
-                            "cacheRead": 40,
-                            "cacheWrite": 0,
-                            "reasoning": 5,
-                            "cost": {"total": 0.0123},
-                        },
-                    },
-                }
-            ],
-            thread_id="pi-cost-thread",
-            usage_model="gpt-5.4-mini",
-        ),
-        raising=True,
-    )
-
-    result = backend.run_exec(
-        prompt="priced Pi call",
-        options=RunnerOptions(model="gpt-5.4-mini"),
-        run_label="engineer-r1",
-    )
-
     usage_row = json.loads((project / "usage.jsonl").read_text().strip())
     assert result.cost_usd == pytest.approx(0.0123)
     assert result.pricing_status == "priced"
@@ -661,11 +498,11 @@ def test_run_exec_passes_global_budget_root_to_cost_control(
         return None, "captured reservation"
 
     monkeypatch.setattr(
-        "argus_skill.core.cost_control.cost_control_enabled",
+        "argus.core.cost_control.cost_control_enabled",
         lambda: True,
     )
     monkeypatch.setattr(
-        "argus_skill.core.cost_control.reserve_call_budget",
+        "argus.core.cost_control.reserve_call_budget",
         deny_after_capture,
     )
 
@@ -712,7 +549,7 @@ def test_completed_run_exec_counts_after_mission_process_is_killed(
 
     # No life.mission.completed event is written: this models SIGKILL after the
     # completed call returned. The daily aggregate still reads the durable call.
-    from argus_skill.life.supervisor import global_daily_spend
+    from argus.life.supervisor import global_daily_spend
 
     assert result.cost_usd == pytest.approx(0.008)
     assert global_daily_spend(global_root=root) == pytest.approx(result.cost_usd)
@@ -827,7 +664,7 @@ def test_settled_call_cost_blocks_the_next_call_at_global_cap(
     assert "global daily budget exhausted" in str(denied.fatal_error)
 
 
-def test_unpriced_call_blocks_next_provider_spawn_when_policy_is_block(
+def test_unpriced_call_blocks_provider_spawn_and_acknowledged_risk_still_obeys_cap(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -835,7 +672,6 @@ def test_unpriced_call_blocks_next_provider_spawn_when_policy_is_block(
     project = root / "projects" / "p1"
     monkeypatch.setenv("ARGUS_SKILL_HOME", str(root))
     monkeypatch.setenv("ARGUS_SKILL_COST_CONTROL", "1")
-    monkeypatch.setenv("ARGUS_SKILL_UNPRICED_COST_POLICY", "block")
     monkeypatch.setenv("ARGUS_SKILL_CODEX_GUARD", "0")
     backend = AgentCliBackend(backend="codex")
     backend.set_usage_context(project_root=project, mission_id="mission-1")
@@ -851,7 +687,7 @@ def test_unpriced_call_blocks_next_provider_spawn_when_policy_is_block(
                     "output_tokens": 20,
                 }
             ],
-            thread_id="unknown-thread",
+            thread_id=kwargs["run_label"],
         )
 
     monkeypatch.setattr(
@@ -876,10 +712,26 @@ def test_unpriced_call_blocks_next_provider_spawn_when_policy_is_block(
     assert first.cost_usd is None
     assert calls == ["engineer-r1"]
     assert "unresolved provider cost" in second.fatal_error
-    assert second.stop_kind == "budget_exhausted"
+    assert second.stop_kind == "cost_unreconciled"
     assert second.pricing_status == "not_billed"
     state = json.loads((root / "cost-control.json").read_text())
     assert [row["call_id"] for row in state["unresolved"]] == [first.call_id]
+    from argus.core.cost_control import acknowledge_unpriced_call
+
+    acknowledge_unpriced_call(
+        global_root=root, project_id=project.name, call_id=first.call_id,
+        liability_usd=1.0, reason="Operator accepts this one unresolved call",
+    )
+    monkeypatch.setenv("ARGUS_SKILL_GLOBAL_DAILY_CAP_USD", "1")
+    denied = backend.run_exec(
+        prompt="known cap reached",
+        options=RunnerOptions(model="gpt-5.6-sol"),
+        run_label="engineer-r2",
+    )
+    assert calls == ["engineer-r1"]
+    assert denied.stop_kind == "budget_exhausted"
+    assert denied.pricing_status == "not_billed"
+    assert "global daily budget exhausted" in denied.fatal_error
 
 
 def test_missing_copilot_resume_target_does_not_poison_cost_control(
@@ -890,14 +742,13 @@ def test_missing_copilot_resume_target_does_not_poison_cost_control(
     project = root / "projects" / "p1"
     monkeypatch.setenv("ARGUS_SKILL_HOME", str(root))
     monkeypatch.setenv("ARGUS_SKILL_COST_CONTROL", "1")
-    monkeypatch.setenv("ARGUS_SKILL_UNPRICED_COST_POLICY", "block")
     monkeypatch.setenv("ARGUS_SKILL_COPILOT_GUARD", "0")
     monkeypatch.setattr(
-        "argus_skill.adapters.agent_cli_backend._exec_spawn.capture_copilot_usage_cursor",
+        "argus.adapters.agent_cli_backend._exec_spawn.capture_copilot_usage_cursor",
         lambda: None,
     )
     monkeypatch.setattr(
-        "argus_skill.adapters.agent_cli_backend._exec_spawn.read_copilot_usage_since",
+        "argus.adapters.agent_cli_backend._exec_spawn.read_copilot_usage_since",
         lambda *args, **kwargs: None,
     )
     backend = AgentCliBackend(backend="copilot")
@@ -947,15 +798,10 @@ def test_run_exec_writes_full_agent_io_log(
     log_path = tmp_path / "events.jsonl"
     monkeypatch.setenv("ARGUS_SKILL_AGENT_IO_LOG", str(log_path))
     backend = AgentCliBackend(backend="copilot")
+    provider_prompts: list[str] = []
 
-    def fake_run_exec(
-        self: Any,
-        *,
-        prompt: Any,
-        resume_thread_id: Any,
-        options: Any,
-        run_label: str,
-    ) -> AgentRunResult:
+    def fake_run_exec(self, prompt, **kwargs) -> AgentRunResult:
+        provider_prompts.append(prompt)
         assert self.event_callback is not None
         thread = threading.Thread(
             target=self.event_callback,
@@ -998,7 +844,11 @@ def test_run_exec_writes_full_agent_io_log(
     ]
     assert [row["io_kind"] for row in rows[:-1]] == ["start", "complete"]
     assert [row["io_kind"] for row in raw_rows] == ["start", "stream", "stream"]
-    assert raw_rows[0]["prompt"] == "full prompt text"
+    # Call-bound tool instructions are part of the actual provider input. The
+    # trace must retain that complete input, including the original request.
+    assert len(provider_prompts) == 1
+    assert raw_rows[0]["prompt"] == provider_prompts[0]
+    assert raw_rows[0]["prompt"].startswith("full prompt text")
     assert rows[0]["run_label"] == "manager"
     assert [row["stream"] for row in raw_rows[1:]] == [
         "stdout",
@@ -1035,7 +885,7 @@ def test_full_agent_io_batches_raw_stream_writes(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from argus_skill.adapters.agent_cli_backend import _io_log
+    from argus.adapters.agent_cli_backend import _io_log
 
     log_path = tmp_path / "events.jsonl"
     monkeypatch.setenv("ARGUS_SKILL_AGENT_IO_LOG", str(log_path))
@@ -1100,8 +950,10 @@ def test_full_io_persists_prompt_once_not_as_user_message_echo(
     monkeypatch.setenv("ARGUS_SKILL_AGENT_IO_MODE", "full")
     backend = AgentCliBackend(backend="copilot")
     prompt = "large prompt body that must be stored exactly once"
+    provider_prompts: list[str] = []
 
     def fake_run_exec(self: Any, **kwargs: Any) -> AgentRunResult:
+        provider_prompts.append(kwargs["prompt"])
         assert self.event_callback is not None
         self.event_callback(
             "stdout",
@@ -1146,7 +998,9 @@ def test_full_io_persists_prompt_once_not_as_user_message_echo(
     assert "prompt" not in start
     assert "prompt_sha256" not in start
     assert "prompt_sha256" not in raw_start
-    assert raw_start["prompt"] == prompt
+    assert len(provider_prompts) == 1
+    assert raw_start["prompt"] == provider_prompts[0]
+    assert raw_start["prompt"].startswith(prompt)
     assert len(streams) == 1
     assert "assistant.message_delta" in streams[0]["line"]
 
@@ -1186,11 +1040,11 @@ def test_copilot_run_exec_uses_exact_session_store_tokens(
     )
     monkeypatch.setattr(backend._runner.__class__, "run_exec", fake_run_exec, raising=True)
     monkeypatch.setattr(
-        "argus_skill.adapters.agent_cli_backend._exec_spawn.capture_copilot_usage_cursor",
+        "argus.adapters.agent_cli_backend._exec_spawn.capture_copilot_usage_cursor",
         lambda: object(),
     )
     monkeypatch.setattr(
-        "argus_skill.adapters.agent_cli_backend._exec_spawn.read_copilot_usage_since",
+        "argus.adapters.agent_cli_backend._exec_spawn.read_copilot_usage_since",
         lambda cursor, session_id: exact,
     )
 
@@ -1245,11 +1099,11 @@ def test_copilot_resumed_premium_counter_without_baseline_fails_closed(
 
     monkeypatch.setattr(backend._runner.__class__, "run_exec", fake_run_exec, raising=True)
     monkeypatch.setattr(
-        "argus_skill.adapters.agent_cli_backend._exec_spawn.capture_copilot_usage_cursor",
+        "argus.adapters.agent_cli_backend._exec_spawn.capture_copilot_usage_cursor",
         lambda: object(),
     )
     monkeypatch.setattr(
-        "argus_skill.adapters.agent_cli_backend._exec_spawn.read_copilot_usage_since",
+        "argus.adapters.agent_cli_backend._exec_spawn.read_copilot_usage_since",
         lambda cursor, session_id: None,
     )
     options = RunnerOptions(model="gpt-5.6-sol", working_dir=str(tmp_path))
@@ -1327,11 +1181,11 @@ def test_copilot_acp_session_model_overrides_mislabeled_usage_row(
         )
     )
     monkeypatch.setattr(
-        "argus_skill.adapters.agent_cli_backend._exec_spawn.capture_copilot_usage_cursor",
+        "argus.adapters.agent_cli_backend._exec_spawn.capture_copilot_usage_cursor",
         lambda: object(),
     )
     monkeypatch.setattr(
-        "argus_skill.adapters.agent_cli_backend._exec_spawn.read_copilot_usage_since",
+        "argus.adapters.agent_cli_backend._exec_spawn.read_copilot_usage_since",
         lambda cursor, session_id: mislabeled,
     )
 
@@ -1491,23 +1345,17 @@ def test_codex_quota_events_and_daily_denial(
     }
 
 
+@pytest.mark.parametrize("attempt", [1, 100])
 def test_run_exec_normalizes_recoverable_reconnect_notice(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, attempt: int,
 ) -> None:
     backend = AgentCliBackend(backend="codex")
 
-    def fake_run_exec(
-        self: Any,
-        *,
-        prompt: Any,  # noqa: ARG001
-        resume_thread_id: Any,  # noqa: ARG001
-        options: Any,  # noqa: ARG001
-        run_label: str,  # noqa: ARG001
-    ) -> AgentRunResult:
+    def fake_run_exec(self, **kwargs) -> AgentRunResult:
         return _make_cli_result(
             agent_messages=["continued after reconnect"],
             fatal_error=(
-                "Reconnecting... 1/100 "
+                f"Reconnecting... {attempt}/100 "
                 "(stream disconnected before completion: response.failed event received)"
             ),
         )
@@ -1556,7 +1404,7 @@ def test_copilot_policy_denial_with_exit_zero_sets_auth_failure(
 
     assert result.fatal_error == "Error: Access denied by policy settings"
     assert backend._auth_failure_detected is True
-    from argus_skill.provider_integrations.copilot_guard import copilot_guard_snapshot
+    from argus.provider_integrations.copilot_guard import copilot_guard_snapshot
 
     assert copilot_guard_snapshot()["blocked_until"] > 0
 
@@ -1593,39 +1441,6 @@ def test_oauth_refresh_timeout_is_a_permanent_auth_blocker(
     assert backend._auth_failure_detected is True
 
 
-def test_run_exec_normalizes_high_attempt_reconnect_notice(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend = AgentCliBackend(backend="codex")
-
-    def fake_run_exec(
-        self: Any,
-        *,
-        prompt: Any,  # noqa: ARG001
-        resume_thread_id: Any,  # noqa: ARG001
-        options: Any,  # noqa: ARG001
-        run_label: str,  # noqa: ARG001
-    ) -> AgentRunResult:
-        return _make_cli_result(
-            agent_messages=["continued after high-attempt reconnect"],
-            fatal_error=(
-                "Reconnecting... 100/100 "
-                "(stream disconnected before completion: response.failed event received)"
-            ),
-        )
-
-    monkeypatch.setattr(backend._runner.__class__, "run_exec", fake_run_exec, raising=True)
-
-    result = backend.run_exec(
-        prompt="demo",
-        options=RunnerOptions(model="gpt-5.4-mini"),
-        run_label="engineer-r1",
-    )
-
-    assert result.last_agent_message == "continued after high-attempt reconnect"
-    assert result.fatal_error is None
-
-
 def test_failed_manager_timeout_preserves_429_as_provider_cooldown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1655,141 +1470,52 @@ def test_failed_manager_timeout_preserves_429_as_provider_cooldown(
     assert result.stop_kind == "provider_cooldown"
 
 
-def test_run_exec_handles_file_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("error,exit_code,detail", [
+    (FileNotFoundError("codex: not found"), 127, "not found"),
+    (RuntimeError("subprocess died"), -1, "RuntimeError"),
+])
+def test_run_exec_handles_subprocess_failure(monkeypatch, error, exit_code, detail):
     backend = AgentCliBackend(backend="codex")
 
-    def boom(
-        self: Any,
-        *,
-        prompt: Any,
-        resume_thread_id: Any,
-        options: Any,
-        run_label: str,
-    ) -> None:
-        raise FileNotFoundError("codex: not found")
+    def boom(self, **kwargs):
+        raise error
 
-    monkeypatch.setattr(backend._runner.__class__, "run_exec", boom, raising=True)
-
+    monkeypatch.setattr(AgentCliRunner, "run_exec", boom)
     result = backend.run_exec(
-        prompt="anything",
-        options=RunnerOptions(model="gpt-5.4-mini"),
+        prompt="anything", options=RunnerOptions(model="gpt-5.4-mini"),
         run_label="engineer-r1",
     )
-    assert result.exit_code == 127
+    assert result.exit_code == exit_code
     assert result.fatal_error is not None
-    assert "not found" in result.fatal_error
+    assert detail in result.fatal_error
     assert result.agent_messages == []
 
 
-def test_run_exec_handles_generic_exception(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend = AgentCliBackend(backend="codex")
-
-    def boom(
-        self: Any,
-        *,
-        prompt: Any,
-        resume_thread_id: Any,
-        options: Any,
-        run_label: str,
-    ) -> None:
-        raise RuntimeError("subprocess died")
-
-    monkeypatch.setattr(backend._runner.__class__, "run_exec", boom, raising=True)
-
-    result = backend.run_exec(
-        prompt="anything",
-        options=RunnerOptions(model="gpt-5.4-mini"),
-        run_label="engineer-r1",
-    )
-    assert result.exit_code == -1
-    assert result.fatal_error is not None
-    assert "RuntimeError" in result.fatal_error
-
-
-def test_token_count_extraction_handles_missing_events():
-    in_tok, cached_tok, out_tok, reasoning_out_tok = sum_token_counts(None)
-    assert (in_tok, cached_tok, out_tok, reasoning_out_tok) == (0, 0, 0, 0)
-    in_tok, cached_tok, out_tok, reasoning_out_tok = sum_token_counts([])
-    assert (in_tok, cached_tok, out_tok, reasoning_out_tok) == (0, 0, 0, 0)
-
-
-def test_token_count_extraction_picks_latest_nonzero():
-    events = [
+@pytest.mark.parametrize("events,expected", [
+    pytest.param(None, (0, 0, 0, 0), id="missing"),
+    pytest.param([], (0, 0, 0, 0), id="empty"),
+    pytest.param([
         {"type": "agent_message", "input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0},
-        {
-            "type": "token_count",
-            "input_tokens": 100,
-            "cached_input_tokens": 10,
-            "output_tokens": 30,
-        },
-        # a later event with zero tokens shouldn't overwrite the earlier non-zero
+        {"type": "token_count", "input_tokens": 100, "cached_input_tokens": 10, "output_tokens": 30},
         {"type": "agent_message", "input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0},
-        {
-            "type": "token_count",
-            "input_tokens": 250,
-            "cached_input_tokens": 25,
-            "output_tokens": 80,
-        },
-    ]
-    in_tok, cached_tok, out_tok, reasoning_out_tok = sum_token_counts(events)
-    assert (in_tok, cached_tok, out_tok, reasoning_out_tok) == (250, 25, 80, 0)
-
-
-def test_token_count_extraction_uses_final_usage_tuple_even_with_zero_cached():
-    events = [
-        {
-            "type": "token_count",
-            "input_tokens": 100,
-            "cached_input_tokens": 10,
-            "output_tokens": 30,
-        },
+        {"type": "token_count", "input_tokens": 250, "cached_input_tokens": 25, "output_tokens": 80},
+    ], (250, 25, 80, 0), id="latest-nonzero"),
+    pytest.param([
+        {"type": "token_count", "input_tokens": 100, "cached_input_tokens": 10, "output_tokens": 30},
         {
             "type": "turn.completed",
-            "usage": {
-                "input_tokens": 150,
-                "cached_input_tokens": 0,
-                "output_tokens": 40,
-            },
+            "usage": {"input_tokens": 150, "cached_input_tokens": 0, "output_tokens": 40},
         },
-    ]
-    in_tok, cached_tok, out_tok, reasoning_out_tok = sum_token_counts(events)
-    assert (in_tok, cached_tok, out_tok, reasoning_out_tok) == (150, 0, 40, 0)
-
-
-def test_token_count_extraction_handles_nested_content():
-    events = [
-        {
-            "type": "msg",
-            "content": {"input_tokens": 42, "cached_input_tokens": 5, "output_tokens": 7},
-        }
-    ]
-    in_tok, cached_tok, out_tok, reasoning_out_tok = sum_token_counts(events)
-    assert (in_tok, cached_tok, out_tok, reasoning_out_tok) == (42, 5, 7, 0)
-
-
-def test_token_count_extraction_handles_top_level_cached_tokens():
-    events = [
-        {
-            "type": "token_count",
-            "input_tokens": 17,
-            "cached_input_tokens": 4,
-            "output_tokens": 3,
-        }
-    ]
-    in_tok, cached_tok, out_tok, reasoning_out_tok = sum_token_counts(events)
-    assert (in_tok, cached_tok, out_tok, reasoning_out_tok) == (17, 4, 3, 0)
-
-
-def test_token_count_extraction_reads_codex_0_121_usage_field():
-    """codex-cli >=0.121 emits usage on turn.completed.
-
-    Regression test for the $0.0000 cost bug: previously sum_token_counts
-    only inspected top-level / nested-content fields, so the usage payload
-    on turn.completed was silently ignored.
-    """
-    events = [
+    ], (150, 0, 40, 0), id="final-tuple-clears-cached"),
+    pytest.param([{
+        "type": "msg",
+        "content": {"input_tokens": 42, "cached_input_tokens": 5, "output_tokens": 7},
+    }], (42, 5, 7, 0), id="nested-content"),
+    pytest.param([
+        {"type": "token_count", "input_tokens": 17, "cached_input_tokens": 4, "output_tokens": 3},
+    ], (17, 4, 3, 0), id="top-level-cached"),
+    # Codex >=0.121 moved metering to turn.completed. Ignoring it lost all cost.
+    pytest.param([
         {"type": "thread.started", "thread_id": "x"},
         {"type": "turn.started"},
         {"type": "item.completed", "item": {"type": "agent_message", "text": "hi"}},
@@ -1797,31 +1523,20 @@ def test_token_count_extraction_reads_codex_0_121_usage_field():
             "type": "turn.completed",
             "usage": {"input_tokens": 12944, "cached_input_tokens": 1234, "output_tokens": 75},
         },
-    ]
-    in_tok, cached_tok, out_tok, reasoning_out_tok = sum_token_counts(events)
-    assert (in_tok, cached_tok, out_tok, reasoning_out_tok) == (12944, 1234, 75, 0)
-
-
-def test_token_count_extraction_reads_reasoning_tokens_from_turn_completed_usage() -> None:
-    events = [
+    ], (12944, 1234, 75, 0), id="codex-0.121"),
+    pytest.param([
         {"type": "thread.started", "thread_id": "x"},
         {
             "type": "turn.completed",
             "usage": {
-                "input_tokens": 954691,
-                "cached_input_tokens": 846976,
-                "output_tokens": 11399,
-                "reasoning_output_tokens": 4459,
+                "input_tokens": 954691, "cached_input_tokens": 846976,
+                "output_tokens": 11399, "reasoning_output_tokens": 4459,
             },
         },
-    ]
-    in_tok, cached_tok, out_tok, reasoning_out_tok = sum_token_counts(events)
-    assert (in_tok, cached_tok, out_tok, reasoning_out_tok) == (
-        954691,
-        846976,
-        11399,
-        4459,
-    )
+    ], (954691, 846976, 11399, 4459), id="reasoning-output"),
+])
+def test_token_count_extraction(events, expected):
+    assert sum_token_counts(events) == expected
 
 
 def test_claude_message_usage_sums_turns_and_cache_aliases() -> None:
@@ -1937,15 +1652,15 @@ def test_claude_per_message_usage_beats_result_turn_count_placeholder() -> None:
 
 def test_usage_delta_for_thread_decumulates_reasoning_output_tokens() -> None:
     backend = AgentCliBackend(backend="codex")
-    assert backend._usage_delta_for_thread(
+    assert backend._usage.usage_delta_for_thread(
         thread_id="t1",
         raw_totals=(100, 10, 20, 7),
     ) == (100, 10, 20, 7)
-    assert backend._usage_delta_for_thread(
+    assert backend._usage.usage_delta_for_thread(
         thread_id="t1",
         raw_totals=(160, 30, 45, 19),
     ) == (60, 20, 25, 12)
-    assert backend._usage_delta_for_thread(
+    assert backend._usage.usage_delta_for_thread(
         thread_id="t1",
         raw_totals=(20, 5, 6, 2),
     ) == (20, 5, 6, 2)
@@ -1953,20 +1668,13 @@ def test_usage_delta_for_thread_decumulates_reasoning_output_tokens() -> None:
 
 def test_run_exec_forwards_ordered_native_skill_roots(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    cli_call,
 ) -> None:
     native_root = tmp_path / "repo" / ".agents" / "skills"
     managed_root = tmp_path / "state" / "skills" / "engineer"
     native_root.mkdir(parents=True)
     managed_root.mkdir(parents=True)
     backend = AgentCliBackend(backend="pi")
-    captured: dict[str, Any] = {}
-
-    def fake_run_exec(self: Any, **kwargs: Any) -> AgentRunResult:
-        captured["options"] = kwargs["options"]
-        return _make_cli_result(agent_messages=["ok"])
-
-    monkeypatch.setattr(backend._runner.__class__, "run_exec", fake_run_exec, raising=True)
     backend.run_exec(
         prompt="discover the project Skill",
         options=RunnerOptions(
@@ -1975,63 +1683,76 @@ def test_run_exec_forwards_ordered_native_skill_roots(
         run_label="engineer-r1",
     )
 
-    assert captured["options"].skill_paths == [
+    assert cli_call.call_args.kwargs["options"].skill_paths == [
         str(native_root.resolve()),
         str(managed_root.resolve()),
     ]
 
 
+@pytest.mark.parametrize("use_defaults,expected", [
+    (False, (120, 300, 600)), (True, (300, 900, 1800)),
+])
 def test_run_exec_forwards_watchdog_hooks(
-    monkeypatch: pytest.MonkeyPatch,
+    cli_call, use_defaults: bool, expected: tuple[int, int, int],
 ) -> None:
-    """Watchdog hooks on argus-skill RunnerOptions must reach the bundled runner.
+    """Watchdog hooks on argus RunnerOptions must reach the bundled runner.
 
     A MissionDaemon-driven supervisor passes ``external_interrupt_reason_provider``
     so it can interrupt a long-running engineer turn promptly when an
     operator sends ``/inject`` or ``/stop``. If the adapter drops these
     fields, /inject becomes ineffective during a round.
     """
-    backend = AgentCliBackend(backend="codex")
-    captured: dict[str, Any] = {}
 
-    def fake_run_exec(
-        self: Any,
-        *,
-        prompt: Any,
-        resume_thread_id: Any,
-        options: Any,
-        run_label: str,
-    ) -> AgentRunResult:
-        captured["options"] = options
-        return _make_cli_result(agent_messages=["ok"])
-
-    monkeypatch.setattr(backend._runner.__class__, "run_exec", fake_run_exec, raising=True)
-
-    interrupt_calls: list[None] = []
+    request_identity = ContextVar("watchdog_request", default="outside")
+    stopped = threading.Event()
+    interrupt_calls: list[str] = []
 
     def interrupt_provider() -> str | None:
-        interrupt_calls.append(None)
-        return None
+        identity = request_identity.get()
+        interrupt_calls.append(identity)
+        return f"stop {identity}" if stopped.is_set() else None
 
     def inactivity_callback(snapshot: Any) -> str | None:  # noqa: ARG001
         return None
 
+    backend = AgentCliBackend(
+        backend="codex",
+        default_interrupt_reason_provider=interrupt_provider if use_defaults else None,
+        default_watchdog_soft_idle_seconds=300,
+        default_watchdog_stalled_idle_seconds=900,
+        default_watchdog_hard_idle_seconds=1800,
+    )
     options = RunnerOptions(
         model="gpt-5.4-mini",
-        external_interrupt_reason_provider=interrupt_provider,
+        external_interrupt_reason_provider=None if use_defaults else interrupt_provider,
         inactivity_callback=inactivity_callback,
-        watchdog_soft_idle_seconds=120,
-        watchdog_stalled_idle_seconds=300,
-        watchdog_hard_idle_seconds=600,
+        watchdog_soft_idle_seconds=None if use_defaults else 120,
+        watchdog_stalled_idle_seconds=None if use_defaults else 300,
+        watchdog_hard_idle_seconds=None if use_defaults else 600,
     )
-    backend.run_exec(prompt="x", options=options, run_label="main")
+    token = request_identity.set("current-request")
+    try:
+        backend.run_exec(prompt="x", options=options, run_label="main")
+    finally:
+        request_identity.reset(token)
 
-    forwarded = captured["options"]
-    assert forwarded.external_interrupt_reason_provider is interrupt_provider
+    forwarded = cli_call.call_args.kwargs["options"]
+    callback = forwarded.external_interrupt_reason_provider
+    assert callable(callback)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        assert pool.submit(request_identity.get).result(timeout=1) == "outside"
+        assert pool.submit(callback).result(timeout=1) is None
+        stopped.set()
+        assert pool.submit(callback).result(timeout=1) == "stop current-request"
+        assert pool.submit(request_identity.get).result(timeout=1) == "outside"
+    assert interrupt_calls and set(interrupt_calls) == {"current-request"}
+    assert request_identity.get() == "outside"
     assert forwarded.inactivity_callback is inactivity_callback
-    assert forwarded.watchdog_soft_idle_seconds == 120
-    assert forwarded.watchdog_stalled_idle_seconds == 300
-    assert forwarded.watchdog_hard_idle_seconds == 600
+    assert (
+        forwarded.watchdog_soft_idle_seconds,
+        forwarded.watchdog_stalled_idle_seconds,
+        forwarded.watchdog_hard_idle_seconds,
+    ) == expected
 
 
 def test_consumed_interrupt_returns_canonical_result_without_starting_provider(
@@ -2070,63 +1791,10 @@ def test_consumed_interrupt_returns_canonical_result_without_starting_provider(
     assert result.fatal_error == ("External interrupt: operator abort requested: stop now")
 
 
-def test_run_exec_applies_default_watchdog_hooks(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    default_interrupt = lambda: None
-    backend = AgentCliBackend(
-        backend="codex",
-        default_interrupt_reason_provider=default_interrupt,
-        default_watchdog_soft_idle_seconds=300,
-        default_watchdog_stalled_idle_seconds=900,
-        default_watchdog_hard_idle_seconds=1800,
-    )
-    captured: dict[str, Any] = {}
-
-    def fake_run_exec(
-        self: Any,
-        *,
-        prompt: Any,
-        resume_thread_id: Any,
-        options: Any,
-        run_label: str,
-    ) -> AgentRunResult:
-        captured["options"] = options
-        return _make_cli_result(agent_messages=["ok"])
-
-    monkeypatch.setattr(backend._runner.__class__, "run_exec", fake_run_exec, raising=True)
-
-    backend.run_exec(
-        prompt="x",
-        options=RunnerOptions(model="gpt-5.4-mini"),
-        run_label="main",
-    )
-
-    forwarded = captured["options"]
-    assert forwarded.external_interrupt_reason_provider is default_interrupt
-    assert forwarded.watchdog_soft_idle_seconds == 300
-    assert forwarded.watchdog_stalled_idle_seconds == 900
-    assert forwarded.watchdog_hard_idle_seconds == 1800
-
-
 def test_run_exec_allows_per_call_watchdog_disable(
-    monkeypatch: pytest.MonkeyPatch,
+    cli_call,
 ) -> None:
     backend = AgentCliBackend(backend="codex")
-    captured: dict[str, Any] = {}
-
-    def fake_run_exec(
-        self: Any,
-        *,
-        prompt: Any,
-        resume_thread_id: Any,
-        options: Any,
-        run_label: str,
-    ) -> AgentRunResult:
-        captured["options"] = options
-        return _make_cli_result(agent_messages=["ok"])
-
-    monkeypatch.setattr(backend._runner.__class__, "run_exec", fake_run_exec, raising=True)
     backend.run_exec(
         prompt="x",
         options=RunnerOptions(
@@ -2138,14 +1806,14 @@ def test_run_exec_allows_per_call_watchdog_disable(
         run_label="main",
     )
 
-    forwarded = captured["options"]
+    forwarded = cli_call.call_args.kwargs["options"]
     assert forwarded.watchdog_soft_idle_seconds == 0
     assert forwarded.watchdog_stalled_idle_seconds == 0
     assert forwarded.watchdog_hard_idle_seconds == 0
 
 
 def test_run_exec_composes_explicit_watchdog_with_defaults(
-    monkeypatch: pytest.MonkeyPatch,
+    cli_call,
 ) -> None:
     calls: list[str] = []
 
@@ -2164,20 +1832,6 @@ def test_run_exec_composes_explicit_watchdog_with_defaults(
         default_watchdog_stalled_idle_seconds=900,
         default_watchdog_hard_idle_seconds=1800,
     )
-    captured: dict[str, Any] = {}
-
-    def fake_run_exec(
-        self: Any,
-        *,
-        prompt: Any,
-        resume_thread_id: Any,
-        options: Any,
-        run_label: str,
-    ) -> AgentRunResult:
-        captured["options"] = options
-        return _make_cli_result(agent_messages=["ok"])
-
-    monkeypatch.setattr(backend._runner.__class__, "run_exec", fake_run_exec, raising=True)
 
     backend.run_exec(
         prompt="x",
@@ -2191,7 +1845,7 @@ def test_run_exec_composes_explicit_watchdog_with_defaults(
         run_label="main",
     )
 
-    forwarded = captured["options"]
+    forwarded = cli_call.call_args.kwargs["options"]
     assert forwarded.external_interrupt_reason_provider is not explicit_interrupt
     assert forwarded.external_interrupt_reason_provider() == "stale"
     assert calls == ["default", "explicit"]
@@ -2209,14 +1863,7 @@ def test_run_exec_reports_delta_for_resumed_cumulative_thread(
         {"input_tokens": 1250, "cached_input_tokens": 500, "output_tokens": 130},
     ]
 
-    def fake_run_exec(
-        self: Any,
-        *,
-        prompt: Any,
-        resume_thread_id: Any,
-        options: Any,
-        run_label: str,
-    ) -> AgentRunResult:
+    def fake_run_exec(self, **kwargs) -> AgentRunResult:
         usage = raw_usages.pop(0)
         return _make_cli_result(
             thread_id="thr-cumulative",
@@ -2268,14 +1915,7 @@ def test_run_exec_preserves_resumed_opencode_per_step_usage(
         },
     ]
 
-    def fake_run_exec(
-        self: Any,
-        *,
-        prompt: Any,
-        resume_thread_id: Any,
-        options: Any,
-        run_label: str,
-    ) -> AgentRunResult:
+    def fake_run_exec(self, **kwargs) -> AgentRunResult:
         usage = raw_usages.pop(0)
         return _make_cli_result(
             thread_id="ses-opencode",
@@ -2370,6 +2010,23 @@ def test_fork_creates_independent_runner_with_same_usage_context(tmp_path: Path)
     forked.close_acp_clients()
 
 
+def test_background_forks_do_not_publish_into_the_foreground_role(tmp_path: Path) -> None:
+    foreground, background = [], []
+    backend = AgentCliBackend(backend="pi", runner_bin="/bin/echo", event_callback=lambda *event: foreground.append(event))
+    backend.set_usage_context(project_root=tmp_path / "project", mission_id="mission", global_root=tmp_path)
+    inherited = backend.fork()
+    isolated = backend.fork(event_callback=None)
+    redirected = backend.fork(event_callback=lambda *event: background.append(event))
+    line = '{"type":"tool_execution_start","toolName":"read"}'
+    for target in (inherited, isolated, redirected):
+        target._io_logger.stream_event_callback("engineer.stdout", line, backend_name="pi", known_secret_values=())
+        assert target._usage_context_snapshot() == backend._usage_context_snapshot()
+        target.close_acp_clients()
+    assert foreground == [("engineer.stdout", line)]
+    assert background == [("engineer.stdout", line)]
+    assert backend._io_logger.external_event_callback is inherited._io_logger.external_event_callback
+
+
 def test_build_agent_cli_backend_from_env_strips_legacy_auto_max_profile(
     monkeypatch,
 ):
@@ -2405,8 +2062,8 @@ def test_build_agent_cli_backend_from_env_defaults(monkeypatch):
 def test_build_backend_default_does_not_reuse_persisted_dsh_runner(
     monkeypatch,
 ):
-    from argus_skill.adapters.agent_cli_backend import _core
-    from argus_skill.core import knob_store
+    from argus.adapters.agent_cli_backend import _core
+    from argus.core import knob_store
 
     monkeypatch.setattr(
         knob_store,
@@ -2442,14 +2099,13 @@ def test_context_parser_failure_uses_trusted_completion_receipt(tmp_path, monkey
     project = root / "projects" / "p1"
     monkeypatch.setenv("ARGUS_SKILL_HOME", str(root))
     monkeypatch.setenv("ARGUS_SKILL_COST_CONTROL", "1")
-    monkeypatch.setenv("ARGUS_SKILL_UNPRICED_COST_POLICY", "block")
     monkeypatch.setenv("ARGUS_SKILL_COPILOT_GUARD", "0")
     monkeypatch.setattr(
-        "argus_skill.adapters.agent_cli_backend._exec_spawn.capture_copilot_usage_cursor",
+        "argus.adapters.agent_cli_backend._exec_spawn.capture_copilot_usage_cursor",
         lambda: None,
     )
     monkeypatch.setattr(
-        "argus_skill.adapters.agent_cli_backend._exec_spawn.read_copilot_usage_since",
+        "argus.adapters.agent_cli_backend._exec_spawn.read_copilot_usage_since",
         lambda *args, **kwargs: None,
     )
     backend = AgentCliBackend(backend="copilot")

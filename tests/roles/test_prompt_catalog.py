@@ -5,27 +5,27 @@ from types import SimpleNamespace
 
 import pytest
 
-from argus_skill.core.operator_context import (
+from argus.core.operator_context import (
     OperatorContextStore,
     append_directive,
     append_operator_context,
     append_preference,
     build_operator_context_block,
 )
-from argus_skill.roles.prompts import (
+from argus.roles.prompts import (
     ChecklistMode,
     RoleName,
     RolePromptRequest,
     resolve_role_prompt,
 )
-from argus_skill.roles.prompts.engineer import (
+from argus.roles.prompts.engineer import (
     assemble_round_prompt as assemble_engineer_prompt,
 )
-from argus_skill.roles.prompts.engineer import (
+from argus.roles.prompts.engineer import (
     build_mission_prompt,
     mission_request,
 )
-from argus_skill.roles.prompts.manager import (
+from argus.roles.prompts.manager import (
     FRONT_DOOR,
     build_front_door_prompt,
     build_pending_question_prompt,
@@ -33,23 +33,23 @@ from argus_skill.roles.prompts.manager import (
     build_vertical_decision_prompt,
     stage_decision_request,
 )
-from argus_skill.roles.prompts.planner import (
+from argus.roles.prompts.planner import (
     build_bounded_dag_prompt,
     build_continuous_prompt,
     build_continuous_resume_prompt,
     continuous_request,
     preview_request,
 )
-from argus_skill.roles.prompts.reviewer import (
+from argus.roles.prompts.reviewer import (
     assemble_reviewer_prompt,
     evaluate_request,
     render_reviewer_prompt,
 )
-from argus_skill.skills.stage_machine import (
+from argus.skills.stage_machine import (
     format_stage_checklist,
 )
-from argus_skill.skills.vertical_select import persist_vertical
-from argus_skill.verticals._base import load_vertical, vertical_role_banner
+from argus.skills.vertical_select import persist_vertical
+from argus.verticals._base import load_vertical_contract
 
 
 def _set_stage(project_root, stage: str) -> None:
@@ -197,8 +197,8 @@ def test_structured_role_fields_are_explicitly_operator_facing(tmp_path) -> None
         assert 'output file paths' in engineer_prompt
         assert 'decisive checks' in engineer_prompt
         assert 'omit decision or status fields' in engineer_prompt
-    assert "REASON, NEXT_ACTION, and OPERATOR_QUESTION are human-facing" in reviewer
-    assert 'Omit internal values and template names' in reviewer
+    assert "Express the complete review naturally in the operator's language" in reviewer
+    assert "No JSON, fixed fields, named closing lines, or text template" in reviewer
 
 
 def test_role_prompts_are_byte_identical_for_identical_state(tmp_path) -> None:
@@ -263,21 +263,21 @@ def test_consecutive_role_cycles_keep_a_large_common_prefix(tmp_path) -> None:
 
 
 def test_engineer_banner_resolves_through_role_catalog(tmp_path) -> None:
-    persist_vertical(tmp_path, "speedrun")
-    vertical = load_vertical("speedrun", project_root=tmp_path)
+    persist_vertical(tmp_path, "math_synth")
+    contract = load_vertical_contract("math_synth", project_root=tmp_path)
 
     engineer = resolve_role_prompt(mission_request(tmp_path))
 
-    assert engineer.vertical == "speedrun"
-    assert engineer.role_banner == vertical_role_banner(vertical, "engineer")
+    assert engineer.vertical == "math_synth"
+    assert engineer.role_banner == contract.banner("engineer")
     assert engineer.stage_checklist == ""
     assert engineer.fragment_ids == (
-        "vertical:speedrun:banner:engineer",
+        "vertical:math_synth:banner:engineer",
     )
 
 
 def test_planner_context_resolves_banner_stage_and_checklist(tmp_path) -> None:
-    persist_vertical(tmp_path, "speedrun")
+    persist_vertical(tmp_path, "math_synth")
     _set_stage(tmp_path, "optimize")
 
     context = resolve_role_prompt(continuous_request(tmp_path))
@@ -292,7 +292,7 @@ def test_planner_context_resolves_banner_stage_and_checklist(tmp_path) -> None:
     )
     assert context.paper_mission is False
     assert context.completion_gate != "certified"
-    assert "vertical:speedrun:checklist:planner:stage:optimize" in (
+    assert "vertical:math_synth:checklist:planner:stage:optimize" in (
         context.fragment_ids
     )
 
@@ -324,13 +324,15 @@ def test_research_final_review_uses_only_review_stage_checklist(
     assert context.scope == "final_submission"
     assert context.paper_mission is True
     assert "## Integrated final paper review" in context.role_banner
-    assert "Scientific:" in context.role_banner
-    assert "Visual:" in context.role_banner
-    assert "Language:" in context.role_banner
+    assert "Perform full conference peer review of contribution, novelty, methodology" in context.role_banner
+    assert "Use the host's current independent page-by-page and cold-read" in context.role_banner
+    assert "do not launch duplicate passes" in context.role_banner
     assert "inspect every rendered page" in context.role_banner
-    assert "Do not load the research notes" in context.role_banner
+    assert "do not load the research notes" in context.role_banner
     assert "`research-review-playbook.md`" in context.role_banner
-    assert "Do not edit files or change stage state" in context.role_banner
+    assert "Update your own paper/REVIEW.md" in context.role_banner
+    assert "do not edit the manuscript, code, figures" in context.role_banner
+    assert "no fixed fields or review template is required" in context.role_banner
     assert "single workflow playbook" in context.role_banner
     assert context.stage_checklist == format_stage_checklist(
         "review",
@@ -463,7 +465,7 @@ def test_direct_planner_prompt_omits_stage_checklist(tmp_path) -> None:
 def test_manager_stage_decision_preserves_planner_checklist_framing(
     tmp_path,
 ) -> None:
-    persist_vertical(tmp_path, "speedrun")
+    persist_vertical(tmp_path, "math_synth")
 
     context = resolve_role_prompt(
         stage_decision_request(tmp_path, stage="setup")
@@ -475,7 +477,7 @@ def test_manager_stage_decision_preserves_planner_checklist_framing(
         role="planner",
         project_root=tmp_path,
     )
-    assert "vertical:speedrun:checklist:planner:stage:setup" in (
+    assert "vertical:math_synth:checklist:planner:stage:setup" in (
         context.fragment_ids
     )
 
@@ -509,9 +511,49 @@ def test_unknown_role_operation_fails_loudly(tmp_path) -> None:
 
 
 def test_planner_preview_uses_same_vertical_banner(tmp_path) -> None:
-    persist_vertical(tmp_path, "speedrun")
+    persist_vertical(tmp_path, "math_synth")
 
     preview = resolve_role_prompt(preview_request(tmp_path))
     continuous = resolve_role_prompt(continuous_request(tmp_path))
 
     assert preview.role_banner == continuous.role_banner
+
+
+def test_every_planner_prompt_keeps_grounding_inside_the_mission_workspace(tmp_path) -> None:
+    """Stable web trial 2026-09-16: the bounded Planner listed sibling projects
+    and a runtime tree for a five-character objective. The scope rule must reach
+    the bounded prompts too, not only the continuous contract."""
+    from argus.roles.prompts.planner import (
+        build_bounded_dag_prompt,
+        build_bounded_single_task_prompt,
+    )
+
+    dag = build_bounded_dag_prompt("Write an ICLR paper.", project_root=tmp_path)
+    single = build_bounded_single_task_prompt("Write an ICLR paper.", project_root=tmp_path)
+    for prompt in (dag, single):
+        assert "Ground the plan in the mission workspace only" in prompt
+        assert "Do not list, read, or search sibling projects" in prompt
+        assert prompt.count("mission workspace only") == 1
+
+
+def test_research_engineer_plain_mission_carries_the_stage_guidance(tmp_path) -> None:
+    # Experiment missions run as the plain ``mission`` operation. With the
+    # stage passed (as loop.py now does for every operation) the Engineer
+    # receives the stage's method-card, reference and spec guidance; without
+    # it only the role's standing responsibility renders.
+    from argus.roles.prompts.engineer import mission_request
+
+    persist_vertical(tmp_path, "research")
+    _set_stage(tmp_path, "experiment")
+
+    with_stage = resolve_role_prompt(
+        mission_request(tmp_path, vertical="research", altitude_root=tmp_path, stage="experiment", operation="mission")
+    )
+    without_stage = resolve_role_prompt(
+        mission_request(tmp_path, vertical="research", altitude_root=tmp_path, stage=None, operation="mission")
+    )
+
+    assert "## Method card and executable spec" in with_stage.role_banner
+    assert "## Authoritative stage playbook" in with_stage.role_banner
+    assert "## Engineer responsibility" in with_stage.role_banner
+    assert "## Method card and executable spec" not in without_stage.role_banner

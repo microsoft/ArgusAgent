@@ -5,23 +5,23 @@ from pathlib import Path
 
 import pytest
 
-from argus_skill.domains import (
+from argus.domains import (
     BUILTIN_DOMAINS,
     DOMAIN_PURPOSES,
     domain_checklist_items,
     domain_role_banner,
     load_domain,
 )
-from argus_skill.roles.prompts import resolve_role_prompt
-from argus_skill.roles.prompts.engineer import mission_request
-from argus_skill.skills.builtins import (
+from argus.roles.prompts import resolve_role_prompt
+from argus.roles.prompts.engineer import mission_request
+from argus.skills.builtins import (
     iter_domain_skill_texts,
     remove_unmodified_inactive_context_skill_seeds,
     seed_context_skills,
 )
-from argus_skill.skills.layered import LayeredSkillStore, shared_skill_scope_dir
-from argus_skill.skills.stage_machine import resolve_stage_checklist_contract
-from argus_skill.skills.vertical_select import (
+from argus.skills.layered import LayeredSkillStore, shared_skill_scope_dir
+from argus.skills.stage_machine import resolve_stage_checklist_contract
+from argus.skills.vertical_select import (
     VERTICALS,
     UnknownVerticalError,
     persist_vertical,
@@ -29,11 +29,7 @@ from argus_skill.skills.vertical_select import (
     resolve_domain_if_decided,
     resolve_skill_scope,
 )
-from argus_skill.verticals._base import (
-    load_vertical,
-    vertical_checklist_stage_order,
-    vertical_completion_gate,
-)
+from argus.verticals._base import load_vertical_contract
 
 CORE_CHEMISTRY_SKILLS = {
     "manager/chemistry-manager.md",
@@ -166,20 +162,20 @@ def test_research_owns_workflow_when_chemistry_is_active(tmp_path: Path) -> None
     payload = json.loads(
         (tmp_path / ".argus" / "PIPELINE_STATE.json").read_text(encoding="utf-8")
     )
-    research = load_vertical("research", project_root=tmp_path)
+    contract = load_vertical_contract("research", project_root=tmp_path)
 
     assert payload["vertical"] == "research"
     assert payload["domain"] == "chemistry"
     assert payload["current_stage"] == "idea"
     assert resolve_domain_if_decided(tmp_path) == "chemistry"
     assert resolve_skill_scope(tmp_path) == "chemistry"
-    assert vertical_checklist_stage_order(research) == (
+    assert contract.stage_order == (
         "idea",
         "experiment",
         "paper",
         "review",
     )
-    assert vertical_completion_gate(research) == "certified"
+    assert contract.completion_gate == "certified"
 
 
 def test_non_research_vertical_rejects_domain(tmp_path: Path) -> None:

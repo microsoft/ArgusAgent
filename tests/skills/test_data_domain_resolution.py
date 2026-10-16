@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import json
 
-from argus_skill.skills import stage_machine as sc
-from argus_skill.skills import vertical_select as vs
-from argus_skill.verticals import _data_domain as dd
+from argus.skills import stage_machine as sc
+from argus.skills import vertical_select as vs
+from argus.verticals import _data_domain as dd
 
 
 def _write_store(root, *, vertical: str, stages: dict) -> None:
@@ -82,7 +82,7 @@ def test_current_stage_uses_data_domain_under_default_research_env(tmp_path, mon
 
 
 def test_manager_persisted_data_domain_wins_over_bootstrap_builtin_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("ARGUS_SKILL_VERTICAL", "speedrun")
+    monkeypatch.setenv("ARGUS_SKILL_VERTICAL", "software")
     dd.write_data_domain(
         tmp_path, "robotics_sim", stages=["scope", "simulate", "measure", "report"]
     )

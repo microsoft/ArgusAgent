@@ -4,8 +4,8 @@ import type { NodeProps } from '@xyflow/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MacroTaskNode, type MacroData, type MacroNode } from '../map/MacroTaskNode';
 import { MapTeamProgress } from '../map/MapPanel';
-import { layoutSubmap, type SubmapStep } from '../map/submap';
-import type { MapEvent, MapTask } from '../map/model';
+import { layoutScene, layoutSubmap, type SubmapStep } from '../map/submap';
+import { buildMap, type MapEvent, type MapTask } from '../map/model';
 
 vi.mock('@xyflow/react', async (original) => ({
   ...await original<typeof import('@xyflow/react')>(),
@@ -34,6 +34,44 @@ let renderer: ReactTestRenderer | undefined;
 afterEach(() => { act(() => renderer?.unmount()); renderer = undefined; });
 
 describe('Team work in the map', () => {
+  it('shows partial completion instead of a green done claim or stale generated acceptance copy', () => {
+    const finished = { ...task, status: 'done' };
+    const events: MapEvent[] = [{ id: 'end', item_id: task.id, type: 'life.mission.completed', ts: 10,
+      text: 'Read one source route.', success: true, overall_complete: false, campaign_continues: true }];
+    const scene = layoutScene(buildMap([finished]), events, false);
+    const copy = { cards: Object.fromEntries([task.id, 'end'].map((id) => [id, {
+      title: 'Paper accepted.', summary: 'Paper accepted.', detail: 'Paper accepted.', generated_at: 1,
+    }])) };
+    const props = propsFor(scene.layouts[task.id].steps, { ...scene.cards[0], layout: scene.layouts[task.id], copy });
+    const markup = renderToStaticMarkup(<MacroTaskNode {...props} />);
+    expect(markup).toContain('Execution ended · goal incomplete');
+    expect(markup).toContain('the overall goal was not complete at that time and further work remained');
+    expect(markup).toContain('This execution ended');
+    expect(markup).not.toContain('map-state-done');
+    expect(markup).not.toContain('Paper accepted.');
+    act(() => { renderer = create(<MacroTaskNode {...props} />); });
+    act(() => renderer!.root.findByProps({ 'data-step-id': 'end' }).props.onClick());
+    expect(JSON.stringify(renderer!.toJSON())).toContain('Read one source route.');
+    expect(JSON.stringify(renderer!.toJSON())).not.toContain('Paper accepted.');
+  });
+
+  it('does not repeat stale scientific conclusions when the recorded failure was in the Reviewer', () => {
+    const failed = { ...task, status: 'failed', outcome: { review_status: 'unavailable' } };
+    const stale = {
+      title: 'Evaluate models', summary: 'No experimental data was produced.',
+      detail: 'Older explanation.', generated_at: 1,
+    };
+    const copy = { cards: { [task.id]: stale, 'review-error': { ...stale, title: 'Scientifically rejected' } } };
+    const step: SubmapStep = { ...worker('review-error', 'review_unavailable', 'review'), source: 'event',
+      title: 'Review error on this attempt', summary: 'The Reviewer returned no judgment.' };
+    const markup = renderToStaticMarkup(<MacroTaskNode {...propsFor([step], { task: failed, copy })} />);
+    expect(markup).toContain('map-state-review_unavailable');
+    expect(markup).toContain('Review error on this attempt');
+    expect(markup).not.toContain('No experimental data was produced.');
+    expect(markup).not.toContain('map-state-failed');
+    expect(markup).not.toContain('Scientifically rejected');
+  });
+
   it('keeps completed, waiting and failed workers truthful while their parent is running', () => {
     const props = propsFor([worker('complete', 'done'), worker('waiting', 'pending'), worker('failed', 'failed')]);
     act(() => { renderer = create(<MacroTaskNode {...props} />); });
@@ -48,7 +86,7 @@ describe('Team work in the map', () => {
     expect(markup).not.toContain('data-active="true" title="Execute"');
   });
 
-  it('highlights every running worker and its stage without requiring the parent last page', () => {
+  it('highlights every running worker without requiring the parent last page', () => {
     const props = propsFor([
       worker('route', 'running'), worker('review', 'running', 'review'), worker('complete', 'done'),
     ], { part: 1, partCount: 2, paused: true });
@@ -57,8 +95,9 @@ describe('Team work in the map', () => {
     expect(renderer!.root.findByProps({ 'data-step-id': 'review' }).props['data-active']).toBe(true);
     expect(renderer!.root.findByProps({ 'data-step-id': 'complete' }).props['data-active']).toBe(false);
     const markup = renderToStaticMarkup(<MacroTaskNode {...props} />);
-    expect(markup).toContain('data-active="true" title="Execute"');
-    expect(markup).toContain('data-active="true" title="Review"');
+    expect(markup).toContain('History · not current execution');
+    expect(markup).toContain('data-step-id="route"');
+    expect(markup).toContain('data-step-id="review"');
     expect(markup).toContain('Subtasks 1/3 done · 2 running');
 
     const menu = props.data.menu;

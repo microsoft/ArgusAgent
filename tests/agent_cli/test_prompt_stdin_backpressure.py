@@ -8,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from argus_skill.agent_cli import _run_exec
-from argus_skill.agent_cli.agent_cli_runner import AgentCliRunner, RunnerOptions
+from argus.agent_cli import _run_exec
+from argus.agent_cli.agent_cli_runner import AgentCliRunner, RunnerOptions
 
 
 def run_fixture(monkeypatch, tmp_path, body, prompt, *, options=None, callback=None):
@@ -65,6 +65,25 @@ def test_large_prompt_and_startup_output_cannot_deadlock(monkeypatch, tmp_path, 
     }
     assert result.turn_completed and result.exit_code == 0 and elapsed < 3
     assert all(p.stdin is None for p in processes)
+
+
+def test_prompt_reaches_a_cli_that_requires_piped_stdin(monkeypatch, tmp_path):
+    """The deployed copilot shim reads a prompt only from FIFO stdin.
+
+    The VS Code copilotCLIShim answers "No prompt provided" when stdin is a
+    regular file, which took down every one-shot copilot turn fleet-wide on
+    2026-09-08. Delivery must present the prompt through a real pipe.
+    """
+    received = tmp_path / "received.txt"
+    body = (
+        "import os,stat,sys,json;from pathlib import Path;"
+        "assert stat.S_ISFIFO(os.fstat(0).st_mode), 'stdin must be a pipe';"
+        f"Path({str(received)!r}).write_text(sys.stdin.read());"
+        "print(json.dumps({'type':'turn.completed'}),flush=True)"
+    )
+    result, elapsed, _processes = run_fixture(monkeypatch, tmp_path, body, "hello shim")
+    assert received.read_text() == "hello shim\n"
+    assert result.turn_completed and result.exit_code == 0 and elapsed < 3
 
 
 @pytest.mark.parametrize("reason", ["stop", "hard_idle"])

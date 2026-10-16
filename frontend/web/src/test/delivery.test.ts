@@ -15,6 +15,7 @@ import {
   deliveryNotificationPayload,
 } from '../lib/desktopBridge';
 import { latestConversationDelivery } from '../components/EventStream';
+import { DeliveryNotice } from '../components/DeliveryNotice';
 import { mergeConversationEvents } from '../lib/conversationEvents';
 
 const delivery: DeliveryReceipt = {
@@ -55,6 +56,16 @@ const artifact = (path: string, source: ArtifactInfo['source']): ArtifactInfo =>
 });
 
 describe('completed delivery presentation', () => {
+  it('shows formatted outcome text without raw Markdown or workspace link targets', () => {
+    const markup = renderToStaticMarkup(createElement(DeliveryNotice, {
+      delivery: { ...delivery, summary: '**CNY**: 130.00\n\n[Download summary.csv](sandbox:/private/workspace/summary.csv)' },
+      onOpen: () => undefined, onDismiss: () => undefined,
+    }));
+    expect(markup).toContain('<strong>CNY</strong>');
+    expect(markup).toContain('Download summary.csv');
+    expect(markup).not.toContain('sandbox:/private');
+    expect(markup).not.toContain('**CNY**');
+  });
   it('opens the receipt primary target before a stale live checkpoint', () => {
     const view = emptyMissionView();
     view.delivery = delivery;
@@ -175,4 +186,21 @@ describe('completed delivery presentation', () => {
     expect(events).toHaveLength(1);
     expect(events[0].delivery).toEqual(delivery);
   });
+});
+
+it('resolves document-relative model links and confined sandbox links', () => {
+  const files = [
+    { path: 'study/models/model.npz', storage_path: '/workspace/study/models/model.npz' },
+    { path: 'model.npz', storage_path: '/workspace/model.npz' },
+  ];
+  expect(artifactPathFromHref('models/model.npz', files, 'study/README.md')).toBe('study/models/model.npz');
+  expect(artifactPathFromHref('../model.npz', files, 'study/README.md')).toBe('model.npz');
+  expect(artifactPathFromHref('../../model.npz', files, 'study/README.md')).toBeNull();
+  expect(artifactPathFromHref('sandbox:/workspace/study/models/model.npz', files)).toBe('study/models/model.npz');
+  const markup = renderToStaticMarkup(createElement(MarkdownContent, {
+    artifacts: files, basePath: 'study/README.md', onOpenArtifact: () => undefined,
+    children: '[model](models/model.npz) [sandbox](sandbox:/workspace/study/models/model.npz) [unsafe](javascript:alert%281%29)',
+  }));
+  expect(markup.match(/data-artifact-path="study\/models\/model.npz"/g)).toHaveLength(2);
+  expect(markup).not.toContain('href="javascript:');
 });

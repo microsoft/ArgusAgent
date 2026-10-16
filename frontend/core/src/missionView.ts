@@ -53,8 +53,9 @@ function copyView(view: MissionView): MissionView {
 
 export function emptyMissionView(): MissionView {
   return {
-    schema_version: 6,
+    schema_version: 7,
     bootstrapped: false,
+    language: '',
     mission: {
       id: '',
       title: '',
@@ -233,9 +234,12 @@ export function reduceMissionViewEvent(view: MissionView, event: EventMsg): Miss
     addTimeline(view, event, 'manager', 'Project grounding started', S(event, 'objective'));
     addRoleWork(view, event, 'manager', 'grounding', 'Grounding project', S(event, 'objective'), 'active');
   } else if (type === EVENT_TYPES.LIFE_MANAGER_INTENT_COMPLETED) {
+    // Historical intent events may store model routing context in objective;
+    // execution_task is the Manager's committed handoff for the current goal.
+    const objective = S(event, 'execution_task') || S(event, 'objective');
     view.mission.id = S(event, 'item_id');
-    view.mission.title = S(event, 'objective').slice(0, 240);
-    view.mission.objective = S(event, 'objective');
+    view.mission.title = objective.slice(0, 240);
+    view.mission.objective = objective;
     view.mission.summary = '';
     view.mission.final_output = '';
     view.mission.started_at = null;
@@ -419,7 +423,7 @@ export function reduceMissionViewEvent(view: MissionView, event: EventMsg): Miss
         updated_at: ts,
       };
     }
-    const reviewTitle = reviewSkipped ? 'Review not performed' : status === 'done' ? 'Evidence accepted' : 'Attempt rejected';
+    const reviewTitle = reviewSkipped ? 'No review this round' : status === 'done' ? 'Evidence accepted' : 'Attempt rejected';
     setRole(view, 'reviewer', reviewSkipped ? 'waiting' : status === 'done' ? 'done' : 'rejected', reviewSkipped ? reviewTitle : status === 'done' ? 'Accepted evidence' : 'Requested another attempt', ts);
     addTimeline(view, event, 'reviewer', reviewTitle, reason, reviewSkipped ? 'info' : status === 'done' ? 'success' : 'error');
     const nextAction = S(event, 'next_action');

@@ -7,15 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from argus_skill.core.cost_control import (
+from argus.core import cost_control
+from argus.core.cost_control import (
     COST_CONTROL_AUDIT_FILE,
     COST_CONTROL_STATE_FILE,
     _locked,
     cost_control_snapshot,
     reserve_call_budget,
 )
-from argus_skill.core.token_usage import TokenUsage
-from argus_skill.core.usage import UsageLedger, build_usage_record
+from argus.core.token_usage import TokenUsage
+from argus.core.usage import UsageLedger, build_usage_record
 
 
 def _usage() -> TokenUsage:
@@ -28,12 +29,14 @@ def _usage() -> TokenUsage:
     )
 
 
-def _record(project: Path, call_id: str, *, model: str = "gpt-5.6-sol"):
+def _record(
+    project: Path, call_id: str, *, model: str = "gpt-5.6-sol", provider: str = "codex",
+):
     return build_usage_record(
         call_id=call_id,
         project_root=project,
         mission_id="mission-1",
-        provider="codex",
+        provider=provider,
         model=model,
         run_label="engineer-r1",
         started_at=time.time() - 1,
@@ -142,6 +145,7 @@ def test_admission_does_not_wait_for_busy_housekeeping_lock(tmp_path: Path) -> N
 
 def test_settlement_does_not_delay_result_behind_busy_housekeeping_lock(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = tmp_path / "projects" / "p1"
     project.mkdir(parents=True)
@@ -162,10 +166,20 @@ def test_settlement_does_not_delay_result_behind_busy_housekeeping_lock(
     holder = threading.Thread(target=hold_lock)
     holder.start()
     assert entered.wait(timeout=1)
+    observed_timeouts: list[float | None] = []
+
+    def observed_lock(root: Path, *, timeout_seconds: float | None = None):
+        if root == tmp_path:
+            observed_timeouts.append(timeout_seconds)
+        return _locked(root, timeout_seconds=timeout_seconds)
+
+    monkeypatch.setattr(cost_control, "_locked", observed_lock)
     try:
-        started = time.monotonic()
         assert reservation.settle(record) is True
-        assert time.monotonic() - started < 0.6
+        # Keep the real contention, but do not include unrelated Windows I/O
+        # and scheduling overhead in a sub-second wall-clock assertion.
+        assert observed_timeouts == [0.25]
+        assert holder.is_alive(), "settlement must finish before housekeeping unlocks"
     finally:
         release.set()
         holder.join(timeout=1)
@@ -224,17 +238,22 @@ def test_priced_settlement_replaces_hold_with_global_ledger_cost(
     }
 
 
-def test_unpriced_cost_blocks_until_operator_policy_allows_it(
+@pytest.mark.parametrize("provider", ["codex", "dsh"])
+def test_unpriced_cost_remains_visible_and_blocks_under_persisted_strict_policy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    provider: str,
 ) -> None:
+    from argus.core.knob_store import write_persisted_knob
+
     monkeypatch.setenv("ARGUS_SKILL_HOME", str(tmp_path))
     monkeypatch.setenv("ARGUS_SKILL_UNPRICED_COST_POLICY", "block")
+    write_persisted_knob("ARGUS_SKILL_UNPRICED_COST_POLICY", "block")
     project = tmp_path / "projects" / "p1"
     project.mkdir(parents=True)
     reservation, _ = _reserve(tmp_path, project, "call-unknown")
     assert reservation is not None
-    record = _record(project, "call-unknown", model="future-model")
+    record = _record(project, "call-unknown", model="future-model", provider=provider)
     assert record.pricing_status == "unpriced"
     UsageLedger(project, migrate_legacy=False).append(record)
     reservation.settle(record)
@@ -243,12 +262,15 @@ def test_unpriced_cost_blocks_until_operator_policy_allows_it(
     assert snapshot["unresolved_calls"] == 1
     assert snapshot["blocking_unresolved_calls"] == 1
     assert snapshot["unresolved"][0]["blocking"] is True
+    assert snapshot["unresolved"][0]["provider"] == provider
+    assert snapshot["unresolved"][0]["reason"]
+    assert snapshot["policy"] == "block"
+    assert UsageLedger(project, migrate_legacy=False).records()[0].cost_usd is None
 
     next_call, reason = _reserve(tmp_path, project, "call-2")
     assert next_call is None and "unresolved provider cost" in reason
 
-    monkeypatch.setenv("ARGUS_SKILL_UNPRICED_COST_POLICY", "allow")
-
+    monkeypatch.delenv("ARGUS_SKILL_UNPRICED_COST_POLICY")
     control, reason = reserve_call_budget(
         call_id="control-1",
         project_root=project,
@@ -259,18 +281,17 @@ def test_unpriced_cost_blocks_until_operator_policy_allows_it(
         global_root=tmp_path,
         global_daily_cap_usd=10.0,
     )
-    assert control is not None and reason == ""
-    control.release(reason="test")
+    assert control is None and "unresolved provider cost" in reason
 
 
 @pytest.mark.parametrize("daily_cap", [10.0, 0.000001])
 def test_admission_reconciles_known_token_cost_before_deciding_the_budget(
     tmp_path: Path, monkeypatch, daily_cap: float,
 ) -> None:
-    from argus_skill.core.pricing import MODEL_PRICES_USD_PER_MTOK
+    from argus.core.pricing import MODEL_PRICES_USD_PER_MTOK
 
     monkeypatch.setenv("ARGUS_SKILL_HOME", str(tmp_path))
-    monkeypatch.setenv("ARGUS_SKILL_UNPRICED_COST_POLICY", "block")
+    monkeypatch.setenv("ARGUS_SKILL_UNPRICED_COST_POLICY", "allow")
     model = "test-newly-priced-model"
     project = tmp_path / "projects" / "p1"
     project.mkdir(parents=True)
@@ -281,11 +302,13 @@ def test_admission_reconciles_known_token_cost_before_deciding_the_budget(
     ledger.append(record)
     reservation.settle(record)
 
-    denied, reason = _reserve(tmp_path, project, "before-pricing")
-    assert denied is None
-    assert "provider=codex" in reason
-    assert f"model={model}" in reason
-    assert "no configured price" in reason
+    admitted, reason = _reserve(tmp_path, project, "before-pricing")
+    assert admitted is not None and reason == ""
+    admitted.release(reason="test")
+    unresolved = cost_control_snapshot(global_root=tmp_path)["unresolved"][0]
+    assert unresolved["provider"] == "codex"
+    assert unresolved["model"] == model
+    assert "no configured price" in unresolved["reason"]
     monkeypatch.setitem(
         MODEL_PRICES_USD_PER_MTOK, model, MODEL_PRICES_USD_PER_MTOK["gpt-5.5"],
     )
@@ -303,7 +326,6 @@ def test_admission_reconciles_known_token_cost_before_deciding_the_budget(
     else:
         assert admitted is None
         assert "global daily budget exhausted" in reason
-        assert "unresolved provider cost" not in reason
 
 
 @pytest.mark.parametrize(
@@ -313,13 +335,13 @@ def test_admission_reconciles_known_token_cost_before_deciding_the_budget(
         "External interrupt: operator abort requested: stop now",
     ],
 )
-def test_partial_copilot_cost_obeys_unpriced_budget_policy(
+def test_partial_copilot_cost_does_not_block_new_calls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     error: str,
 ) -> None:
     monkeypatch.setenv("ARGUS_SKILL_HOME", str(tmp_path))
-    monkeypatch.setenv("ARGUS_SKILL_UNPRICED_COST_POLICY", "block")
+    monkeypatch.setenv("ARGUS_SKILL_UNPRICED_COST_POLICY", "allow")
     project = tmp_path / "projects" / "p1"
     project.mkdir(parents=True)
     admission, reason = reserve_call_budget(
@@ -340,8 +362,8 @@ def test_partial_copilot_cost_obeys_unpriced_budget_policy(
         provider="copilot",
         model="gpt-5.6-sol",
         run_label="planner",
-        started_at=1.0,
-        completed_at=2.0,
+        started_at=time.time() - 1,
+        completed_at=time.time(),
         status="completed",
         error=error,
     )
@@ -360,7 +382,11 @@ def test_partial_copilot_cost_obeys_unpriced_budget_policy(
         global_daily_cap_usd=10.0,
     )
 
-    assert admitted is None and "unresolved provider cost" in reason
+    assert admitted is not None and reason == ""
+    snapshot = cost_control_snapshot(global_root=tmp_path)
+    assert snapshot["unresolved_calls"] == 1
+    assert snapshot["blocking_unresolved_calls"] == 0
+    admitted.release(reason="test")
 
 
 def test_dead_process_hold_is_pruned(tmp_path: Path) -> None:

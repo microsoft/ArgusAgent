@@ -25,6 +25,20 @@ import pytest
 
 
 @pytest.fixture
+def platform_process_env() -> dict[str, str]:
+    """Minimal public OS bootstrap values, never an ambient credential copy.
+
+    Node/OpenSSL on Windows fails its CSPRNG initialization without SystemRoot.
+    Explicitly isolated child-env tests must retain this OS prerequisite and
+    the QA runner's temporary directories while still discarding user config.
+    """
+    if os.name != "nt":
+        return {}
+    return {name: os.environ[name] for name in ("SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP")
+            if name in os.environ}
+
+
+@pytest.fixture
 def require_symlink_support(tmp_path: Path) -> None:
     """Skip only when this host cannot create the symlinks a test requires.
 
@@ -67,9 +81,20 @@ def _isolate_argus_state_roots(
     # Argus session, child-env tests inherit the real worker home and stop
     # exercising the "no explicit home was chosen" path. Start from a clean slate;
     # a test that needs a value sets it itself.
-    for name in [k for k in os.environ if k.startswith("ARGUS_SKILL_")]:
+    # Trial configuration also sets plural deployment defaults in-process.
+    # Without clearing them, a later ordinary WebAPI test installs real plugins.
+    for name in [k for k in os.environ if k.startswith(("ARGUS_SKILL_", "ARGUS_TEAM_", "ARGUS_WORKBENCH_", "ARGUS_PLUGIN_", "ARGUS_PLUGINS_", "ARGUS_VERTICALS_", "ARGUS_CRYSTALPILOT_", "ARGUS_DESKTOP_", "ARGUS_TRIAL_"))]:
         monkeypatch.delenv(name, raising=False)
+    # Explicit empty deployments also prevent setdefault() in an entry point
+    # from silently turning an ordinary test into a real dependency installer.
+    # Deployment/default tests opt in themselves after this fixture runs.
+    monkeypatch.setenv("ARGUS_PLUGINS_PREINSTALL", "")
+    monkeypatch.setenv("ARGUS_VERTICALS_PREINSTALL", "")
     monkeypatch.delenv("COPILOT_HOME", raising=False)
+    # The life-worker boot path setdefault()s the workbench host root into
+    # os.environ in-process; a test that booted a worker would otherwise hand
+    # its throwaway root to every later test that resolves trial_home().
+    monkeypatch.delenv("ARGUS_WORKBENCH_HOST_ROOT", raising=False)
 
     monkeypatch.setenv("ARGUS_SKILL_HOME", str(root))
     # Model resolution inspects Codex's provider config to decide whether an
@@ -109,7 +134,7 @@ def _isolate_working_directory(
     lookups, the daemon's own workdir. Under pytest that cwd was the source
     checkout, so a test would silently adopt the repository as its project. The
     visible symptom was log lines like ``no Manager vertical resolved for
-    .../argus-skill; using research only as a compatibility fallback`` during
+    .../argus; using research only as a compatibility fallback`` during
     unrelated tests; the invisible one is any test that writes project state
     into the tree it is testing.
 
@@ -151,12 +176,30 @@ def _forbid_project_state_in_the_checkout() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _no_real_copilot_help_probe(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Never run the installed Copilot CLI to feature-detect ``--session-id``.
+
+    The adapter probes the executable's help text once per process before it
+    binds a new session identity. A developer machine with Copilot on PATH
+    would otherwise make the suite spawn a real Node binary and change which
+    argv/identity path every Copilot-backed test exercises. Default to "no
+    such flag"; a test that exercises the binding stubs the probe itself.
+    """
+    from argus.agent_cli import copilot_session as _copilot_session
+
+    _copilot_session.reset_copilot_session_id_support_cache()
+    monkeypatch.setattr(_copilot_session, "_copilot_help_text", lambda executable: "")
+    yield
+    _copilot_session.reset_copilot_session_id_support_cache()
+
+
+@pytest.fixture(autouse=True)
 def _no_stop_leaks_between_tests():
     """The process-wide stop flag outlives a test by design — it exists so a
     wait deep inside a mission can see a signal. One test setting it once made
     an unrelated external-work test read `stop_requested` instead of the
     outcome that had actually arrived."""
-    from argus_skill.core import process_stop
+    from argus.core import process_stop
 
     process_stop.clear_stop()
     yield

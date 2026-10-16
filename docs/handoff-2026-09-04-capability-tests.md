@@ -1209,3 +1209,1639 @@ webapi 并发请求)不在委托链,照旧等 flock——"Manager 提交与任�
   需要专门的反向测试(独立线程必须等、委托线程必须能进),这次已补。
 - 罕见路径(认证恢复 reconcile)第一次被真实状态触发时才暴露;上游
   行为修复可能点燃底层潜伏 bug,滚动后头一两个规划周期值得盯梢。
+
+## 二十、追加(2026-09-08):补完中断的滚动,并让后端看见自己的并行拓扑
+
+### 接手现场
+
+前一个会话(常规 claude 账号)在 05:54 把三个守护进程(s-0ebfd18c
+papermaker2、s-d9c7aeb2 restaurant-sensory、s-09d42a6f
+agent-communication)停机,准备滚到新 checkout
+`argus-runtime-20260908-f9d8a02bf`,05:55 撞上周度用量上限中断。本会话
+(claude-yijia)接手:按其既定的 env 覆盖模式(runtime-latest 的解释器
++ `PYTHONPATH`/`ARGUS_SKILL_SOURCE_ROOT` 指向新 checkout)于 06:04 把
+三个守护进程拉回,均恢复 continuous 模式并核实 environ。另核实:
+runtime-latest 里那 603 行未提交改动与 main 上的 662a95acd 逐字节一致
+——不是丢失的工作,清理时可放心丢弃。
+
+前会话留下四份调查笔记(调度、Planner 契约、地图后端、地图前端,在其
+scratchpad),本节两个提交即按笔记实施。原始诉求(其会话首条消息):
+后端执行天然线性,要多开 engineer/reviewer loop、Planner 规划 DAG、
+后端自感知研究架构;前端 Atlas 卡。
+
+### 提交一:aa1e770a3("Show the Planner the mission slots it was starving")
+
+诊断:width=2 的机器早就存在(primary + parallel-1 辅助 supervisor,
+各带独立 Engineer/Reviewer 循环),但辅助槽只接"co-running 全体都声明
+parallel_safe + 互不重叠 owns_paths"的任务,而 Planner 从不知道槽位
+存在、不知道解锁规则、也不知道自己的 TASK_PARALLEL_SAFE 何时被静默
+剥掉——于是实际宽度永远是 1。
+
+- 现实摘要新增槽位拓扑(总数/占用/空闲)、每条活动任务的
+  parallel_safe/owns_paths,以及"空闲槽被无归属任务卡住"的直白提示
+  (paused_external_work 无 owns_paths 同样卡闸,一并覆盖);
+- enqueue 规范化:glob 路径直接剔除(闸门本来就拒收,存下来只会让
+  摘要撒谎)、framework_maintenance 任务剥 parallel_safe(闸门必拒);
+  凡剥都在下一个 Planner 回合一次性反馈(PARALLEL FLAGS DROPPED 注记
+  + 新事件 life.planner.parallel_dropped,提交时按实际入队任务去重
+  发射,dedup 跳过的重复提案不再刷journal);
+- 连续 Planner prompt 契约一条:什么组合才解锁槽位。落在字节稳定的
+  静态段内,且收在数学 scope 的字符预算下(第一版超预算 111 字符,
+  被 tests/test_planner_prompt_budget.py 拦下后压缩)。
+
+对抗评审四条 should-fix(glob 漏洞、事件先于 dedup 发射、
+framework_maintenance 无反馈、paused 卡闸不入摘要)全部修入;评审
+还指出 bounded-DAG prompt 未同步该契约——bounded 节点本无
+parallel_safe 字段,留作后续。
+
+### 提交二:ad760573e("Stop the Atlas map from paying every session's bill")
+
+服务端:MapFeed 全局锁改按缓存项持锁(注册锁只管查找/LRU),慢会话
+不再拖住所有会话;Team 目录遍历每次失效读跑两遍改为一遍复用(绑定
+证据变了才重扫,map_view 179 行的 dict 拷贝保证判等语义成立);
+`/map?since=` 的双份 feed.read 改单读 + 内部 task_index 过滤(索引
+不出接口)。前端:常驻 3 秒轮询降为 15 秒兜底(SSE 650ms 失效仍是
+主通道,分页加载期 400ms 不变);边 lane 计算去掉二次方前缀扫描
+(等价性由含随机图的 vitest 用例钉死);artifacts 从每个节点的 data
+迁到 context,composer/actions 对象稳定身份。未动 CSS/视觉,未动
+snapshot/projects/costs 轮询。
+
+### 测试与纪律
+
+- 两批新测试均先证红后转绿(红态输出留在各自实施记录);
+- 全量 tests/:exit 0,零 FAILED(仅既有 warnings);前一轮全量唯二
+  红灯是 prompt 预算两条,压缩 prompt 后复绿;
+- frontend/web:tsc 干净,vitest 57 文件 382 用例全绿;
+- 语音防回潮、event 目录/schema/双端 parity、fixtures 生成器全绿
+  (新事件同步进 event_payload_schemas.json、eventCatalog.ts、
+  eventRender、生成物)。
+
+### 部署(见下一节的落位核对)
+
+计划:fetch+rebase 推 main → runtime-latest 丢弃与 662a95acd 等价的
+本地改动、detach 到新 rev → `frontend/web` 重建 dist → 重启三个守护
+进程(回到 config knob 指向的 runtime-latest,不再需要 env 覆盖)→
+重启 8799/8801 两个 webapi。上线后值得盯:life.planner.
+parallel_dropped 的出现频率(应当很快归零——Planner 学会声明
+owns_paths)、辅助槽的实际并发占用、Atlas 网络面板里 /map 请求频度
+(活跃期应从 3s 降到 SSE 驱动 + 15s 兜底)。
+
+### 遗留(诚实)
+
+- map-history 路由每页仍两次 feed.read(形态同 /map 修前),未列入
+  本批;canvasSize 变化仍重渲染全部节点;MapPanel 的 updateKey 逐
+  事件重算——三者都是既有行为,笔记 D 里有定位。
+- 一次性反馈注记在"prompt 已组装、模型调用前中止"的路径上会白耗
+  (与 dropped_dependency 同一取舍,评审确认为既有模式)。
+- 17 张决策卡仍压在 ~/.argus-skill/maintenance/pending/ 等操作者。
+
+## 二十一、事故记录(2026-09-08 上午):copilot 提示词投递断裂与十五分钟修复
+
+### 事故
+
+07:14 滚动三守护进程到 de4ef341d 后,第一个规划周期(07:15)起所有
+one-shot copilot 调用统一报 "No prompt provided...",planner 连续
+出错进退避循环,三台守护进程全部命中(papermaker 16 次、restaurant
+16 次、agent-comm 10 次,全部集中在 07:15-07:16)。提示词本身完好
+(agent_io 记录 45,751 字符)——是投递不到 CLI。
+
+### 根因(git bisect + 双 CLI 复现实锤)
+
+首坏提交 7614bf720("own provider turns with private Job Objects",
+本日凌晨上游批次):把提示词投递从子进程 stdin 管道改成临时文件
+(规避"读者未启动先写管道"的死锁)。独立安装的 copilot CLI
+(~/.local/bin)接受普通文件 stdin,但机队实际解析到的是 VS Code 的
+copilotCLIShim.js——它只认 FIFO stdin,对普通文件回答 "No prompt
+provided"。手工复现:同一 argv,`< file` 失败、`cat file |` 成功。
+f9d8a02bf(滚动前版本)直接经 runtime 调用验证无恙。
+
+### 修复:591e39950("Feed the prompt through a pipe the copilot shim will read")
+
+投递改回真管道,由 daemon 线程喂入——读者启动前父进程不写一字节,
+7614bf720 要防的死锁依旧防着(既有 backpressure/watchdog/spawn 失败
+三组测试原样全绿);子进程不读完就退出时,写线程收 broken pipe 自行
+了结,不悬挂。新回归测试:子进程 assert stat.S_ISFIFO(stdin),在
+临时文件投递上先红后绿。07:50 滚动三守护进程 + 8799 webapi 到修复
+版,planner 真实调用、Engineer 论文工序、事件等待/空转跳过全部核实
+正常;事故窗口合计约十五分钟,损失若干次空转 copilot 调用。
+
+### 落位与善后
+
+- main = 995e30a6c(修复 591e39950 + 发布产物重建提交);
+  runtime-latest 干净 detach 于 995e30a6c,web dist 为新源码构建。
+- 守护进程跑 591e39950 源(与 995e30a6c 源码逐字节一致,后者只多
+  生成物),下次滚动自然对齐版本号。
+- 8801 webapi 归 TUI 会话私有(env 钉着旧 release digest),未动,
+  由其属主自行重启换版。
+- de4ef341d 前的另一处教训:schema 加字段后只跑了 fixtures 生成器
+  没跑 types 生成器,被 web build 的 --check 拦下——生成器要成对跑。
+- 上游同批的 Windows Job Objects 语义未验证(本机 POSIX 直通),
+  Windows 侧行为归上游作者;shim 与独立 CLI 的 stdin 语义差异值得
+  在 copilot 适配文档里记一笔。
+
+## 二十二、追加(2026-09-08 下午):Atlas 重塑第一波——说人话、画真图、可批注可展开
+
+操作者原话的三件事:卡片事件"说得不像人话";轨迹全是串行,没有并行
+图结构;整体要 reimagine 人机协作范式(暴露 agent 的搜索轨迹,双方都
+能导航、批注、扩展整个探索空间)。四个实施流并行 + 一个接线批,全部
+测试先红后绿,全量 tests/ 与前端 vitest(63 文件 422 用例)+ tsc 全绿。
+
+### 病根(调查结论,含活体样本)
+
+- 步骤卡直接渲染 harness 回执原文(线上样本:"Runner receipt: Provider
+  turn cap reached... ARGUS_SKILL_PROVIDER_TURN_CAP");步骤标题是写死
+  的"本轮执行记录";LLM 改写(map-copy)只覆盖聚焦卡;compact 缩放
+  档摘要被 CSS 藏掉;摘要因状态漂移退回"放大查看任务内部"。
+- 布局是"折叠时间线"(后来的工作永不回左边);12 路 idea portfolio
+  以 team.task 形式埋在单卡内部步骤;plan revision 事件被前缀过滤器
+  挡掉。样本 s-d9c7aeb2:19 卡几乎全 deps=[],真实扇形不可见。
+- 引用(quote)前端完整、后端零解析(agent 收到裸 JSON);批注不存在。
+
+### 落地(五个提交,见 git log)
+
+1. 说人话:harness 回执折叠为一句同事口吻的话(模式锚定到发射点原文,
+   带 "Runner receipt:" 才允许宽匹配,防误伤讨论预算/隔离政策的研究
+   散文),原文降级为"运行记录"附注;审查步骤结论化标题(审查通过/
+   需要调整/未通过);执行步骤标题取内容首句;compact 档两行摘要;
+   摘要漂移不再退化(终态任务也不再挂"描述更新中");narrative prompt
+   v7(禁引回执原文、摘要先讲结论)。
+2. 真图:team.task 升格为一等分支节点(fork/join 几何,16 条封顶 +
+   "还有 N 条"溢出药丸,点击回母卡);依赖秩布局 rankLayout(门控:
+   存在扇形边且 ≥30% 节点有依赖/扇形连接,老会话字节级不变,有测试
+   钉死);边语言分层(依赖实线箭头、扇形半透明细线、时序上下文更淡、
+   改道边带 superseded_reason 截断标签)。
+3. 投影:任务字段补 superseded_reason/node_key/parallel_safe/owns_paths
+   (list 值也过密钥红action);life.plan.node.superseded 进流带原因;
+   idea.portfolio.formed 以 formation: 命名空间单条转发(单遍历零额外
+   IO,躲开 team: 可删除约定)。
+4. 交互范式:`[[Argus引用]]` 后端真解析——转录里变成可读引文
+   `（引用：《…》）`,模型侧追加有界上下文块(4 引用/各 3 条记录/
+   4096 字符,同源红action,行级 startswith 与前端逐字对齐);地图批注
+   GET/POST /map-notes(JSONL+锁,node_id 字符集白名单防伪造摘要行),
+   最近 5 条注入 planner 现实摘要——**人在图上写的字,agent 每个规划
+   周期都读到**;带引用的派单把新任务 deps 挂到被引节点(终态非 done
+   不挂防级联跳过,bounded DAG 挂 entry 节点),"从这里展开"从此是图
+   语义。前端:右键菜单三动词(引用/添加批注/从这里展开——后者自动
+   切 task 路由),卡片批注徽标 + 详情侧栏,编辑器 Esc/点外可关、
+   保存失败留草稿。
+5. 对抗评审 1 must-fix + 7 should-fix 全部修入:must-fix 是镜头缩放
+   对分支药丸解引用不存在的 data.frame(团队扇形上屏即崩画布),修为
+   zoomTarget 过滤无 frame 节点 + 防御性可选链。
+
+### 已知边界(评审 note 级,接受或留波次二)
+
+- formation 事件目前是休眠数据(前端还没用它标注扇形宽度);绑定
+  FIFO 驱逐后客户端 formation 行不回收(≤32,可接受)。
+- 引用展开的事件检索接受任意 event_id(仅限本 session、已红action、
+  有界)——非地图内部事件也可被引用出来,speculative 风险已记录。
+- 徽标在 overview 密度下偏小;compact 固定高度在极端宽高比可能溢出;
+  引文行/上下文块暂为中文(与既有 marker 一致),en 用户体验待波次二。
+- map-history 的 sqlite 索引不回填已索引区间里的 superseded 事件。
+
+### 部署与观察
+
+部署本批需重启 8799 webapi(map/notes/references 路由)并滚三守护进程
+(planner 摘要读 map_notes.jsonl)。上线后值得看:批注是否真的改变
+planner 决策(digest 里 operator_map_notes 出现后下一 verdict);分支
+药丸的点击/悬停是否顺畅;新会话(有并行拓扑感知)是否开始产出真 DAG,
+让 rankLayout 门控自然打开。
+
+### §22 部署落位记录(2026-09-08 09:00 前后)
+
+- main = a97ea2840(四个功能提交 + 发布产物;rebase 于另一团队的
+  PR #117 之上,用独立 worktree 完成以免动其未提交工作区)。
+- 部署时与另一团队的滚动**交叉**:对方 08:55 用 env 钉定的
+  `argus-runtime-20260908-89f1af4e2` checkout 抢占了 8799 端口并重启了
+  s-d9c7aeb2 守护进程(其 rev 不含本批)。因 a97ea2840 ⊃ 89f1af4e2,
+  已做一次收敛:s-d9c7aeb2 与 8799 webapi 均回到 runtime-latest
+  (a97ea2840,无 env 覆盖)。若对方流程再次接管,请操作者仲裁 rev。
+- 冒烟:GET/POST /map-notes 全链路通(批注已入 s-d9c7aeb2 的
+  map_notes.jsonl,planner 下个规划周期可读);三守护进程 active/
+  waiting 健康。8801 webapi 仍归 TUI 会话属主。
+
+## 23. Atlas wave two: legibility, camera, composer, deployment channel (2026-09-08 midday)
+
+Wave two of the Atlas overhaul shipped as `2e22588aa` + artifacts `7ddc57c1a`, rebased onto the
+paper-optimization team's `91c99b4c3`/`70b91a193`. Division of labor per operator: this session owns
+the frontend; the other agent owns paper optimization; collaboration through origin/main only; both
+land on the cloudflare demo.
+
+What shipped (frontend only, no python behavior changes):
+- Overview legibility: density-adaptive cards (`data-overview-density`) — compact drops copy/hints
+  for a 3-line title; micro becomes a state-tinted post-it (13% state wash, 6px left rail, watermark
+  glyph ✓/✕/?/‖/▶/↪ via CSS `::before` keyed on `.map-state-*`). Live tasks breathe (ring on
+  `[data-active=true]`, reduced-motion → static). Superseded cards recede (opacity+desaturate).
+- Header: segmented progress strip (done/running/question/failed partition, one-pass tally memo in
+  MapPanel) + count chips; the attention chip is a button that jumps to the first
+  pending-question/failed task. Minimap node colors = full status palette (heatmap).
+- Camera (subagent): focused card fills 0.72 of min(canvas) (cap 0.85, contain floor kept); overview
+  fit centers on the visible canvas (the old bottom dead band came from asymmetric viewingArea
+  reserves); reader zoom keeps 48px headroom above the rect; `motionDuration` formalizes the
+  reduced-motion gate. Pure helpers exported; 11 unit tests (`semanticCamera.test.ts`).
+- Edges (subagent): kind-hued strokes/pills via CSS vars in new `edges.css` (dependency steel /
+  related neutral / plan-change amber, dark overrides; legend swatches share the variables so they
+  cannot drift); larger kind-colored arrowheads; fan edges +0.4px with join dots (`pointAlong` in
+  relationGeometry); label pills restyled as metadata with `title=` full phrase, CSS-only ellipsis at
+  150px (no more mid-word cuts), hard-hidden below zoom 0.5; collision pass now bucketed to 1/8 zoom
+  steps (identity-stable across tiny zooms).
+- Composer (subagent): root cause of the auto-expand was `overview={!camera.detailed}` forcing
+  `compact=false` on card focus, plus hover-expand and a stale focusSignal on remount. Now an explicit
+  `expanded` state that only user intent sets (pill click, "c" hotkey, quote insert, fresh
+  focusSignal); Escape-empty/outside-click collapse; drafts always survive with a visible "草稿已保留"
+  pill hint; expanded panel clamps to clear legend and minimap; 200ms ease-out, no bounce.
+- Submap/reader typography (subagent, CSS only): step cards get real hierarchy (14px titles, 3-line
+  copy clamp, status left-borders, kind-colored selected ring), column labels 13px + rail, stage-key
+  chips filled/ghost, reader gets kind ribbon (pure sibling selector `.submap-step.is-selected ~
+  .macro-reader`), 18px title, 64ch measure, tonal Reference button; notes aside amber.
+- Decision modal: `usePendingReplySession` gained `autoOpen` (App passes `workspaceView !== 'map'`)
+  and sessionStorage single-prompt-per-tab (`argus.decision.prompted.v1`) — the map is never hijacked
+  on entry; other views prompt once per tab per decision. 3 unit tests.
+- Keyboard: `/` focus search, `F` fit, ←/→ walk cards chronologically while focused (guarded for
+  inputs/IME). Hint line in the summary bar updated.
+
+Verification: vitest 67 files / 454 tests green; tsc clean; visual QA via playwright loop on a
+private sandbox (copied only `projects/s-cbc15c0e` + state root files into a scratch HOME, ran
+`--web --no-daemon` on a free port from this clone — pattern works and avoids touching the shared
+demo while iterating).
+
+Deployment mechanics learned: the web client bakes `RELEASE_SOURCE_DIGEST` at build; the server
+reports the digest of the code it loaded at startup. Any dist rebuild therefore requires restarting
+the webapi process from the same checkout, or clients see "backend and client installations are out
+of sync". Deployed by ff-ing `/data/v-boxiuli/argus-atlas-main` to `7ddc57c1a` and restarting 8897
+with its exact env (token/home read from /proc; command unchanged; log at
+`/tmp/argus-8897-restart-20260908.log`). Verified: served bundle == checkout dist
+(`index-OZUr6pFB.js`), `/api/meta` digest match true, map-notes 200, external viewers reconnected
+over the tunnel immediately, live screenshot shows wave-2 rendering with the demo project actively
+running.
+
+Still pending: `/data/v-boxiuli/argus-runtime-latest` (8799 + daemons) runs code loaded at a97ea2840
+and its HEAD was accidentally fast-forwarded earlier; roll it cleanly to current main at a quiet
+moment so daemons pick up the venue-gate fix and both teams' work.
+
+## 24. Atlas wave three: frame rate and the hover island (2026-09-08 evening)
+
+Operator feedback mid-run: island expansion and card interactions feel low-FPS, animations too few,
+and the island should open on hover, not click. Shipped as `1e2e8d83f` + artifacts `362c82442`
+(rebased onto the paper team's `4d6e88d9d`; their artifacts commit conflicted with mine during
+rebase — resolution is always `git rebase --skip` the stale artifacts commit and rebuild at the
+merged source, never merge generated files).
+
+Frame-rate work, in descending order of impact:
+- Unfocused cards' `.macro-detail` is opacity:0 by design but still paid style/layout/paint for the
+  full inner submap (13 tasks × ~12 steps). `content-visibility: hidden` on
+  `.map-macro[data-focused="false"] .macro-detail` culls it (map.css).
+- Every relation edge subscribed to continuous zoom → all edges re-rendered every frame of a zoom
+  gesture. Bucketed to 1/24 steps in MapRelationEdge (≤4% size drift between steps absorbed by the
+  canvas transform).
+- The island animated width+left+height with a 25px-blur shadow: `left` no longer animates (snap;
+  corridor shift is 0 on wide canvases), `contain: layout` isolates its reflow, `will-change` +
+  translateZ(0) promote it, curve is 280ms cubic-bezier(0.32,0.72,0,1) with staggered content
+  (editor fades/slides 90ms behind the geometry).
+- `dataset.zoom` writes quantized to 2 decimals (no CSS consumer; attribute churn only).
+Headless-software measurement (fps.py in /tmp/atlas-shots, wheel-zoom+pan script): avg 40.3→44.3
+fps, p95 frame 66.7→50.0ms. Real-GPU clients gain more (culling+compositing under-measured there).
+
+Interaction/motion:
+- Island expands on pointerenter (hover-capable devices only; guarded `typeof window` for SSR
+  tests), folds on pointerleave after a 320ms grace unless a draft exists or focus is inside; all
+  wave-2 intent triggers (pill click, "c", quote insert, focusSignal) kept. Lifecycle tests updated
+  (16 composer tests).
+- Focus is a stage: `[data-detailed]` on .map-canvas-wrap dims unmounted-adjacent cards to 0.24
+  (hover restores 0.85) and the edge layer to 0.3; toolbar shrinks to icons (search re-grows on
+  focus-within); canvas fades in only after the opening fit (`data-fitted` gate) killing the
+  top-left first-frame flash.
+- Micro-delight: cards lift 2px on hover / compress on :active, chrome buttons scale 0.95 on press,
+  all gated by prefers-reduced-motion.
+- Branch pills (subagent): status washes/glyph parity with cards, k/N fan ordinal badge
+  (`fanIndex`/`fanCount` wired in MapPanel's branchNodes memo), running pills breathe; found and
+  fixed a cascade bug where branch.css's `--state` fallback beat map.css state classes.
+
+Suite: 67 files / 459 tests green, tsc clean. Deployed: demo checkout ff→362c82442, 8897 restarted
+with preserved env (owner had redeployed again — pid churns; always re-read /proc env), serving
+`index-XcbVTeLy.js`, map-notes 200. Overnight: session cron (~47min) keeps syncing origin/main to
+the demo (ff + digest-restart) and continues the backlog: search match count/cycling, PendingBanner
+"show on map" locate action, en reference lines, playback bar restyle, mobile/dark sweeps.
+
+## 25. The frame-rate investigation: measure, don't guess (2026-09-08 night)
+
+Operator still felt low FPS after §24. Proper profiling (playwright + CDP Performance.getMetrics per
+scenario; script at /tmp/atlas-shots/profile.py) rewrote the story:
+
+- In isolation the wave-3 build is a solid 60fps (idle/zoom/pan p95 16.8ms, main thread <3%). The
+  earlier 40-44fps numbers were machine-load artifacts (vitest/builds running beside the probe).
+- On the LIVE demo (running daemon) idle watching burned 18-24% main thread with a style recalc
+  EVERY frame (593/10s), and zooming stuttered (p95 33ms, layout 330ms/4s).
+- `document.getAnimations()` (with effect.getKeyframes()) pinned the per-frame restyler:
+  `map-working` animated **box-shadow** on the running-phase dots — one animation, one style pass
+  per frame, forever, whenever anything runs. Two dash-offset SVG loops (`atlas-flow` on active
+  edges, with drop-shadow filter; submap link flow) painted on the main thread the same way.
+  The websocket-token-storm hypothesis measured FALSE that moment (3 frames/10s idle), but the
+  memo+throttle guard is in anyway — streams do get chatty when agents write.
+
+Fixes (`a75b7402e`, `eed0e2dd1` + artifacts): map-working → scale+opacity keyframes; active-edge
+flow → `.map-edge-spark`, a dot drifting via offset-path/offset-distance keyframes on the
+compositor (EdgeLabelRenderer div, per-edge negative animation-delay so sparks don't sync); submap
+link pulse and branch breathe → opacity-only; MapPanel wrapped in `memo` with `events`/
+`conversationEvents` throttled to a 250ms beat in App (`useThrottledValue`); live incremental
+refreshes defer while the pointer is active (900ms window, wheel/pointerdown/drag listeners on the
+map section) so poll commits stop landing mid-gesture.
+
+Lessons now standard: (1) profile per scenario with CDP metric deltas before touching anything;
+(2) `document.getAnimations()` + getKeyframes finds main-thread animations in seconds; (3) infinite
+keyframes may only animate transform/opacity (offset-distance ok); anything else — box-shadow,
+border-color, stroke-dashoffset, filters — taxes every frame while it exists; (4) measure on the
+LIVE deployment: static sandboxes hide every cost that only running sessions trigger.
+
+Deploy note: the paper-optimization agent is actively developing INSIDE /data/v-boxiuli/argus-atlas-main
+tonight (uncommitted python+App.tsx WIP, own webapi process on 8897 serving my previous build
+`index-CGQAUThu.js` = wave-3+sparks+deferral). Per the no-touching-others'-WIP rule the final two
+fixes ride main and land on the demo at their next roll or the overnight ff-only sync once the tree
+is clean. Everything of ours is pushed: main = eed0e2dd1 at the time of writing.
+
+## 26. Overnight wave four and the first clean sync (2026-09-09 night)
+
+Wave four (`55d1a5c20` + artifacts `0b1aa9f03`, rebased onto the paper team's science-first release
+`ec159db4b`): search shows k/n and Enter cycles matches (Escape clears without backing the camera
+out; one shared predicate feeds dim/count/jump), the decision banner gains a "Show on map /
+在地图上查看" jump wired to locateAttention, the loading state shows three ghost cards with a
+transform-only sheen, and the historical playback bar got real buttons. Suite 459 green on the
+merged base.
+
+Deploy: the teammate's WIP landed as ec159db4b and their tree came clean, so the overnight sync
+ff'd /data/v-boxiuli/argus-atlas-main to 0b1aa9f03 and restarted 8897 (pid 1849043) — the demo now
+carries every pending fix including the map-working compositor pulse and the memo/throttle guard.
+Recurring lesson for rebases while the other team ships artifacts: reset the stale "Rebuild release
+artifacts" commit first (mixed reset + checkout generated + clean dist), rebase the source-only
+commit, rebuild, re-commit, push.
+
+Remaining backlog: en reference/context lines (map_references.py + presentation.ts), formation
+width labels beyond the k/N pills, map-history sqlite superseded backfill, runtime-latest roll.
+
+## 27. Wave five: quotes speak the operator's language (2026-09-09 night)
+
+`2c24be8c6` + artifacts `f328766ce`. The `[[Argus引用 {json}]]` marker gains an optional `lang`
+field written by the frontend at quote time (`MacroTaskNode.reference()`, `presentation.ts` type +
+splitDraft validation mirror); `map_references.py` renders the inline replacement, the context
+header (`CONTEXT_HEADER_EN`), the entry lines, and the terminal-status note in that locale. Wire
+format unchanged; old markers default zh; a non-string lang is a shape violation on both parsers
+(kept in lockstep). Red-first pytest (parse/normalize, English rendering, legacy default) + a
+frontend marker round-trip test; webapi suite green except the two known environmental QR pairing
+failures; frontend 460/tsc clean. Demo synced + restarted (this wave touches python, so the digest
+rule applied for real). Backlog now: formation width labels beyond k/N, map-history sqlite
+superseded backfill, runtime-latest roll.
+
+## 28. Paper workflow ownership and the strong-accept target (2026-09-08 UTC)
+
+The paper team owns research workflow changes; the other team owns frontend
+work. Coordinate through literal `main` and preserve each other's work. The
+operator now explicitly requires the three existing ICLR papers to reach an
+independent **strong accept**, through Argus's own scientific work. The paper
+team must not edit manuscripts, experiments, figures or review judgments by hand.
+
+The paper runtime now supports an operator-controlled
+`venue_acceptance_minimum` in the project's central pipeline state. It is
+`strong_accept` for `s-cbc15c0e`, `s-78dd04e4`, and `s-43de93ea`; the default
+elsewhere remains weak accept. The host must preserve the Reviewer's actual
+rating and continue work below this bar. A past weak acceptance cannot be
+reused after the bar changes. Do not weaken this setting or rewrite scores.
+
+`323cdb74c` / `ec159db4b` already gave the formal Reviewer a file-bound MCP
+capability for its own `paper/REVIEW.md`, with ordinary prose rather than a
+required template. On the live CBC paper at 19:17 UTC, it wrote a fresh review,
+the host interpreted weak reject as continue, and Engineer r2 started without
+stopping. This is also the owner of final review: Engineer should return each
+reviewable scientific increment to the host, rather than running a second
+integrated-review loop inside its own provider call. Isolated figure candidates
+may run in parallel; the lead validates and incorporates them.
+
+The current three PDFs each contain two scientific figures. New framework
+figures use existing Method D, automatically falling back to Method B when the
+image route is unavailable, and editable native PPT. Preserve good selected
+compositions. Favor meaningful mechanism detail and scientific hierarchy over
+plain box chains, empty whitespace, or paragraph cards; do not spend most
+research time repeatedly polishing figures. Keep raw adverse evidence.
+
+Deployment coordination: port **8897 belongs to the user service**
+`argus-atlas-investor-web.service`, whose `KillMode=process` preserves paper
+workers. Use `systemctl --user restart argus-atlas-investor-web.service` after
+the tested main build. Do not launch a competing `setsid/nohup ... --web` on
+8897: repeated manual launches have made systemd spin in a restart loop. The
+paper team will coordinate worker upgrades with the running experiments; avoid
+restarting those workers during a frontend deployment. Never restart the tunnel.
+
+Retain old hashed assets when publishing a new build, so already-open clients
+can still load lazy modules. Resolve generated-artifact merge conflicts by
+building the merged source, not by selecting an old bundle. The live paper
+audit and operational records are under
+`/data/v-boxiuli/argus-academic-figure-refinement-20260908/`.
+
+Follow-up from the real run: S43's old `*_directed` directories retained copied
+success records beside later partial raw files. Argus also found a shared-score
+shift defect, repaired its own implementation, and restarted both model panels
+in new `*_shift_corrected` directories. Do not infer full scientific completion
+from a marker or a previously observed PID alone. Check the current producer
+handles, actual configuration/repeat coverage and invariants, and source/config
+identity; preserve each attempt and promote a validated set together. These
+requirements now appear in the experiment, analysis and experiment-review guides.
+
+The backend also keeps tool-free classification, acceptance-dependency and
+review-control protocol text in `agent_io.jsonl` rather than forwarding it as
+public research progress. Normal Engineer, Reviewer and Manager replies remain
+visible; usage and diagnostics remain recorded. This addresses the visible
+`RECEIPT_ARTIFACT` / `DEPENDENCY_STATUS` plumbing without changing the frontend
+team's interface. The official Reviewer remains the author of its own report.
+
+## 29. Wave six: declared fan width; the 8897 supervisor discovered (2026-09 night)
+
+Wave six (`25a06b2a5`, artifacts `fc85fd9a9`): the unread `width` on `idea.portfolio.formed` now
+shows on the owning card — "并行编队 ×N 展开中 / Fanning out ×N" before branches spawn, and
+"计划并行 ×N / planned ×N" beside the subtask tally while realized < declared. `formationWidths`
+helper in model.ts (latest event per task wins), threaded through MapPanel node data; 462 tests.
+
+Deployment discovery: the teammate's 8897 webapi runs under **systemd --user with auto-restart**
+(ppid = systemd). Killing the pid races their respawn — my relaunch lost with "address already in
+use", while THEIR respawn booted from the ff'd checkout and picked up the new digest on its own.
+Revised procedure: ff the checkout, kill the pid, then only VERIFY the respawn serves the new
+bundle; never launch a competing process. (If the tree is behind or dirty, still hands off.)
+Also institutionalized: clean generated files (checkout release.generated/tui/manifest + clean
+dist) BEFORE any rebase — verification builds dirty the tree and block it otherwise; hit twice.
+
+Their `7c319ffa2` landed minutes later and their unit already serves it (superset of wave six).
+Backlog: map-history sqlite superseded backfill.
+
+Use the named user-service restart command in section 28 for deliberate web
+updates; it keeps restart ownership explicit and preserves the paper workers.
+
+## 30. Coherent scientific revisions and meaningful terminology (2026-09-08 UTC)
+
+The paper team continues the same three strong-accept tasks. Engineer now returns
+a coherent scientific revision, including coupled code, public command/config,
+analysis and manuscript repairs. A small preliminary test should guide the next
+experiment, not launch another whole-paper review after every edit. When the
+method, oracle, evaluator or cost definition changes, the affected headline
+comparisons must be re-established under that version; a repaired focal result
+cannot validate stale broad panels. Unaffected evidence remains reusable.
+
+The experiment and review guidance also makes baseline maturity, batching and
+precision part of comparison fairness, and requires actually exercising an
+updated public reproduction entry. Source/config snapshots must reflect the
+executed working files, not merely a Git revision. Targeted independent checks
+can group related claims and use natural feedback; the old mandatory separate
+reviewer and fixed labels for each claim are removed.
+
+The writing prompts previously banned words such as certified, gate, mechanism
+and control even in their scientific meanings. They now exclude internal task
+routing and review bookkeeping while preserving legitimate scientific terms.
+The shared review playbook no longer advertises weak accept as the completion
+bar when an operator requests strong accept. Honest ratings remain untouched.
+
+Validation: 111 relevant acceptance, natural-review, protocol, adapted-skill,
+length, voice, narrative and pass-reuse tests passed; ruff and whitespace checks
+passed. Log: `/tmp/argus-coherent-science-review-tests-20260908.log`.
+One concise nudge was queued to each existing task without stopping its work;
+the receipt is in `strong-accept-rollout/coherent-science-nudge.json` under the
+paper audit directory. Keep the already-loaded strong acceptance policy in
+mind: the workers still run e0dc20dfd, while later prompt cleanup is published
+for subsequent loads. Do not repeatedly restart healthy experiments for this.
+
+At 20:46 UTC all three original worker PIDs were alive. CBC was running an
+actual empty-directory reproduction check; Diamond was consolidating its
+current-oracle results; S43 was implementing a joint GQA replay and repairing
+the released tests. No independent strong acceptance has been verified.
+
+The bounded figure-flow audit found and removed two remaining sources of
+unnecessary serial work: the lead may select a finished, locally reviewed
+candidate while the Curator drains optional alternatives in private directories;
+the actual PDF-only Visual prompt now preserves a professional, readable
+composition and distinguishes concrete defects from preferred palettes/fonts.
+Optional alternatives never gain authority over the chosen source or paper.
+The common Team guide also recognizes a Reviewer's explicitly granted authority
+to update its own report.
+
+Fixed-page venue layout review now respects the researched `two_column` flag
+rather than calling every conference two-column. The standalone chart helper
+no longer silently assumes two columns when its profile is absent or invalid;
+the Engineer supplies `two_column` from the existing author kit in that case,
+and matches the final size to the template's actual text/column width. Its demo
+sets its layout explicitly. The live legacy papers have no cached venue profile,
+so future use of a freshly copied helper must pass that argument. This does not
+change existing paper sources or figures.
+
+The 107-test figure follow-up group passed, including actual Visual dispatch,
+pass reuse, both venue column layouts, chart metadata/explicit-layout behavior,
+native-PPT routing, natural review and strong acceptance. Log:
+`/tmp/argus-science-first-figure-followup-tests-20260908.log` (overlaps the earlier
+group). All three daemons continue; current main-text figure counts are 3, 2, 2.
+
+## 31. Wave seven: history stops lying behind the cursor (2026-09 night)
+
+The last wave-one backlog item. The sqlite history index upserted rewritten events in place, so an
+incremental reader whose cursor had passed that seq never saw the update — a step later retired as
+superseded stayed "done/running" in full-history views forever. Fix in map_history.py: delete +
+reinsert under an explicit monotonic counter persisted in the index state (bare rowids reuse max+1
+after a delete and can land exactly ON a handed-out cursor — the first fix attempt proved that the
+hard way). Red-first test (`test_updated_event_behind_the_cursor_is_redelivered`); webapi suite 520
+passed / 2 skipped (pairing deselected as the known environmental reds).
+
+Deploy used the §28 procedure for the first time: pre-clean generated files → rebase (their
+`900f234fd` landed meanwhile, zero friction) → rebuild → push `3d815eb04` → ff demo → kill pid →
+systemd --user respawned on the new digest within seconds, bundle verified. The wave-one Atlas
+backlog is now EMPTY; further overnight rounds are sync + QA unless the operator queues new asks.
+
+## 32. Normal floats and repeated large-file inspection (2026-09-08 UTC)
+
+S43's actual visual assessment called normal page-top floats between pages of
+a continuing sentence, plus trailing appendix whitespace, blocking defects.
+The current PDF was inspected directly: these are ordinary template behavior.
+The Visual prompt, layout reviewer and shared review playbook now require a
+specific comprehension/rendering problem before demanding forced placement;
+ordinary final-page whitespace is optional polish. The scientific bar is
+unchanged. All three tasks received this guidance without changing their reviews.
+
+S43 also repeatedly spent 349–358 seconds between the Engineer's completed
+provider call and the host starting review. Its aggregate rewrites a 1.2 GB
+`refinement.jsonl`, and the file inspection repeatedly parses those records.
+The round loop now keeps an in-memory cache of fully inspected clean streaming
+content. Reuse still hashes every current byte, checks for concurrent mutation,
+and requires the same known credentials, pattern/record-key policy and source
+versus output scan mode. Failed, incomplete and changed content cannot reuse a
+result. Cache entries are never accepted from paper files or completion markers.
+The existing checks and redaction behavior remain in force.
+
+On a disposable two-megabyte copy of actual S43 records, full inspection took
+0.536 seconds and verified reuse after an identical rewrite took 0.0085 seconds
+(63x on that sample). The live source was only read, and the disposable file's
+bytes stayed identical. This is a local benchmark, not an observed live-worker
+speedup yet. Tests cover changed bytes despite identical size/mtime, newly known
+credentials, different scan modes, concurrent changes and failed scans.
+The 81-test secret-scan, Engineer-round, visual/reuse and voice group passed;
+log: `/tmp/argus-identical-scan-and-float-tests-20260908.log`.
+
+Operational cleanup aligned all three backlog acceptance descriptions with
+their already-enforced strong-accept setting. S43's continuation no longer
+presents the old `*_directed` completion markers as current valid evidence.
+The audit receipts are `current-task-contract-cleanup.json`,
+`float-readability-guidance.json` and `identical-scan-benchmark.json` in the
+`strong-accept-rollout` audit directory. Running task identities/statuses were
+preserved. Upgrade workers only at an actually recoverable point; never restart
+their scientific work because an observation window expired.
+
+## 33. Execute the recorded GPU mapping (2026-09-08 UTC)
+
+During S43's same-information stratified experiment, Engineer launched a config
+using logical `cuda:0` without the `CUDA_VISIBLE_DEVICES` prefix present in its
+saved example. Qwen reached the occupied physical GPU 0 and failed. Argus itself
+diagnosed the omission and restarted only Qwen with `CUDA_VISIBLE_DEVICES=1`;
+the new process was directly verified on GPU 1. Phi's completed work was retained.
+
+The hardware prompt and experiment guide now distinguish physical inventory
+indices from framework-local indices, honor any assigned mask, and require the
+actual launch to include the intended mapping. The project-environment guide
+no longer claims that activating a venv sets the mask from a resource JSON file:
+only an actual parent/launcher environment or explicit command does that. Keep
+the mapping with the existing run command; no new report or operator question.
+
+The 40-test inventory, research protocol, resumed-reviewer and voice group
+passed, along with ruff and whitespace checks. Log:
+`/tmp/argus-device-mapping-guidance-tests-20260908.log`.
+All three original paper daemons were still alive; S43 was doing real new
+experiments, so its observation window expiring did not trigger a restart.
+
+S43 subsequently completed its scientific batch and wrote a fresh central
+checkpoint and Engineer handoff at 22:01 UTC. After verifying there were no
+remaining scientific producers, the paper team requested one cooperative stop
+at 22:03:57. The API's ten-second wait returned rc=2; the same PID was left to
+finish its large-file inspection and exited cleanly at 22:08:03. No force-stop
+was used. The paper, review and handoff hashes were unchanged.
+
+The existing task `100b40232932` resumed at 22:10 UTC under **PID 2235153**, main
+revision **336917bb9186**, with strong accept still required. Engineer verified
+the saved batch and returned without rerunning it; independent review started
+at 22:13. The actual Visual prompt now carries the stable-composition and normal
+page-float rules. CBC and Diamond remain on their healthy original workers
+(1960261, 1960332); do not interrupt their scientific work just to synchronize
+revision labels. Detailed receipts are under the paper audit directory's
+`coherent-science-rollout/s43-upgrade/`. No strong acceptance is claimed.
+
+## 34. Prove the claimed guarantee and compare the same units (2026-09-08 UTC)
+
+The latest S43 review identified three scientific gaps: a new guarantee needs
+its argument, the retained independent certificate must still be reproducible
+after changing the default, and differences between separately selected joint
+and independent panels do not establish an interaction. Argus is implementing
+the proof/variant repair and a paired panel itself; the paper team has not edited
+its manuscript, experiments, figures or grades.
+
+The research experiment/review guides now state these principles explicitly.
+A mathematical guarantee central to the contribution needs assumptions, a
+justification covering relevant boundaries, and correspondence to the executed
+algorithm. Tests check implementation, without replacing that argument; empirical
+work is not required to invent a theorem. Component-effect and interaction claims
+use the same experimental units and conditions, with all paired outcomes retained.
+Retained implementations stay selectable or replayable from their preserved
+source/config; paper builds must not silently replace the scientific variant.
+Partial diagnostic/timing observations are retained with their failure context
+before retrying an incomplete attempt.
+
+The 48-test research-protocol, adapted-skill, paper-policy and natural-review group
+passed; `/tmp/argus-proof-paired-evidence-tests-20260908.log`. These are concise
+scientific guidelines, not new review fields, numerical quotas or role permissions.
+At 22:35 UTC, CBC was running its compact-code experiment, Diamond had reached
+a third natural-input timing block, and S43 had submitted durable paired-state
+jobs for both models. No paper has been verified strong accepted.
+
+## 35. A dead shell is not a finished experiment (2026-09-08 UTC)
+
+S43's Engineer terminated the wrapper PIDs of its first paired-panel attempt
+while optimizing the implementation, then launched v2 into the same output
+directories. The two original Python processes were still alive, reparented,
+and consuming GPUs. The original task records had already said error/-15 and
+released their resource grants. The paper team verified the exact old process
+identities and independent groups, then terminated only those two old groups.
+Both output directories were still empty at cleanup; current v2 tasks were
+preserved. No paper or experiment files were edited by the paper team.
+
+Direct POSIX jobs now retain their launched group identity and settle remaining
+children before publishing a terminal record or releasing resources. A shell
+that returns zero while leaving work behind is not a successful complete run.
+Termination waits on the group, including TERM-resistant children, rather than
+returning as soon as the shell exits. Current/reused unrelated process groups
+are protected. Exit-sidecar reconciliation also waits for a live owner to finish
+settling its work. Genuine durable jobs still survive loss of their Python owner.
+
+The process/resource/owner-loss suite passed 121 tests with two native-Windows
+tests skipped on Linux. Real-process regressions reproduce wrapper termination
+and background children, assert resource release follows child exit, and ensure
+an unrelated process survives. Log:
+`/tmp/argus-direct-process-ownership-tests-20260908.log`.
+The experiment guide now distinguishes launcher status from real producer
+liveness and cautions against interrupting healthy CPU work for minor speedups.
+Operational receipts and the one continuation nudge are under
+`coherent-science-rollout/orphaned-direct-runs/` in the paper audit directory.
+
+## 36. Test the claimed information timeline and execution boundary (2026-09-08 UTC)
+
+CBC's latest compact coder reproduced the offline records but decoded an entire
+split at once, which did not establish the paper's per-step causal interface.
+Diamond's proof-path improvement transferred to natural inputs, but its full
+cached-decoding boundary still needs testing against the fastest matched dense
+path. Both Engineers are now implementing these scientific experiments themselves.
+
+The experiment and scientific review guides explicitly connect the claim to its
+execution boundary: information must be available at the actual decision time,
+side information must have a realizable source and consistent cost, and framing,
+block size, delay and setup amortization must describe the same deployment.
+Whole-trace reconstruction does not prove timely online action; a component
+microbenchmark does not prove a whole-loop claim. The guides call for a meaningful
+pilot of the claimed interface, without imposing unrelated application tests or
+new structured review output. The 48-test policy/protocol/natural-review group
+passed (`/tmp/argus-causal-execution-guidance-tests-20260908.log`).
+
+## 37. Current work in the briefing; current goals in task state (2026-09-08 UTC)
+
+CBC's real Reviewer noted that its current Engineer handoff was newer than the
+brief's account. The brief selected only a previously reviewed Engineer summary
+and labelled it as current decisive work. It also chose the last review by
+lexicographic round filename, which selects an old higher-numbered round after
+a daemon restart resets numbering. Both have now been corrected: review records
+are ordered by their recorded time, new unreviewed work is identified explicitly,
+and the Reviewer omits the duplicated Engineer account because its current
+response is already supplied separately. A stale latest reference does not reopen
+work already reviewed, and malformed optional references do not break review.
+
+The task-state references no longer call `latest.json` necessarily reviewed.
+Refreshing a mission also rebinds an untouched initial state to the current
+operator goal; recorded scientific progress is preserved. Current handoff pointers
+are not needlessly rewritten during contract refresh. These changes preserve
+checkpoint contents, learned evidence/history and Reviewer authority.
+
+The three live metadata packets were synchronized from their existing backlog
+items without restarting workers. Their old initial state had still contained
+the superseded SVG/TikZ route and weak-accept minimum; all now carry the current
+science-first native-PPT goal and strong-accept criterion. Only operational
+mission/state metadata was updated; checkpoints and learned progress were verified
+unchanged. Receipt: `coherent-science-rollout/mission-context-rebind.json` under
+the paper audit directory. Latest reports, figures and experiment data were not
+edited by the paper team.
+
+The 81-test context, semantic-state, reviewer deduplication/resume, acceptance and
+voice group passed, plus ruff and whitespace checks. Log:
+`/tmp/argus-current-review-brief-tests-20260908.log`. No new Reviewer output schema
+or scientific score is introduced, and no strong acceptance is claimed.
+
+## 38. Separate discovery from independent confirmation (2026-09-08 UTC)
+
+S43's latest independent review closed the proof, variant-identity and paired
+reproduction gaps, but its positive cases were selected from a different
+layer/group than the subsequent null panel. Engineer is now running the proposed
+early-layer follow-up. The original selection reads existing refinement records
+and maximizes a prefix-divergence proxy; the new follow-up uses the same context
+IDs. This is useful additional evidence, but being unselected does not establish
+independence from the search that chose the regime. A single operational nudge
+asks Argus to verify that distinction and obtain genuine confirmation where the
+claim needs it, while retaining the current running experiment and all outcomes.
+Receipt: `coherent-science-rollout/independent-confirmation-guidance.json` in the
+paper audit directory. The paper team has not edited scientific files or grades.
+
+The experiment/review guides now distinguish exploratory cases, replication and
+confirmation, including selection through proxy outcomes and data held out only
+from model fitting. A proposed regime is fixed before testing new independent
+units there; a panel from another regime does not settle its generalization.
+Uncertainty uses independent units instead of correlated treatments. Existing
+notes/configuration carry this context, with no new report or review schema.
+
+The research-persistence guide now develops meaningful improvements and matched
+causal tests while preserving adverse results. It no longer tells agents to
+obtain a preferred number, dismiss flat results, or treat every negative result
+as an unfinished implementation. A rigorous boundary needs a consequential
+principle or prediction and evidence against the closest work; a failed method
+alone remains insufficient. The independent Reviewer still owns the selected
+venue's actual completion judgment, and scientific revision stays in the current
+stage. The 51-test research-protocol, adapted-skill, paper-policy, natural-review
+and voice group passed, plus whitespace checks; log:
+`/tmp/argus-independent-confirmation-guidance-tests-20260908.log`.
+
+## 39. Resume an empty answer from a native command wait (2026-09-09 UTC)
+
+CBC Engineer r8 received Copilot's native shell-2 still-running notification at
+23:38:43, then emitted an empty `final_answer`. After about 600 seconds the CLI
+returned `result` with exit code zero. Argus marked the call complete and reused
+the earlier progress message as its final answer, starting another whole-paper
+review at 23:48:54 while the scientific batch and manuscript were unfinished.
+The original producer had exited by the next process inspection. The paper team
+did not terminate it, edit the science or change the review recommendation.
+
+The Copilot stream consumer now preserves an explicit empty final answer and
+keeps parent completion separate from native delegate events. When the last
+parent tool explicitly reported an active native command and the CLI ends with
+that empty answer, the runner emits an incomplete-wait receipt. Engineer resumes
+the current task with prior Reviewer feedback, checks actual producer/output
+state and uses durable Argus jobs for remaining long work. This continuation
+does not purchase a scientific review or count toward backend-failure ceilings.
+Normal final answers, report-write-only completion, optional parallel drawings,
+real backend failures and operator/budget stops retain their own behavior.
+
+The exact 7,632-event CBC stream was replayed through the repaired parser and
+finalizer without calling a model or altering live work. It now returns no stale
+final message and correctly identifies the incomplete background wait. The
+receipt is `coherent-science-rollout/cbc-provider-background-wait-replay.json`;
+one operational continuation message is recorded in the adjacent
+`cbc-provider-background-wait-guidance.json`.
+
+The 178-test parser/runner, continuation, role-stop, streaming, report-ownership
+and natural-review group passed, with one platform-specific test skipped, plus
+ruff and whitespace checks. Log:
+`/tmp/argus-provider-background-wait-integration-tests-20260908.log`.
+
+## 40. Heatmap text follows its displayed background (2026-09-09 UTC)
+
+S43's latest Reviewer found one concrete readability defect in its otherwise
+accepted third figure: a value-based white-text rule makes several pale-green
+cells unreadable at paper size. The delegated figure-workflow task added
+`contrast_text_color` to the shared chart helper and a direct `imshow` example
+to its guide. It chooses black or white annotation text from the actual cell
+color and alpha, composited with the axes/figure background over white paper,
+using sRGB relative luminance. The data, normalization and palette stay intact.
+Callers supply the actual non-white background and avoid applying opacity twice.
+Existing project scripts need Engineer to adopt the helper; the paper team has
+not edited the paper or figures. This is a local text repair, not a design search.
+
+The 40-test chart/visual-routing group passed, including pale green, reversed
+colormaps and transparent cells/backgrounds, plus ruff and whitespace checks.
+Log: `/tmp/argus-heatmap-text-contrast-tests-20260908.log`.
+
+## 41. Describe healthy background waits and current scientific work (2026-09-09 UTC)
+
+CBC's cooperative runtime upgrade completed at 00:37:24 UTC. The ten-second stop
+request had returned rc=2, but its original daemon finished naturally; no force
+or repeated stop followed. The original eight-family scientific producer retained
+its PID, start ticks and increasing CPU throughout. Paper, review, checkpoint
+and scientific source/configuration hashes were unchanged. New daemon 2468274
+loaded clean main 38a36e07ff68, resumed the same task and adopted that same durable
+job. The other two paper workers and their work were preserved.
+
+After the ordinary wait cadence, the task correctly became paused_external_work
+and released its mission slot. Its conversation notification incorrectly said
+"Could not complete Team mission", and the periodic letter treated an old
+settlement about an acceptance-contract problem as the latest Reviewer feedback.
+No question was actually pending; the computation was still healthy.
+
+Healthy waits now publish an idempotent progress message with the actual task
+title and automatic-continuation explanation, without a failed/completed result
+or an operator decision request. The existing scheduler still waits for the
+external condition to change before resuming. Periodic letters now use active
+tasks, their current completion requirements and central checkpoints, plus the
+saved paper review. Historical settlements are labelled as history, and archived
+questions no longer reappear as current questions. The prompt distinguishes the
+last reviewed version from newer unreviewed work and does not invent a request
+for permission when the current question list is empty.
+
+The 113-test notification, mission-outcome, letter, durable-wait and background
+continuation group passed, plus ruff and whitespace checks. The lifecycle test
+verifies one durable notification, no failed/completed classification, no wake
+while the job remains healthy, and automatic resumption on its terminal record.
+Log: `/tmp/argus-healthy-wait-notification-tests-20260909.log`. A read-only
+projection against the live CBC state selected the actual current review and
+durable checkpoint with no model call (`coherent-science-rollout/healthy-wait-projection.json`).
+
+Diamond has completed its three-process cached intervention and is under formal
+review. S43's independent confirmation is now verified by its Reviewer, who
+identified a real greedy-lookahead state bug and again requested the complete
+dependency panel and certificate cost. Engineer is repairing that science and
+running both missing model panels. Its heatmap contrast is fixed; the Reviewer
+also identified a small formula-label overlap, which Engineer is moving locally
+without redesigning the figure. All three papers retain three figures. No
+strong acceptance or completed scientific objective is claimed.
+
+## 42. Keep finite-task daemons alive for their background results (2026-09-09 UTC)
+
+After CBC entered its healthy external wait, daemon 2468274 exited at 00:40:18
+with "bounded work completed". Its supervisor had no immediately claimable task
+and returned backlog_empty even though the same task was paused_external_work.
+The automatic resumption function existed, but no daemon remained to call it.
+The scientific producer was independent and continued normally; it completed
+at 00:53:48, exit code zero, with its original run identity after 2,158.9 seconds.
+This exit preceded the later web-service restart and was not a process kill.
+
+The non-continuous supervisor now rechecks the active backlog before declaring
+it empty. A task awaiting external results returns awaiting_external with a
+wakeable backoff, preserving the daemon's next check. This does not enable a
+finished continuous campaign, create new work, impose a science timeout, or turn
+an external job's completion into acceptance. Successful and failed jobs both
+resume the existing task for its owner to inspect; genuinely drained finite
+queues still exit normally.
+
+The 203-test daemon lifecycle, continuous-resume, mission-outcome and durable-wait
+group passed, plus ruff and whitespace checks. An integration regression drives
+the actual supervisor through the bounded daemon loop: it remains resident
+across two healthy checks, resumes the same task only after the job becomes
+terminal, and exits after that task is handled. It keeps the former continuous
+campaign disabled throughout. Both successful and failed external-job endings
+are also covered across supervisor restarts.
+Log: `/tmp/argus-bounded-background-resume-tests-20260909.log`.
+
+CBC's completed output has 176 model rows across all eight families, 176 compact
+candidate rows and 880 compact refit rows. Its validation reports no roster
+interval, five null-reproducing folds, and zero observation/action/symbol
+mismatches. These are current experiment outputs awaiting Engineer's manuscript
+update and the independent Reviewer, not a strong-accept result. Existing paper,
+review and scientific files were not edited by the paper team.
+
+## 43. Coordinate GPU experiments and measure the actual load (2026-09-09 UTC)
+
+Diamond r9 described three A6000s as free and launched three cached timing
+processes. Its GPU-0 attempt failed with a CUDA OOM alongside an existing
+service using about 29 GiB. Meanwhile, an S43 Phi panel and Diamond's process2
+were both resident on physical GPU 3. The two paper daemons used native shells
+without shared resource grants. This is a real scheduling and measurement
+condition; a device inventory or available-memory snapshot did not reserve a
+card or establish isolated timing.
+
+Engineer prompts now name the existing durable-submit accelerator, count,
+peak-memory, expected-duration and intent flags, preserve the allocator's
+visibility mask, and describe waiting_resource as a normal queue. The shared
+ledger coordinates cooperating tasks; it does not control unrelated native
+processes. Experiment and final-review guides distinguish a shared-device
+correctness smoke test from latency evidence. The latter needs an uncontended
+device or an explicitly defined and matched concurrent load. Independent
+process repetitions may run sequentially, and observed overlap calls for
+targeted verification while preserving all original results.
+
+One operational nudge was queued for each affected Engineer with the observed
+process/device identities, the actual OOM, and the supported resource path.
+Receipts are in `coherent-science-rollout/shared-gpu-experiment-guidance.json`.
+No root process kill, scientific edit or review-rating change was made. The
+29-test role-prompt, scientific-protocol and natural-review group passed; four
+native Windows integration tests were skipped on Linux, plus ruff and whitespace
+checks. Log: `/tmp/argus-shared-gpu-guidance-tests-20260909.log`.
+
+## 44. Return parallel-task results to the submitting session (2026-09-09 UTC)
+
+CBC's completed eight-family job had written its completion report into
+`projects/452357180587/inbox.jsonl`, while its actual parent was session
+`s-cbc15c0e`. The report destination was recomputed from the command cwd's
+legacy project fingerprint. Named sessions do not use that fingerprint, and
+several sessions may share a repository, so a successful report write could
+still leave the parent Engineer uninformed. The observation is recorded in
+`coherent-science-rollout/subagent-session-routing-observation.json`.
+
+New submissions now persist the host's assigned session root before the worker
+starts. That owner survives updates and terminal records for the same run;
+reusing a task ID for a new run cannot inherit the previous owner. Report
+delivery uses the recorded owner, independent of command cwd, worker cwd or
+the caller's current environment. Unbound reports from an old run cannot borrow
+a newer run's recipient; they retain a visible undelivered-report copy. Ordinary
+standalone CLI records without session ownership keep their legacy route.
+
+The 123-test report delivery, submission, status and durable owner-loss group
+passed, with two native Windows tests skipped on Linux, plus ruff and whitespace
+checks. A real detached CLI smoke test executed in a different directory and
+delivered only to the named submitting session, with no model calls or live
+paper changes. Receipts: `subagent-session-routing-smoke.json`; log:
+`/tmp/argus-subagent-session-routing-tests-20260909.log`.
+This applies to newly submitted scientific and isolated figure tasks without
+restarting healthy computations.
+
+CBC's latest complete formal review is now 6/10 weak accept. Its strong_accept
+minimum correctly keeps the same final-Review task running. The current
+Engineer is completing common activity-mask accounting and preparing an
+external learned-policy comparison; the other two papers are still revising.
+No strong acceptance is claimed.
+
+## 45. Check the promised endpoint before scaling refinement (2026-09-09 UTC)
+
+Both S43 dependency panels completed with 864 unique configurations each and
+zero recorded enclosure misses. Its own aggregate then found that many fully
+materialized endpoints still failed the requested tolerance: interval
+subtraction in the incremental cache accumulated dependency widening. Enclosure
+alone had not established usable accuracy. Engineer retained the failed attempts
+and is repairing the update arithmetic and its error envelope before another
+large run. The paper team has not changed its numerical code or data.
+
+The experiment and final-review guides now call for a small full-trajectory test
+of the actual selected variant before a large panel, including real removal or
+replacement updates and the terminal guarantee the method claims. Positive
+controls must exercise that same variant. This adds no generic convergence
+requirement or fixed review schema: the scientific contract determines the
+necessary endpoint, accuracy and evidence.
+
+The replacement compensated implementation subsequently passed its synthetic
+test, but its current first Phi configuration still failed at full materialization:
+RULER seed 100, layer 1, group 0, page size 32, tolerance 0.05. Actual errors
+were about 450.994 for coordinate-64 and 6777.185 for Key-PCA, with zero enclosure
+misses and explicit false tolerance flags. This is a real input regression to
+close before scaling, not an outlier to remove. The exact observed row and one
+Engineer/Reviewer steering record are in
+`coherent-science-rollout/s43-real-endpoint-counterexample.json`. No scientific
+file or process was changed by the paper team. The guides explicitly require
+the retained real counterexample and representative numerical regimes.
+
+The 21-test research-protocol and natural-review group passed, plus whitespace
+checks. Log: `/tmp/argus-refinement-endpoint-guidance-tests-20260909.log`.
+
+## 46. Carry current science into review and yield newly launched jobs (2026-09-09 UTC)
+
+S43's replacement panel was running when Engineer r1 returned its verified
+real-counterexample repair and a normal Reviewer handoff. The first-turn
+prompt had been assembled before the new jobs existed, so it contained no
+live-registry wait instruction. Meanwhile, the preliminary Scientific and
+Language reviewers received only their generic paper-reading instructions,
+without that current Engineer account or the live job states. One preliminary
+pass treated completed archived outputs as potential current evidence even
+though those attempts contained thousands of actual-error failures. The
+integrated Reviewer subsequently distinguished them correctly and continued
+the scientific work; its formal 03:21 UTC review remains weak reject.
+
+All Engineer prompt modes now describe the existing durable wait handoff even
+before the first job is submitted. Engineer continues independent work first;
+when the remaining work depends on a healthy existing job, it can save its
+checkpoint and yield to the monitor without a foreground sleep loop or another
+whole-paper review. This does not infer completion, impose an interaction
+ceiling, or prevent an actual scientific handoff when review is useful.
+
+Source-aware preliminary passes now receive the current task/operator
+guidance, Engineer account, recent feedback and external-work observation.
+They independently verify that account against the executed version and raw
+results. PDF-only visual/cold-read passes retain their isolated input and
+unchanged-input reuse; changing experiment progress alone does not rerun them.
+After preliminary passes finish, the host refreshes operator instructions and
+external-job state before the integrated Reviewer is called. Only the latter
+judges and updates paper/REVIEW.md in natural prose.
+
+The 128-test prompt, new-job wait, pass reuse, real round handoff, narrative,
+stop-kind and natural-review group passed, with four native Windows integration
+tests skipped on Linux, plus ruff and whitespace checks. The new regressions
+exercise a job created after prompt assembly, current context reaching the
+source-aware passes, PDF reuse across science progress, and a job/instruction
+change during preliminary review reaching the integrated Reviewer. An older
+catalog test was updated to the already-existing natural review and editable
+review-file contract, instead of retired specialist labels and a blanket file
+write prohibition. Log:
+`/tmp/argus-current-revision-handoff-tests-20260909.log`.
+
+Integrated the other main update `e88b09bb2` (Codex control-plane routing).
+The combined 220-test group passed with four native Windows skips; log:
+`/tmp/argus-current-revision-handoff-merged-tests-20260909.log`.
+That upstream build removed previously published hashed browser assets.
+The release retains their exact prior bytes alongside the current bundle so
+already-open browser sessions can still load their deferred chunks; no frontend
+source behavior was changed by the paper team.
+
+S43's current partial panel now has verified numerical accuracy; full coverage,
+matched certificate costs, replay updates and a stronger value-mean baseline
+still need completion. Diamond's three uncontended 7B processes are complete
+and its 3B processes continue. CBC awaits its existing external learned-policy
+source. No paper, experiment source, result, figure or review was edited by the
+paper team, and no strong acceptance is claimed.
+
+## 47. Review the current PDF and retain measurements through export failures (2026-09-09 UTC)
+
+S43's language specialist opened all sixteen files under paper/preview during
+its 03:53 pass. Those images were still from 00:35, while the actual PDF had
+been rebuilt at 03:49. Its report said the current PDF still claimed “We
+derive” and omitted the updated prior art. Direct pdftotext inspection of the
+actual PDF finds “We adapt the known threshold optimizer”, Vertex-Softmax and
+vAttention; OCR of the old first-page PNG still finds “We derive”. This was a
+stale reviewer input, not evidence that the current PDF needed another rebuild.
+The source/PDF fingerprints and exact observation are recorded in
+`coherent-science-rollout/s43-stale-review-preview-observation.json`.
+
+All preliminary passes that need the rendered paper now share one immutable
+host copy and its freshly derived text/pages. Scientific and Language keep
+their project workdir for code, source and raw evidence, and receive explicit
+paths to that current PDF bundle. They are told to compare those inputs before
+alleging a source/render mismatch. Visual and ColdRead retain their PDF-only
+isolation and unchanged-input reuse. Sharing the bundle also avoids generating
+the same PDF pages independently for concurrent readers.
+
+The 121-test pass-reuse, actual round handoff, narrative, stop-kind,
+natural-review and research-protocol group passed, plus ruff and whitespace
+checks. The new regression leaves stale project previews in place, verifies
+that both source-aware readers receive the current host-derived files while
+retaining source access, and checks reuse on the next review. It also verifies
+one shared render for Visual/ColdRead. Log:
+`/tmp/argus-current-render-review-tests-20260909.log`.
+
+Both S43 cost jobs reached final output but failed because PyTorch's device
+UUID object was not JSON serializable. Their errors and original records were
+preserved; the healthy full panels were not restarted. The experiment guide
+now calls for a small check through final serialization and the actual public
+consumer/export branches when those fields change, using native runtime types
+as well as fixtures. Raw cases should be saved independently of final summary
+assembly so an exporter defect does not lose measurements. This adds no
+Reviewer schema or blanket string conversion of scientific values. Engineer
+owns the concrete cost-script repair. See `s43-cost-export-failure.json`.
+
+Diamond's six v5 timing processes finished. All six original process censuses
+match their recorded hashes and counts, with no foreign process or query
+error. Both public aggregate commands were independently rerun into the audit
+directory and match the original 7B/3B summaries exactly. Receipts:
+`diamond-v5-resource-census.json` and `diamond-v5-reproduction/receipt.json`.
+Its old daemon then exited cooperatively, without force or another stop after
+the API's ten-second wait. Forty-seven key files and eighteen other processes
+were unchanged. Daemon 2872492 resumed the same final-Review task as attempt 5
+on main 0c5592f1f; that head only adds tests to the published 7556899da source.
+Engineer is integrating v5 and preparing an isolated mechanism-figure candidate.
+
+CBC's fixed external run finished with 180 unique task/condition cases, thirty
+per condition, exit zero and three retained model-limit failures. Its existing
+observer completed and the same daemon 2830843 automatically resumed task
+c7331e978da6 as attempt 10. Engineer is validating its own complete record
+analysis before formal review. The latest complete formal rating is still
+weak accept; the other two papers remain below strong acceptance. No paper,
+scientific code/result, figure or review was edited by the paper team.
+
+## 48. Keep published chunks through ordinary frontend builds (2026-09-09 UTC)
+
+The public release check reproduced a 404 for the previous release's
+index-BSc5suOI.js and MapPanel-B6aHWtLt.js. Main update 777fe73e2 had rebuilt
+the frontend and removed those already-published files, just as e88b09bb2 had
+removed earlier versions. The paper team's outer build helper could preserve
+files still in the source checkout, but could not retain files another ordinary
+build had already deleted. The missing files were first restored byte-for-byte
+from 7556899da; the old public entry URL returned 200 again.
+
+Vite now builds with emptyOutDir=false. Normal npm and Python release builds
+replace the current HTML and emit new fingerprinted files while retaining old
+chunks needed by open tabs. This fixes the build behavior instead of depending
+on one operator's wrapper to restore prior files. The change is confined to
+build retention; the product UI and paper artifacts are not edited here.
+
+## 49. Resume the three papers after the authorized budget removal (2026-09-09 UTC)
+
+All three original paper tasks reached paused_budget when settled local-day
+spend exceeded the persisted $1,000 host-global cap. The user explicitly asked
+to remove the limit. At 05:10 UTC the deployment's canonical configuration API
+persisted ARGUS_SKILL_GLOBAL_DAILY_CAP_USD=0 (unlimited). The same three daemon
+PIDs and task IDs resumed, and all three completed new gpt-5.6-sol provider
+calls. No experiment or daemon was restarted for that resumption, and the
+strong_accept gate and GPU admission remain in place. The authorization and
+provider-call receipts are in coherent-science-rollout/global-budget-cap-removed-20260909.json.
+
+Two framework defects amplified the pause: a supervisor retained its launch
+cap after the operator changed config, and its cheaper spend reader omitted
+registered ledgers outside projects/. Daemon budgets now follow live operator
+settings, idle backoff wakes when the configuration file changes, and status
+surfaces resolve the current cap instead of the launch sidecar. The preflight
+and displayed daily spend use the call gateway's complete, deduplicated ledger
+view. Explicit environment overrides and standalone LifeBudget values retain
+their precedence. This changes no default cap for other installations.
+
+The 269-test budget, supervisor, pause/resumption, daemon, API and cost-control
+group passed, along with ruff and whitespace checks. Regressions cover an
+increased/removed cap resuming the same task without reconstructing its
+supervisor, externally registered and copied ledger records, and configuration
+changes waking an idle daemon without inbox input. Test log:
+/tmp/argus-live-budget-resumption-tests-20260909.log.
+
+CBC's unified reproduction finished normally; its interrupted review still
+needs a new complete judgment. Diamond remains weak accept and is investigating
+a substantive screen-arithmetic intervention. S43's corrected Phi panel finished
+at 05:11:38 UTC; Qwen continues. Preserve those results and live computations.
+The overall strong-accept objective remains unfulfilled, and paper/scientific
+source, results, figures and ratings remain Argus-owned.
+
+## 50. Give direct paper revisions the right handoff guidance (2026-09-09 UTC)
+
+All three active paper tasks deliberately use workflow_mode=direct in final
+Review. That keeps an existing revision finite and avoids reopening an idea
+campaign. It also makes the supervisor's paper_mission campaign flag false.
+The host research-profile setting is absent, so the previous runtime context
+was empty for all three. An old profile-only paragraph additionally told
+Engineer not to verify its own output; that paragraph was dormant in these
+three runs and is not claimed to have caused their scientific defects.
+
+Explicitly selected paper/review stages now receive concise team guidance even
+in direct mode without a host profile. Engineer owns focused validation of its
+changed claims, connects numerical guarantees to every executed variant, and
+rebuilds and inspects affected PDF pages when manuscript or scientific figure
+inputs change. Clear figure compositions and current renders are retained.
+Independent Reviewer judgment remains authoritative and constructive. The
+change does not enable a continuous campaign, alter pipeline state, introduce
+a review schema, or inject the optional host profile's environment setup into
+unconfigured projects. Non-paper and early direct research tasks keep their
+existing scope.
+
+The current Diamond review identified both a precomputed underflow-contract
+gap and a source/PDF mismatch. Its v7 pilot also fails its declared component
+coverage criterion; the small local speedup cannot be promoted to a full-path
+result. Those are Engineer-owned scientific repairs. CBC's completed causal
+replay adds exact inbox and parsed-action checks, while its task-level rate
+and identity-held-out analyses remain adverse. S43's Qwen panel continues;
+its completed Phi panel has no early-stop or net-byte win. No strong-accept
+judgment is claimed.
+
+The 114-test daemon/context and bounded-stage group passes, including a direct
+paper/review regression that keeps the selected stage and campaign flags
+unchanged. A read-only construction probe against all three actual task states
+shows the new guidance with their finite/direct flags preserved. Tests and the
+release are prepared in the existing plain build directory while live main
+stays coherent; lifecycle command locks protect publication from a concurrent
+scheduled restart. All changes and built artifacts are published on main.
+
+## 51. Preserve a task when shutdown interrupts an experiment wait (2026-09-09 UTC)
+
+Diamond's scheduled drain reached an Engineer return waiting on the healthy
+v13 confirmation. That harness-only wait returned paused_daemon_shutdown, but
+there was no interrupted backend call to supply stop_kind. Settlement treated
+the result as non-resumable, archived the original task as failed, and the
+successor daemon exited on an empty finite queue. The GPU experiment remained
+alive. This was an orchestration error, not a scientific completion.
+
+Basic outcome derivation now recognizes the trusted paused_daemon_shutdown
+status when stop metadata is absent and supplies daemon_shutdown. The normal
+recoverable-pause path keeps the task active and allows a successor to resume
+it. Explicit stop kinds retain precedence. A regression drives the actual
+round-wait return through supervisor settlement and resumption; a second case
+covers legacy adapters with no stop_kind/recoverable metadata. Both failed
+against the old code, and the 220-test wait/stop/outcome/supervisor group now
+passes. No interaction ceiling or scientific acceptance rule changed.
+
+The wrongly archived a6bcc91d59ec was restored as the same authorized task and
+attempt, keeping its archived failure for the operational audit, then resumed
+under daemon 3169305. Its existing v13 run completed normally and the task
+automatically continued as attempt 12. Paper, result and review contents were
+left to Argus. The active CBC task was also snapshotted in case its old process
+reaches the same legacy path before adopting the fix. Recovery receipts are in
+coherent-science-rollout/diamond-empty-backlog-upgrade/.
+
+## 52. Consume requested background results before reviewing (2026-09-09 UTC)
+
+S43 requested a wait for its complete-grid aggregation at 06:39:38 UTC. The
+job finished at 06:40:06, while the host was still checking the Engineer's
+changed files. At 06:43:45 the host saw the job was already terminal and fell
+through directly to review. The Engineer had not received the requested
+continuation to incorporate the aggregate, so Reviewer correctly found the
+main result absent from the current manuscript. This was a real handoff race.
+
+A known requested job that has already changed out of its healthy running
+state now returns control to Engineer before review. A separate runtime
+follow-up identifies the existing run and asks it to process results or
+failure evidence and update the deliverable/checkpoint. It is not attributed
+to Reviewer. The same follow-up is supplied when a job finishes during an
+observed wait. Each observed run gets one automatic continuation, so repeating
+an unchanged finished wait cannot create an empty loop; a new run under the
+same task ID remains eligible. Shutdown retains priority and the recoverable
+pause behavior from section 51. No experimental job is stopped or relaunched.
+
+Six regression cases fail with the previous wait implementation. The updated
+137-test wait/stop/outcome/resumption group passes, including completed and
+failed subagents and generic external work, full Engineer-to-Reviewer order,
+duplicate wait requests, new runs, monitored completion, and shutdown. The
+tests check that Reviewer sees the handled result rather than the old artifact.
+The change introduces no review schema, quality-round limit or acceptance shortcut.
+
+## 53. Declared package layering (2026-09-14 UTC)
+
+依据:`docs/audits/architecture-clarity-2026-09-14.md`(只读审计 + 十阶段方案 + 12 张
+待操作者决策卡)。核验过的结论(审计基线 `051c2948c`,27 个包;合入 main 时已是 29 个,新增 `advisor`、`messaging`):27 个包之间约 1,588 条跨包 import、68% 在函数体内、
+35 对互依,而代码、文档、测试没有任何一处声明谁可以依赖谁;core / skills / apps 名实
+相悖。第 0 阶段(命名与钉规则)不搬任何模块、不改行为(包根 `__init__` 改懒加载除外)、
+不需要重启任何进程。
+
+### 本批次落地(第 0 阶段)
+
+- `docs/LAYOUT.md`(新):八层分层表、29 个包各一句(诚实标出 core 的四个待抽出 tier、
+  skills 里的阶段机 + RL gate、apps 里的任务运行时、webapi 里的服务模块、cli 是终端
+  渲染、maintenance 是 Doctor)、17 个顶层目录各一句、ph1–10 计划搬动(标为计划)。
+- `docs/CORE_CONCEPTS.md` 追加 `## Glossary`:规范名 / 退役名表;Curator 按决策卡 2 的
+  默认写成"守护进程组件(`team/curator.py`),不是第五个持久角色"。
+- 29 个包 `__init__.py` 的 docstring 各含一行 `Layer: <层名>`;六个原 0 字节的 `__init__`
+  (core、skills、apps、adapters、daemon、engineer)补"属于这里 / 不属于这里(去哪)"。
+- `argus_skill/__init__.py` 改 PEP 562 懒加载,`import argus_skill.core.paths` 从加载
+  71 个 `argus_skill` 模块(其中 44 个引擎模块)降到 7 个(全部在 `argus_skill.core`
+  之内;测试断言 kernel 之外为 0)。
+- `tests/test_architecture_invariants.py` 第 8 节 "Declared layering":`LAYERS` 表 + 三张
+  **严格相等**的白名单(模块级向上边 25 条,键为 `文件 -> 目标包`;延迟向上对 82 个,
+  按 (文件, 目标包),函数体内与 `if TYPE_CHECKING:` 下的 import 同记为延迟;跨包私有
+  import 120 条,键为 `来源文件 -> 模块[.名字]`)+ 包 docstring 与 LAYOUT 表一致性 +
+  子进程验证 kernel 之外零模块加载 + 计数棘轮(非 manager 的阶段写入引用 10 处、退役名、
+  `memory.root` 读取 79 处)。
+  白名单以合入 main 时的树为基线;对照审计基线 `051c2948c`,09-11 到 09-14 这三天上游
+  自然新增了 4 条模块级向上边(`manager/observation.py`、`manager/supervision.py` → daemon,
+  `tools/experience.py` → life,`tools/peer.py` → messaging)、16 个延迟向上对、13 条私有
+  import——这正是没有棘轮时的漂移速度。
+- README 两版各加 "Repository layout / 仓库布局" 一节,指向 `docs/LAYOUT.md`。
+
+### 此后每个会话必须遵守的规则
+
+1. **修一条向上边 = 同一 PR 删掉它的白名单行。** 白名单是严格相等而非上界:修好了边却
+   没删行,测试同样红;失败信息直接打印要删的那一行。两个 PR 同时缩同一张表会冲突,
+   这是棘轮在工作,rebase 后重跑。
+2. **新包必须同时加进**测试里的 `LAYERS` 表和 `docs/LAYOUT.md`(分层表 + Packages 节),
+   否则分层测试红;新顶层目录必须写进 LAYOUT.md 的 "Repository top level"。
+3. **包 `__init__.py` 必须有且只有一行 `Layer: <层名>`**,层名与 LAYERS 一致。
+4. 模块顶层 import 只能指向本层或更低层;函数体内的向上 import 只许减少。`if TYPE_CHECKING:`
+   下的仅类型 import 记为延迟,不算模块级,进的是同一张延迟白名单。约 387 个懒
+   import 名字是测试的 monkeypatch 目标,**不要**为了"修边"一刀切提到顶层。
+
+### 后续计划日(每阶段 = 零内容 git mv + 一行 import + `sys.modules` 别名 shim + 缩一行白名单)
+
+ph1 core 成为模块级叶子(`core/backend_names.py` 等五个叶模块下沉、`agent_probe` 上移
+adapters、`core/version.py`);ph2 `ChecklistItem` 进契约、`verticals/inventory.py`、RL gate
+搬 `verticals/research/` 经 `research_bridge` 再导出(`stages.py` 是最热文件,当天早上落);
+ph3 `pipeline/`(卡 7);ph4 `_inbox` / `_life_actions` 进 life/;ph5 `mission_runner/`(卡 7);
+ph6 `cli/`→`terminal/`、`maintenance/`→`doctor/`、一次 sed、删 shim;ph7 `_base/_registry/
+_data_domain` → `loader/registry/data_domain`、`core.paths` 加 `project_state_root`;
+ph8(卡 3)/ ph9(卡 9、10)/ ph10(卡 11)门控。详见方案 4.4。
+
+### 搬动后必须重启开发树进程
+
+从 ph1 起,开发树里的每一次 `git mv` 都会立刻改变直接从 `/data/v-boxiuli/Argus/.venv`
+运行的进程的懒 import 目标。方案统计为 14 个,写作本节时 `ps` 可见 12 个开发树 .venv
+进程,其中真正 import `argus_skill` 的 9 个:trial 的 `egress` / `web_admin serve-meter` /
+`relay_guardian` / `admin_runtime` / `compute` / `web_portal`;三个
+`python -m argus_skill --web --no-daemon`(8897 / 8901 / 8902)。不受搬动影响的:
+`trial/socket_forward.py`(以另一 checkout 的脚本路径启动,只用标准库)和一个只轮询
+文件的 `python -u -` heredoc。同一提交带别名 shim 不能替代重启:每个搬动阶段都要重启这些
+进程或把它们迁到 pinned checkout;ph6 之后旧进程在 ff 过的树里会 import 失败,kill-first
+不可省。pinned checkout(`argus-runtime-20260909-385d9b336`、`argus-runtime-latest`)上的
+守护进程按既有 kill-first 纪律随各阶段重启。
+
+### 待拍板
+
+决策卡 1–12 见 `docs/audits/architecture-clarity-2026-09-14.md` 第 5 节。ph0 不依赖任何
+决策;卡 1(八层顺序)在 ph1 前确认;卡 7(`pipeline/`、`mission_runner/` 包名)前一天
+无回复则用默认;卡 3(`MemoryBundle.root` 返回主机根,项目级写入落哪里)门控 ph8,是
+首个有行为风险的阶段。
+
+## 54. Verticals split into argus-verticals (2026-09-14 UTC)
+
+分支 `split/community-verticals`(从 `origin/dev` = `7a98d4445` 切出)。17 个垂直搬到
+新仓库 `Argus-AiTeam/argus-verticals`(pip 名 `argus-verticals`,import 包
+`argus_verticals`,每个垂直一个目录);树内只保留 7 个内置。历史已由另一位代理提取,
+Argus 侧只做删除 + 让框架对"垂直从哪里来"保持诚实。
+
+### 搬走了什么 / 留下了什么
+
+- **搬走(16 个目录 + `literary/` 辅助包,20,882 行 Python,80 个测试文件)**:`quant`、
+  `kernelbench`、`speedrun`、`nanogpt_speedrun`、`nanochat`、`chip_design`、`digital_circuit`
+  (含 `benchmark/` 子包 = `digital_circuit_benchmark` 垂直)、`fiction_writing`、`prose`、
+  `modern_poetry`、`classical_poetry`、`literary_editor`、`literary/shared`、`medical`、
+  `materials`、`physics`、`ale_last_exam`。
+- **留下(内置 7 个)**:`research`、`software`、`argus_maintenance`、`kernel_engineering`、
+  `math`、`math_synth`、`learning`。
+- **兼容面(社区包今天实际 import 的框架模块;改动其中任何一个都会 break argus-verticals)**:
+  桥模块 `verticals/{_base,_data_domain,metric_evidence,optimization_base,path_evidence,
+  research_bridge}.py`、`verticals/kernel_engineering/tool_registry.py`(chip_design 用)、
+  `skills/stage_machine.ChecklistItem`(15 处)、`skills/vertical_select.available_vertical_purposes`、
+  `core/{file_digest,models,pipeline_state,repair_freshness}`、`team/result_provenance`、
+  `manager.Manager`。现在不加再导出 shim;这份清单就是承诺。`metric_evidence` 里
+  speedrun / nanogpt / kernelbench 的证据校验器是通用校验器,原地不动。
+  `optimization_base` 原来把四阶段优化清单从 `speedrun` 反向 import 回来;现在清单本体
+  (`OPTIMIZATION_CHECKLIST_ITEMS`)住在桥模块里,`speedrun_base_contract()` 保留名字作 import 缝。
+- 删掉 `_base._VERTICAL_IMPORT_ALIASES`(唯一别名 `digital_circuit_benchmark ->
+  digital_circuit.benchmark`;外部包注册真实 entry point)。
+
+### 发现机制
+
+- entry-point 组 `argus_skill.verticals`(`verticals/_registry.py`),entry 名 = 垂直名,
+  值 = `argus_verticals.<dir>.stages`(`digital_circuit_benchmark` →
+  `argus_verticals.digital_circuit.benchmark.stages`)。`load_vertical` 顺序不变:树内 →
+  插件 → 项目数据域;内置名永远不会被外部包遮蔽。
+- `vertical_plugins()` 现在**按进程记忆** entry-point 扫描(Manager 菜单和技能种入反复调用,
+  以前每次重扫 dist-info);`refresh_vertical_plugins()` 真正清缓存。workbench 受管插件
+  (`core.plugin_manager`)每次调用仍然新鲜读取,因为它们的启用状态会在运行中改变——所以不
+  需要从 `core` 反向调用 refresh,也就没有新增 core → verticals 向上边。受管分支单独兜底:
+  一个坏掉的受管插件或不可读的目录不再让 entry-point 插件全部消失。
+- 注册表拒绝发布与内置同名的 entry point / 受管插件(否则同名 entry point 可以把内置垂直的技能种入
+  重定向到它自己的树);对第三方声明的校验(`_plugin()` + `vertical_contract()`)任何异常都只记日志、
+  不发布;`VERTICAL_SKILLS` 在注册时校验(路径或 Traversable);插件模块 import 时反向读注册表不会
+  触发第二次扫描。搬走垂直拆分前种入工作区的技能副本:`_MOVED_VERTICAL_SEED_HASHES`(dev 上最后
+  一版的 51 个文件摘要,不含 kernelbench 继承的 kernel_engineering 内置技能)让
+  `retire_orphaned_builtin_seeds` 在未装社区包时删掉未改动的工厂副本,操作者改过的原地不动、不归档;
+  装了社区包的垂直交给正常的"非活跃垂直"修剪。
+- 新插件属性 `VERTICAL_SKILL_PARENTS: tuple[str, ...]`——其技能树先于自身被种入的垂直。取代
+  Argus 里写死的 `_VERTICAL_SKILL_INHERITANCE`(kernelbench←kernel_engineering、
+  nanogpt_speedrun←speedrun、chip_design / digital_circuit_benchmark←digital_circuit,四行全是
+  搬走的垂直)。父可以是内置(从 `verticals/<name>/skills` 取)也可以是插件(从其
+  `skills_root` 取)。非法声明 ⇒ 记日志、不发布该插件,与其它契约失败一致。
+- **清单只有一个真源**:`VERTICALS` / `VERTICAL_PURPOSES` 只是内置清单(冻结桌面构建和 trial
+  公共资产校验故意只枚举它);运行时一切"这是不是垂直 / 用途是什么 / 种哪些技能"都走
+  `available_verticals()` / `available_vertical_purposes()`。修了 `manager/_vertical_ops.py`
+  里唯一还用 `VERTICALS` 判"是否学习型数据域"的地方:原来任何非内置名字都去
+  `load_data_domain()` 读 `learned_vertical_status`——装了社区包的 `quant` 没有域文件时读到 `""`
+  (无可见后果),但若项目里恰好有同名数据域文件,Division 会带上那个域的 status;现在按合并
+  清单判定,插件优先(测试预建同名域文件后断言插件的阶段与空 status 胜出)。
+
+### 操作者部署步骤(这是操作者动作,不是维护任务能做的)
+
+社区垂直**不会**随 `git checkout` / `git pull` 出现。每个应当提供它们的运行 venv 都要各装
+一次:
+
+    <venv>/bin/pip install "argus-verticals @ git+https://github.com/Argus-AiTeam/argus-verticals.git"
+
+`argus_skill` 自身**不**依赖 `argus-verticals`(pyproject 里只留注释指路;`quant` / `zh-fold`
+extras 随垂直搬走)。既有纪律照旧:维护任务从不往运行 venv 里 pip install,包括
+`/data/v-boxiuli/Argus/.venv` 和 pinned checkout 的 venv——装不装社区包由操作者决定并执行。
+装完不需要改任何配置;进程重启后 `available_verticals()` 就是 24 个。
+
+### 持久化了已搬走垂直的项目(操作者可见行为)
+
+`PIPELINE_STATE.json` 写着 `vertical: quant`(或其余 16 个之一)的拆分前项目,在**没有**装
+`argus-verticals` 的机器上,以前会被当成"尚未决定"而静默退回 `research`(阶段机随之丢弃已持久化
+的阶段,独立审查按 fail-open 返回 False)。现在:
+
+- `vertical_select._persisted_vertical` 区分"没有 vertical 键 / 键里是垃圾"(仍按旧规则视为未决定,
+  默认 `research`)与"格式合法的名字(`^[a-z][a-z0-9_]{0,47}$`)但既非内置、非已装插件、也非项目数据域",
+  后者抛 `UninstalledVerticalError`(`VerticalResolutionError` 的子类)。操作者看到的原文:
+  `PIPELINE_STATE.json at <path> names vertical 'quant', which is not built in, not an installed plugin
+  vertical, and not a project data domain in this runtime environment. If it is one of the community
+  verticals, install them here first: pip install "argus-verticals @ git+https://github.com/Argus-AiTeam/
+  argus-verticals.git" (verticals available now: research, software, ...). Nothing is dispatched for this
+  project until its vertical can be loaded.`
+- 守护进程:生命周期闸门(`_maybe_block_on_lifecycle`)在花任何预算之前把每个 backlog 项 hold 住,
+  发一次 `life.lifecycle.block`(`lifecycle_state=vertical_unresolved`,reason=上面原文),之后按
+  30 分钟心跳重复,不会每 tick 一条 traceback;规划周期在 intake 处同样 hold 并退避(`planner_error`),
+  且不会让 Manager 重新给项目选一个别的垂直;daemon 启动的 Manager 交接在调用 Manager 之前先读
+  持久化垂直,读不到就走既有的 fail-closed 分支(`life.manager.intent.failed` + 日志)。
+- `_independent_review_required_for_project_root` 对读不出策略的已持久化垂直 fail CLOSED(要求审查);
+  没有任何决定的项目仍返回 False。
+- `argus-skill --status` 打印 `pipeline : vertical unresolved — <原文>`;`--export-builtin-skills` 原本就
+  以 exit 2 报错。`resolve_skill_scope` 仍返回 `quant`(学习到的技能命名空间与是否安装无关)。
+- 装好 `argus-verticals` 后重启进程即恢复,项目状态一个字节都没改过。
+
+### 对线上进程的影响
+
+本机每个项目状态都命名内置垂直(`research`、`software`、`math`、`kernel_engineering`),不受影响;
+它们的 `.venv` 里此刻没有 `argus-verticals`,合入后菜单会从 24 个缩成 7 个直到操作者安装社区包。
+
+### 验证
+
+基线(未改动的 worktree,`origin/dev`)全套 5 个既有失败:`test_native_window_chrome::
+test_embedded_cockpit_avoids_duplicate_splash_and_heavy_offscreen_paint`、
+`test_experience_tools::test_actual_gateway_composes_extensions_and_executes_native_experience_tool`、
+`test_architecture_invariants` 的两条 `research_timeline` 行、`test_web_portal::
+test_invitation_only_copy_and_private_admin_entry_stays_hidden`。本分支之后的全套结果、
+白名单/棘轮数字、类型门与插件端到端探针见提交信息与交接报告。
+
+## 55. Package rename argus_skill → argus (2026-09-14 UTC)
+
+分支 `rename/argus-package`(从 `origin/dev` = `44c09f6d7` 切出,已含当天的垂直拆分)。import 包
+`argus_skill` → `argus`;控制台命令 `argus-skill` 并入 `argus`(`argus` 原本就是 TUI 启动器,现在
+接下全部 admin flag / 子命令;`python -m argus` 是纯 CLI,永不启动 Node);pip 发行名 `argus-skill`
+→ `argus`;版本仍是 0.1.7,不 bump。风险图:`/data/v-boxiuli/argus-rename-risk-map.md`(§1a 不动的
+名字、§2 运行时字符串匹配、§7 shim 设计、§8 步骤)。搬动本身是一笔零内容 `git mv argus_skill argus`
+(876 个 R100),之前先删掉 `.gitignore` 里从首个提交就存在的 `/argus/`。
+
+### 一个字节都没改的持久化名字
+
+- 全部 `ARGUS_SKILL_*` 环境变量 / knob(`~/.argus-skill/config.json` 的键)、`~/.argus-skill`、
+  `ARGUS_SKILL_HOME/PYTHON/BIN/SOURCE_ROOT/BUILD_REVISION`;
+- `/tmp/argus-skill-role-slots`、`argus-skill-workspaces-<uid>`、`.argus-skill-` 临时文件前缀、
+  `argus-skill-gpu-keepalive`、`~/argus-skill-tasks`、`~/.local/share/argus-skill`、
+  `~/.local/state/argus-skill`(lean-runs)、`/tenant/home/.argus-skill`;
+- wire id `argus-skill-webapi`(`/api/meta` 的 `service`)、图片工具 provenance id
+  `argus_skill.tools.image_tool`、更新源 `lbx154/argus-skill`、`_LAUNCHER_NAMES` 里的 `argus-skill`、
+  历史 wheel 文件名(`docs/trial-gateway.md` 的 `argus_skill-0.1.1-py3-none-any.whl`)。
+
+### 兼容窗口(一个发布周期)
+
+- `argus_skill/` 只剩 `__init__.py` + `__main__.py`:`sys.meta_path[0]` 的 finder 把 `argus_skill[.x]`
+  解析成已导入的 `argus[.x]` **同一个对象**(`import argus_skill.core.paths as a, argus.core.paths as b;
+  assert a is b`;`monkeypatch.setattr("argus_skill.core.paths.x")` 打的是同一个运行时),
+  `sys.modules["argus_skill"] is argus`,首次导入发一次 `DeprecationWarning`(pytest 已忽略该类);
+  `python -m argus_skill --version`、`python -m argus_skill.tools.subagent --help` 均可用。
+- 双拼写匹配:`daemon/state.py`、`team/curator.py`(teammate argv 的
+  `argus_skill.team.teammate_entry`)、`trial/training_bridge.py`(`LEGACY_IMAGE_PACKAGE =
+  /opt/argus/argus_skill/trial` + 两种 spawn_helper argv)、`life/supervisor/_helpers.py`
+  (`-m (argus_skill|argus)` → `-m argus`,checkout 目录名 `argus-skill` 仍算 Argus 源)、
+  `_planning_cycle.py`(`argus_skill.tools.subagent status`)、`runtime_failure_circuit.py`
+  (callsite 按包目录解析,`/argus_skill/` 旧标记也接受;旧指纹 `argus_skill/...:fn` 与新指纹
+  `argus/...:fn` 不同,同一故障合入后会重新 trip 一次)、`desktop_backend_entry.py`(`-m` 两种拼写都
+  接受,改写成 `argus.` 再 `runpy`)、`_life_worker_admission.py`(`argus:` / `argus-skill:` 前缀都锚定)。
+- entry-point 组:`ENTRY_POINT_GROUP = "argus.verticals"`,`LEGACY_ENTRY_POINT_GROUP =
+  "argus_skill.verticals"`,同一次扫描两组都读,按名字去重(新组优先),只在旧组注册的名字发一条
+  warning。今天的 `argus-verticals` 仍注册在旧组,可用。
+- `apps/package_update.py`:先查发行 `argus` 再查 `argus-skill`;pip / `uv pip` 自更新前先
+  `uninstall argus-skill`(否则 site-packages 里整棵旧 `argus_skill/` 会比两文件 shim 活得久,之后一次
+  `pip uninstall argus-skill` 还会把 shim 的文件一起删掉);旧名字的 uv tool 环境拒绝更新,给出
+  `uv tool uninstall argus-skill` + `uv tool install "argus @ <source>"`。
+- 控制台脚本:`argus = argus.apps.tui_launcher:main`(行为不变:裸命令进 TUI,admin flag / 子命令走
+  Python CLI);`argus-skill = argus.__main__:main` 保留,按 `argv[0]` 识别后 stderr 打一行弃用提示;
+  `_configure_tui_backend_bin` 与 `frontend/tui/src/ensureApi.ts` 先找同目录 `argus`,再退回 `argus-skill`。
+- TUI ownership:`frontend/tui/src/apiOwnership.ts` 的 `sameBackendBin()` / `backendBinAliases()` 把同一目录下的
+  `argus` 与 `argus-skill[.exe]` 视为同一个后端——磁盘上 `webapi-<host>-<port>.owner.json` 里旧的
+  `.venv/bin/argus-skill` 记录、以及仍以 `argus-skill --web` 跑着的进程 argv,都能被新驾驭舱认领并在版本不
+  匹配时安全替换。若仍出现 `incompatible Argus API at <host>:<port>: … — ownership could not be proven`
+  (记录指向别的目录),补救是 `kill` owner 文件里的 PID 或换端口启动驾驭舱。
+- identity card:`life/memory.py` 的 `_DEFAULT_IDENTITY` 标题改成 `# argus — operator identity card`;
+  `_LEGACY_DEFAULT_IDENTITY`(旧标题、其余逐字相同)与新模板都算"默认卡",`prompt_text()` 对两者都返回空,
+  `ensure_default()` 只把逐字节等于旧模板的文件改写成新模板,被操作者编辑过的卡一字不动。
+- 打包:`name = "argus"`,`packages = ["argus", "argus_skill"]`,force-include 到 `argus/_frontend/...`,
+  sdist 含两者;PyInstaller spec `hiddenimports += ["argus_skill", "argus_skill.__main__"]`;
+  `typecheck_gate` 把 `^argus(_skill)?/` 归一成 `argus/`,基线早于搬动时 `git archive … -- argus_skill`;
+  mypy `files` 只列 `argus/...`;ruff `known-first-party = ["argus", "argus_skill"]`;CI lint
+  `argus argus_skill tests`;`release.yml` 的 `pypi` job 置 `if: false`(见下)。
+- 不变量测试:`_KERNEL_PROBE` = `import argus.core.paths`;`SUBPROCESS_REENTRY_MODULES` 新名 +
+  `LEGACY_SUBPROCESS_REENTRY_MODULES`(`find_spec` 必须解析);`_DOTTED_PATH` 两种拼写都抓(旧拼写
+  因此报 unresolved);新增 `test_no_pre_rename_module_citations_remain_in_prose`(`argus/**/*.md`、
+  `roles/prompts/*.py`、`plugins/**`、`integrations/**`、`README*.md`、`docs/*.md`;历史文档
+  `handoff-2026-09-04`、`HANDOFF-2026-09-05-NEXT`、`team-intelligence-*`、`notes-2026-09-06-*`、
+  `WHAT_ARGUS_GREW` 除外)。白名单只改键名,棘轮没长。
+- 新测试文件 `tests/test_rename_compatibility.py`:shim 同一性、`-m` 双拼写子进程、弃用行、
+  teammate 进程组双拼写;各模块另有 legacy twin(frozen `-m`、package_update、typecheck_gate、
+  registry 旧组、curator cmdline、planner sanitizer、failure circuit、spawn helper 前缀、两个 doctor)。
+
+### 合入后操作者要做的事(风险图 §8 步骤 12)
+
+1. 每个 venv 重新 editable 安装:`<venv>/bin/python -m pip uninstall -y argus-skill &&
+   <venv>/bin/python -m pip install -e /data/v-boxiuli/Argus`(主树 `.venv` + 12 个
+   `_editable_impl_argus_skill.pth` 指向主树的兄弟 worktree venv;不重装也能靠 shim 跑,但 dist-info
+   仍叫 `argus_skill`,`argus update` 会走 legacy 分支)。
+2. 重启从主树 `.venv` 跑的进程:trial egress / web_admin serve-meter / relay_guardian / admin_runtime /
+   compute / web_portal、三个 `-m argus_skill --web`(8897/8901/8902)、socket_forward、serve.py
+   (PID 见风险图 §4;目录消失后的函数内懒 import 会 `ModuleNotFoundError`)。
+3. `python deploy/trial/web_services.py` 重新生成 systemd user units(现在写 `-m argus.trial.*`),
+   `systemctl --user daemon-reload` 后重启 `argus-web-trial-{compute,egress,meter,portal,relay-guardian}`;
+   `argus-web-8799.service` 的 ExecStart 同理改成 `-m argus --web`。
+4. 重建 trial 镜像:`deploy/trial/*.Dockerfile` 现在 `COPY argus` **和** `COPY argus_skill`(两文件别名,
+   `.dockerignore` 同时放行 `argus_skill/**`),容器内包路径 `/opt/argus/argus/trial`;租户已 seed 的技能
+   副本与脚本里的 `python -m argus_skill.*` 在兼容发布期内继续可用。重建前 `training_bridge` 同时接受
+   旧路径与旧 spawn_helper argv。
+5. runtime 树刷新时更新 `~/.local/bin/argus` 包装脚本的目标(现在指向
+   `argus-runtime-20260909-385d9b336/.venv/bin/argus`;那棵树自带旧包,pull 之前不受影响)。
+6. 重新 seed 工厂技能:`~/.argus-skill/skills/**` 里 43 份操作者副本仍写 `python -m argus_skill.tools.*`,
+   shim 期内可用;`argus --export-builtin-skills` / 重新 seed 后换成新拼写。
+7. PyPI:`argus` 在 PyPI 上属于一个不相关的 2019 年项目;Argus 一直是 git 安装(README 全文如此)。
+   `release.yml` 的 `pypi` job 已 `if: false` 并写明原因,拿到名字之前不要打开。
+8. `uv.lock` 已用 `uv lock`(uv 0.12.10)重锁:除 `argus-skill` → `argus` 外,还去掉了 torch / triton /
+   cuda-* 等 quant 依赖——它们在 §54 的垂直拆分里已从 `pyproject.toml` 移除,但当时没有重锁;
+   `uv lock --check` 通过。
+
+### 验证
+
+- `ruff check argus argus_skill tests`:干净。`python -m argus.release_tools.typecheck_gate --base origin/dev`
+  (在一次性 venv `/tmp/argus-rename-venv` 里跑,主树 `.venv` 没装 mypy;numpy 钉到 <2.5,否则其 3.12 专用
+  stub 让 mypy 在 3.11 目标下报 `[syntax]` 直接中止):基线 `44c09f6d7` 1313 条一方诊断,当前 1313,
+  introduced 0,removed 0——路径归一化把两边都记成 `argus/...`,没有"搬家即新债"的伪象。
+- 三个 `generate_*  --check`、`generate_manifest --check`、`check_artifacts` 全过;`npm --prefix frontend/tui test`
+  290 pass / 1 skip / 0 fail;`npm --prefix frontend/web run test` 1102 pass(123 文件);web `typecheck` 过。
+- 全套 `pytest -q -p no:cacheprovider`(PYTHONPATH=worktree,主树 `.venv` 解释器):32 个失败 = 基线 29 个
+  + 两条 `research_timeline` 不变量 + `test_training_public_paths` 的路径敏感度用例,三者均为既有;
+  没有新失败,也没有基线失败被"顺手修好"。第一遍全套多出一条
+  `tests/trial/test_billing.py::test_trial_usage_reads_its_own_cli_store`(单跑通过):
+  `_life_worker_boot.py` 在进程内 `os.environ.setdefault("ARGUS_WORKBENCH_HOST_ROOT", …)`,
+  而 conftest 只清 `ARGUS_SKILL_*`,先跑过 life worker 的测试把自己的临时根泄给了后面的 `trial_home()`;
+  conftest 的 autouse fixture 现在也清这个变量,第二遍全套即回到 32 个。
+- shim 同一性 / `-m` 双拼写 / 弃用行 / 进程组双拼写:`tests/test_rename_compatibility.py` 15 条全过;
+  一次性 venv `pip install -e '.[dev]'` 后 `argus --help`、`argus --version`、`argus --status`、
+  `argus-skill --version`(stderr 一行弃用提示)、`python -m argus_skill --version` 均正常;
+  `pip wheel` 得到 `argus-0.1.7-py3-none-any.whl`(1452 个文件),含 `argus/__init__.py`、
+  `argus_skill/__init__.py` + `__main__.py`(仅此两个 `argus_skill/` 条目)、`argus/_frontend/web/dist/index.html`、
+  `argus/_frontend/tui/bundle/argus.mjs`、`argus_doctor.py`,console_scripts 六条如 pyproject 所列。
+- 残留 `argus_skill`(git grep,全仓 6459 处):(a) shim 16 处;(b) 持久化名字——`ARGUS_SKILL_*`、
+  `_isolated_argus_skill_home` 等复合标识符、`.gitignore` 里两份历史 pitch 文件名;(c) 排除的历史/生成物——
+  `research/**` 5252、`docs/audits/**` 976、五份历史 handoff/notes 文档、`technical_report/**` 7、
+  `contrib/figure-studio` 审计 md 20、`frontend/web/dist` 未被 index.html 引用的旧 chunk、
+  `campaign-*.events.jsonl` fixture、`PRIVATE_TODO*`;(d) 故意保留的兼容代码 / 测试 / 文档(上文列出的
+  双拼写站点、pyproject、两个 README 的迁移段、`docs/LAYOUT.md`、`docs/trial-gateway.md` 的历史 wheel 名)。
+  连字符 `argus-skill` 同理:除 never-touch 模式外只剩兼容站点、README 迁移命令、FLYWHEEL 回退与
+  `docs/evaluations/*2026-08-17.md` 里的历史版本号。
+
+## 56. Vertical Store (2026-09-14 UTC)
+
+分支 `store/backend`(从 `origin/dev` = `863e76426` 切出,已含当天的垂直拆分与 `argus_skill` → `argus`
+改名)。社区仓库 `Argus-AiTeam/argus-verticals` 的 release `v0.1.0` 每个垂直附一个 zip(恰好是它的
+`paths` + `shared` 目录,仓库相对路径)加 `catalog.json`(url/sha256/size);Argus 侧的 **Vertical Store**
+逐目录安装,不用 pip。产品页由另一位代理按下面的 API 合同并行实现。
+
+### 放在哪里 / 为什么
+
+- `argus/verticals/store.py`(domain 层,只向下 import `core.*`,不在 `core/` 里,避免 `core → verticals`
+  上行边);`core/paths.py` 新增 `verticals_root()` = `<global_root>/verticals`。
+- 磁盘布局(商店根 = `<ARGUS_SKILL_HOME>/verticals`,或 `ARGUS_VERTICALS_HOST_ROOT`):
+  `argus_verticals/<name>/…`、`argus_verticals/literary/shared/`(共享辅助树按仓库相对位置放)、
+  `registry.json`(schema 1;`verticals{version,sha256,module,source{repo,tag,url},enabled,installed_at,
+  requires,shared,paths}`,`shared{tree:{owners,sha256s}}`,portalocker `store.lock`)、`catalog.json`
+  缓存(6 小时)、`operations/<name>.json`、`logs/<name>.log`、`.staging/`。
+- 发现(`_registry.py` 第三个来源):读 `registry.json`(mtime/size/inode 变化即重扫;`refresh_vertical_plugins()`
+  也清),让 `argus_verticals` 可 import——有 pip 包就把商店目录 append 到它的 `__path__`(pip 份胜出,行
+  报 kind `package`),否则在 `sys.modules` 注册合成命名空间包;然后 `import_module(entry.module)`,校验
+  与 entry point 完全相同(`ARGUS_VERTICAL_API_VERSION`、`VERTICAL_PURPOSE`、`vertical_contract`、
+  `VERTICAL_SKILL_PARENTS`;`VERTICAL_SKILLS` 缺省为 `<dir>/skills`),内置名拒绝,失败记日志跳过。
+  `VerticalPlugin.origin ∈ {managed, store, entry_point}`。不读 dist-info,冻结桌面同样工作。
+  优先级:managed → entry_point → store。
+
+### 操作与守卫
+
+- `install(name)`:catalog `requires` 传递闭包,依赖先装;每个:下载(https 白名单
+  `github.com` / `objects.githubusercontent.com` / `release-assets.githubusercontent.com`,重定向逐跳
+  查)→ 校验 size + sha256 → 解压到 `.staging/`(拒绝绝对路径、`..`、符号链接、**不在该垂直声明的
+  `paths`+`shared` 树内的成员**,含 `argus_verticals/__init__.py`)→ 确认 `<paths[0]>/stages.py` →
+  逐树 rename 换入(失败全部回滚;更新父目录时保留嵌套已装垂直如 `digital_circuit/benchmark`)→ 写
+  registry 与共享树属主。`update` 版本/sha 不同才重装;`enable/disable` 只写用户覆盖层(见下);`uninstall(force=False)`
+  被本地会话 `.argus/PIPELINE_STATE.json` 命名时拒绝(报 sid,`force` 可越过),被其他已装垂直
+  `requires` 时拒绝(不越过),共享树失去最后属主才删,依赖保留。
+- 后台 job:`operations/<name>.json` `{status running|done|failed, action, progress 0-100, message, started,
+  finished, pid}`;进程死亡即标 failed;`wait=True` 同步等待。
+- 托管:`managed_by_host()` = `ARGUS_TRIAL_HARNESS` 或 `ARGUS_VERTICALS_HOST_ROOT` 已设 → install/update/
+  uninstall 拒绝(CLI 1、API 409;trial 路由先 403),enable/disable 仍可(只写租户自己的覆盖层);`preinstall(names)` +
+  `ARGUS_VERTICALS_PREINSTALL` 不受该拒绝约束(那正是宿主在准备根);`release_tools/preinstall_verticals`
+  镜像 `preinstall_plugins`。
+- 目录来源:`ARGUS_VERTICAL_CATALOG`(https / 本地路径 / `file://`)否则 GitHub latest release;本地目录旁
+  同名 zip 优先于其 url(社区 `build_catalog.py --release vX --dist DIR` 直接是离线镜像);`file://` 归档
+  只在目录本身来自本地文件时接受。
+
+### 表面
+
+- CLI `argus verticals {list,info NAME,install NAME…,update [NAME…],remove NAME [--force],enable,disable,refresh}`
+  (`--json` 于 list/info;同步,逐行进度;退出码 0/1/2;`python -m argus verticals` 永不启动 Node;
+  `tui_launcher._PYTHON_ADMIN_COMMANDS` 加了 `verticals`;`--help` 公开)。
+- Web:`GET /api/verticals` → `{verticals:[row…], catalog:{source,fetched_at,release_tag,error},
+  host:{managed_by_host,store_root}}`;`POST /api/verticals/catalog/refresh`;`POST /api/verticals/{name}/
+  manage/{install|update|enable|disable|uninstall}` body `{"force"?:bool}` → job 202 `{name,action,operation}`
+  / enable·disable 200;`VerticalStoreError` 409 `{detail}`,未知名/动作 404;`GET /api/verticals/{name}/
+  operation`;同源检查同 plugins;capability `verticals.store.v1`(`protocol.py` 与
+  `frontend/core/src/protocol.ts` 同步,`test_server_m0` 钉住二者一致)。row 字段:`name, purpose,
+  purpose_zh, kind∈{builtin,package,installed,available}, version, installed_version, enabled,
+  update_available, requires, shared, python_requirements, missing_python, tags, size_bytes, used_by,
+  operation, managed_by_host, actions`。内置 `purpose_zh` 为 null,不造中文。
+- Trial portal `permitted()` 新增 `VERTICAL_WRITES`:只放行 `catalog/refresh` 与 `manage/(enable|disable)`。
+- `UninstalledVerticalError` / `require_vertical` 的提示改为先说 `argus verticals install <name>`,pip 第二。
+
+### 测试
+
+`tests/verticals/test_store.py`(45;含一条用社区仓库副本跑 `build_catalog.py --release vtest` 的集成
+测试:chip_design 拉 digital_circuit、skills 先种 digital_circuit、literary shared 属主、移除保留依赖)、
+`tests/skills/test_vertical_plugins.py`(+7:商店发现、pip 优先、禁用即隐藏、`sys.frozen`、registry mtime
+重扫、坏条目只损自己、内置名拒绝)、`tests/webapi/test_verticals_store.py`、`tests/trial/
+test_verticals_portal_gate.py`、`tests/apps/test_cli_verticals.py`。辅助:`tests/verticals/fake_release.py`。
+`test_architecture_invariants` 的 `RETIRED_NAME_OCCURRENCES["session_states_root"]` 22 → 23(store 的
+`used_by` 走唯一规范访问器,注释里写了原因);层级 allowlist 未增长。
+
+### 已知 / 未做
+
+- `typecheck_gate --base origin/dev` 在此环境无法比较:基线树上 mypy 因 numpy 存根的 `type` 语句在
+  `python_version = 3.11` 下语法错误而中止;改用 `--python-version 3.12` 手工对比,`argus/` 无新增诊断。
+- 商店不解析 `min_argus`(README 说"按特性探测比较",目前只存不比);不做垂直签名(sha256 来自 GitHub
+  release 的 catalog,信任链止于 https 白名单)。
+- 前端页面在另一 worktree;本分支只动了 `protocol.ts` 一行(capability)。
+
+### 对抗评审修正(同日晚,已并入 store/backend)
+
+- **M1 回滚完整**:`_place` 替换父目录时,嵌套已装垂直(`digital_circuit/benchmark`)从备份 *复制*
+  而非移动进新树,备份始终完整;任何后续失败(registry 写失败等)都 rmtree 新树、整份还原备份。
+  测试注入 `_save_registry` 一次 OSError,断言两棵树与 registry 逐字节不变。
+- **M2 状态拆分**:`registry.json`(宿主拥有,只记已装树;不再有 `enabled`)vs 每用户覆盖层
+  `<ARGUS_SKILL_HOME>/verticals/state.json` `{"schema":1,"disabled":[…]}`。enable/disable 只写覆盖层
+  (只读宿主根可用、租户隔离),发现/`rows()`/CLI 都按"已装且不在 disabled"算 enabled;覆盖层目录不可写时
+  行里不给 enable/disable;`registry_signature()` 同时看两份文件的 mtime。`preinstall` 不再碰 enabled。
+  测试:两个 home 共用一个 `ARGUS_VERTICALS_HOST_ROOT`,A 停用 B 仍可见;只读宿主根 enable/disable 成功。
+- **M3 时间戳合同**:`operation.started/finished`、`catalog.fetched_at` 一律 ISO-8601 UTC 字符串
+  (`2026-09-14T19:00:00Z`)或 null;前端 `types.ts` 同步注释,测试改用真实值。
+- **M4 负缓存**:抓取失败写进 `catalog.json`(`failed_at`,`error`),5 分钟内不再重试(`refresh=True` 除外),
+  `catalog.error` 从缓存读出;比上次成功更新的失败即使缓存仍"新鲜"也会显示。目录抓取超时 30 s。
+- m1 目录含内置名的条目整份拒绝;m2 两条目声明同一目录、或 shared 树与某垂直目录重叠 → 拒绝;
+  m3 `uninstalled_vertical_message` 对"已装但已停用"改说 `argus verticals enable <name>`;
+  m4 进度 = `round((已完成成员数 + 当前步骤份额) / 总数 × 100)`,步骤钳在 1–99,100 只属于完成记录,
+  前端去掉"≤1 视为小数"的猜测;m5 `.staging/<name>-<pid>-<id>/owner.json`,每次安装先清扫属主已死的目录
+  (无标记且 60 s 内的不动);m6 `_start_job` 的"已在运行"检查+写入放进 `store.lock` 文件锁;
+  m7 共享树摘要与已记录属主不同时 warning(`sha256s` 现在有读者);m8 `used_by`/`uninstall`/`rows`
+  接受 roots 列表(路由传 `ctx.roots`,CLI 读 `ARGUS_SKILL_WEB_SESSION_ROOTS`),PIPELINE_STATE.json
+  不可读的会话视为"未知",无 `--force` 拒绝并点名 sid;m9 托管态保留"刷新目录"按钮;
+  m10 保留 ratchet +1(`list_sessions` 给不出状态目录)。
+- Nits:`_extract` 容忍 `zip -r` 风格目录项(自身树或其祖先),树外目录项仍拒绝;名字统一小写写进文档;
+  `HOST_MANAGED` 措辞改为"enable/disable 只作用于你自己的工作区";删掉未用的 `CommandRail.onVerticals`。
+- 社区 README 说商店会写合成的 `argus_verticals/__init__.py`——实际不写(命名空间包 / 追加 `__path__`),
+  待社区侧修正。

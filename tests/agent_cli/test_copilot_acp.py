@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import json
 import queue
+import subprocess
 import threading
 import time
 
 import pytest
 
-from argus_skill.agent_cli import copilot_acp
-from argus_skill.agent_cli.copilot_acp import CopilotAcpClient
+from argus.agent_cli import copilot_acp
+from argus.agent_cli.copilot_acp import CopilotAcpClient
 
 
 class _Opt:
@@ -34,6 +35,7 @@ class _FakeAcpProc:
         self._q: "queue.Queue" = queue.Queue()
         self._script = script
         self._alive = True
+        self._exited = threading.Event()
         self.session_seq = 0
         self.written: list[dict] = []
         self.stdin = self._Stdin(self)
@@ -49,7 +51,19 @@ class _FakeAcpProc:
 
     def eof(self) -> None:
         self._alive = False
+        self._exited.set()
         self._q.put(None)  # closes stdout → reader loop ends
+
+    def wait(self, timeout=None):
+        if not self._exited.wait(timeout):
+            raise subprocess.TimeoutExpired("fake-copilot", timeout)
+        return 0
+
+    def terminate(self):
+        self.eof()
+
+    def kill(self):
+        self.eof()
 
     class _Stdin:
         def __init__(self, p) -> None:
@@ -313,6 +327,70 @@ def test_acp_happy_path_maps_to_agent_run_result(monkeypatch) -> None:
     assert popen_kwargs["errors"] == "replace"
 
 
+def test_acp_uses_persisted_dedicated_account(tmp_path, monkeypatch) -> None:
+    from argus.core.knob_store import write_persisted_knob
+
+    chosen = tmp_path / "dedicated"
+    assert write_persisted_knob("ARGUS_SKILL_COPILOT_HOME", str(chosen))
+    monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "outer-session"))
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "fake-outer-token")
+    monkeypatch.setenv("GH_CONFIG_DIR", str(tmp_path / "outer-gh"))
+    proc = _FakeAcpProc(_happy_script)
+    captured = {}
+
+    def popen(*_args, **kwargs):
+        captured.update(kwargs["env"])
+        return proc
+
+    monkeypatch.setattr(copilot_acp.subprocess, "Popen", popen)
+    client = CopilotAcpClient("copilot-bin")
+    try:
+        result = client.run_prompt(
+            prompt="classify this",
+            resume_thread_id=None,
+            options=_Opt(),
+            run_label="manager-frontdoor-classify",
+        )
+        assert result.exit_code == 0
+        assert client._session_events_root == chosen / "session-state"
+    finally:
+        client.close()
+    assert captured["COPILOT_HOME"] == str(chosen)
+    assert captured["GH_CONFIG_DIR"] == str(chosen / "gh")
+    assert "COPILOT_GITHUB_TOKEN" not in captured
+
+
+def test_warm_managed_process_protects_idle_sessions_until_exit(tmp_path, monkeypatch):
+    import os
+
+    from argus.agent_cli.copilot_home import argus_copilot_home, prune_copilot_sessions
+
+    home = argus_copilot_home()
+    home.mkdir(parents=True)
+    monkeypatch.setenv("COPILOT_HOME", str(home))
+    proc = _FakeAcpProc(_happy_script)
+    monkeypatch.setattr(copilot_acp.subprocess, "Popen", lambda *args, **kwargs: proc)
+    client = CopilotAcpClient("copilot-bin")
+    try:
+        client.prewarm(str(tmp_path))
+        session = home / "session-state" / "old-session"
+        session.mkdir(parents=True)
+        events = session / "events.jsonl"
+        events.write_text("{}\n", encoding="utf-8")
+        stamp = time.time() - 30 * 86400
+        os.utime(events, (stamp, stamp))
+        os.utime(session, (stamp, stamp))
+        env = {"ARGUS_SKILL_COPILOT_SESSION_RETENTION_DAYS": "7"}
+        assert prune_copilot_sessions(home, env=env) == 0
+        assert events.exists()
+    finally:
+        client.close()
+    deadline = time.monotonic() + 2
+    while prune_copilot_sessions(home, env=env) == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not session.exists()
+
+
 def test_content_filter_notice_is_a_permanent_failure_not_agent_output(
     monkeypatch,
 ) -> None:
@@ -335,6 +413,56 @@ def test_content_filter_notice_is_a_permanent_failure_not_agent_output(
     assert "content filtering" in str(result.fatal_error)
     assert result.agent_messages == []
     assert blocks == []
+
+
+@pytest.mark.parametrize("receipt_kind", ["current", "stale", "assistant"])
+@pytest.mark.parametrize("preamble", ["", "I will inspect the file first.\n"])
+def test_query_error_requires_current_structured_receipt(tmp_path, monkeypatch, receipt_kind, preamble):
+    """Regression reused from upstream 2906499e; no provider is contacted."""
+    message = "400 Trial provider rejected the request format; retrying unchanged will not help."
+    text = preamble + "Error: " + message
+    events = tmp_path / "session-state/sess-1/events.jsonl"
+    events.parent.mkdir(parents=True)
+    user = {"type": "user.message", "data": {"content": "current question"}}
+    error = {"type": "session.error", "data": {
+        "errorType": "query", "message": message, "statusCode": 400,
+    }}
+    rows = [user, error] if receipt_kind == "current" else (
+        [error, user] if receipt_kind == "stale" else
+        [user, {"type": "assistant.message", "data": {"content": text}}]
+    )
+    events.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    monkeypatch.setenv("COPILOT_HOME", str(tmp_path))
+
+    def script(req, proc):
+        if req["method"] == "session/prompt":
+            return [
+                {"jsonrpc": "2.0", "method": "session/update", "params": {
+                    "sessionId": "sess-1", "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": text},
+                    },
+                }},
+                {"jsonrpc": "2.0", "id": req["id"], "result": {"stopReason": "end_turn"}},
+            ]
+        return _happy_script(req, proc)
+
+    proc = _FakeAcpProc(script)
+    monkeypatch.setattr(copilot_acp.subprocess, "Popen", lambda *a, **k: proc)
+    client = CopilotAcpClient("copilot-bin")
+    try:
+        result = client.run_prompt(
+            prompt="current question", resume_thread_id=None,
+            options=_Opt(), run_label="simple-1",
+        )
+        assert result.turn_failed is (receipt_kind == "current")
+        assert result.turn_completed is (receipt_kind != "current")
+        if receipt_kind == "current":
+            assert result.exit_code != 0 and result.stop_kind == "permanent_error"
+            assert result.json_events == []
+            assert result.fatal_error == error["data"]["message"]
+    finally:
+        client.close()
 
 
 def test_acp_warm_reuse_skips_new_handshake(monkeypatch) -> None:
@@ -1240,3 +1368,37 @@ def test_acp_initialization_failure_terminates_spawned_process(monkeypatch) -> N
 
     assert terminated == [200]
     assert client._proc is None
+
+
+def test_acp_tool_result_is_emitted_once_per_call_on_terminal_status() -> None:
+    client = CopilotAcpClient("copilot-bin")
+    emitted: list[str] = []
+    client._active_turn = copilot_acp._Turn("s1", None, emitted.append, allow_persistent=True)
+
+    def update(payload: dict) -> None:
+        client._handle_notification("session/update", {"sessionId": "s1", "update": payload})
+
+    update({"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Count README lines",
+            "kind": "execute", "status": "pending", "rawInput": {"command": "wc -l README.md"}})
+    update({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "in_progress"})
+    update({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "in_progress",
+            "content": [{"type": "content", "content": {"type": "text", "text": "1 README.md"}}]})
+    update({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed",
+            "content": [{"type": "content", "content": {"type": "text", "text": "1 README.md"}}]})
+    update({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed"})
+
+    structured = [json.loads(line) for line in emitted if line.startswith("{")]
+    assert [event["type"] for event in structured] == ["tool.call", "tool.result"]
+    assert structured[0]["data"] == {
+        "name": "Count README lines",
+        "arguments": {"command": "wc -l README.md"},
+        "toolCallId": "t1",
+        "kind": "execute",
+    }
+    assert structured[1]["data"] == {
+        "content": "Count README lines (completed)",
+        "name": "Count README lines",
+        "status": "completed",
+        "toolCallId": "t1",
+        "output": "1 README.md",
+    }

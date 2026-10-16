@@ -7,18 +7,20 @@ from pathlib import Path
 
 import pytest
 
-from argus_skill.engineer.external_work import ExternalWorkState, ExternalWorkStatus
-from argus_skill.life.event_log import JsonlEventSink
-from argus_skill.life.memory import BacklogItem, LifeMemory
-from argus_skill.life.supervisor import LifeBudget, LifeSupervisor, LifeSupervisorConfig
-from argus_skill.life.supervisor._constants import (
+from argus.engineer.external_work import ExternalWorkState, ExternalWorkStatus
+from argus.life.event_log import JsonlEventSink
+from argus.life.memory import BacklogItem, LifeMemory
+from argus.life.supervisor import LifeBudget, LifeSupervisor, LifeSupervisorConfig
+from argus.life.supervisor._constants import (
     IDLE_BACKOFF_CAP_SECONDS,
     OPERATOR_WAIT_TURN_REGRANT_SECONDS,
     PLAN_AWAITING,
 )
-from argus_skill.life.supervisor._planning_cycle import PlanningCycleMixin
-from argus_skill.planner import PlannerVerdict, TaskSpec, WaitingContract
-from argus_skill.skills.vertical_select import persist_vertical
+from argus.life.supervisor._planner_orchestration import PlannerOrchestrationMixin
+from argus.life.supervisor._planning_cycle import PlanningCycleMixin
+from argus.planner import PlannerVerdict, TaskSpec, WaitingContract
+from argus.skills.vertical_select import persist_vertical
+from argus.team import pool, registry, task_board
 
 
 class _Runner:
@@ -50,6 +52,70 @@ def _direct_job() -> ExternalWorkStatus:
     )
 
 
+def _team_job() -> ExternalWorkStatus:
+    return ExternalWorkStatus(
+        work_id="team:research-idea-pipeline-v8-g1",
+        state=ExternalWorkState.RUNNING_HEALTHY,
+        source="team",
+        owner="runtime",
+        description="team research-idea-pipeline-v8-g1: 1 running, 2 pending, 3 done",
+        facts=("research-idea-pipeline-v8-g1-route-02-review: running by w8 for 4m",),
+        started_at=1.0,
+    )
+
+
+def test_poll_wait_naming_the_team_by_its_bare_id_becomes_an_event_wait() -> None:
+    """The Planner of s-009c3ec3 waited for 'research-idea-pipeline-v8-g1' and
+    was degraded to a poll that re-ran it every backoff tick (2026-09-16)."""
+    probe = _NormalizationProbe([_team_job()])
+    verdict = PlannerVerdict(
+        project_done=False,
+        reason="the ideation team is reviewing routes in background worker sessions",
+        waiting=True,
+        waiting_reason="wait for the ideation team to finish its reviews",
+        waiting_contract=WaitingContract(
+            blocker_fingerprint="research-idea-pipeline-v8-g1",
+            recheck_condition="worker w8 completes the review of route-02",
+            recheck_token="research-idea-pipeline-v8-g1",
+        ),
+    )
+
+    normalized = probe._normalize_live_subagent_wait(verdict)
+
+    assert normalized.waiting_contract is not None
+    assert normalized.waiting_contract.wait_mode == "event"
+    assert normalized.waiting_contract.wake_on == ("subagent_state",)
+    assert probe.events[-1]["work_ids"] == ["team:research-idea-pipeline-v8-g1"]
+
+
+def test_runtime_owned_team_gets_no_overlap_mission() -> None:
+    probe = _NormalizationProbe([_team_job()])
+    verdict = PlannerVerdict(
+        project_done=False, reason="waiting on the portfolio", waiting=True,
+        waiting_reason="waiting on the portfolio",
+        waiting_contract=WaitingContract(
+            blocker_fingerprint="x", recheck_condition="y", recheck_token="z",
+        ),
+    )
+    assert probe._independent_overlap_task(verdict) is None
+
+
+class _DigestProbe(PlannerOrchestrationMixin):
+    def __init__(self, jobs: list[ExternalWorkStatus]) -> None:
+        self.jobs = jobs
+
+    def _waitable_subagent_jobs(self) -> list[ExternalWorkStatus]:
+        return self.jobs
+
+
+def test_digest_names_the_team_and_its_board_so_the_planner_need_not_read_it() -> None:
+    line = _DigestProbe([_direct_job(), _team_job()])._live_subagent_id_line()
+    assert "data-build, team:research-idea-pipeline-v8-g1" in line
+    assert "live_team_status (team:research-idea-pipeline-v8-g1): team research-idea-pipeline-v8-g1: 1 running, 2 pending, 3 done" in line
+    assert "route-02-review: running by w8 for 4m" in line
+    assert "wait on the team id rather than re-reading its files" in line
+
+
 def test_status_only_task_becomes_deterministic_event_wait() -> None:
     probe = _NormalizationProbe([_direct_job()])
     verdict = PlannerVerdict(
@@ -59,7 +125,7 @@ def test_status_only_task_becomes_deterministic_event_wait() -> None:
             TaskSpec(
                 title="Observe live data build",
                 objective=(
-                    "Run python -m argus_skill.tools.subagent status "
+                    "Run python -m argus.tools.subagent status "
                     "--task-id data-build. If it remains live, stop."
                 ),
             )
@@ -203,7 +269,7 @@ def test_status_check_inside_independent_task_is_not_suppressed() -> None:
             TaskSpec(
                 title="Implement parser while data build runs",
                 objective=(
-                    "Run argus_skill.tools.subagent status --task-id data-build once, "
+                    "Run argus.tools.subagent status --task-id data-build once, "
                     "if it remains live, independently implement and test the "
                     "manifest parser now."
                 ),
@@ -385,13 +451,15 @@ def _park_missions_with_dependents(supervisor: LifeSupervisor) -> list[BacklogIt
 
 
 @pytest.mark.parametrize("terminal_state", ["done", "failed"])
+@pytest.mark.parametrize("continuous", [True, False])
 def test_parked_missions_wait_without_planner_and_resume_on_job_completion(
-    tmp_path: Path, monkeypatch, terminal_state: str
+    tmp_path: Path, monkeypatch, terminal_state: str, continuous: bool,
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
     life = tmp_path / "life"
     supervisor = _supervisor(project, life)
+    supervisor.config.continuous = continuous
     missions = _park_missions_with_dependents(supervisor)
     calls = []
 
@@ -406,7 +474,7 @@ def test_parked_missions_wait_without_planner_and_resume_on_job_completion(
             ),
         )
 
-    monkeypatch.setattr("argus_skill.planner.Planner.plan_next", plan_next)
+    monkeypatch.setattr("argus.planner.Planner.plan_next", plan_next)
     original = supervisor.memory.backlog.active()
     assert supervisor.memory.backlog.next_pending(respect_running=True) is None
     for _ in range(3):
@@ -419,9 +487,11 @@ def test_parked_missions_wait_without_planner_and_resume_on_job_completion(
     events = [json.loads(line) for line in (life / "events.jsonl").read_text().splitlines()]
     assert not any(event["type"] == "life.planner.start" for event in events)
     waits = [event for event in events if event["type"] == "life.planner.waiting"]
-    assert all(item.id in waits[-1]["reason"] for item in missions)
+    if continuous:
+        assert all(item.id in waits[-1]["reason"] for item in missions)
 
     restarted = _supervisor(project, life)
+    restarted.config.continuous = continuous
     restarted.config.coordinate_parallel_claims = True
     assert restarted.run()["stopped_by"] == PLAN_AWAITING
     assert calls == []
@@ -467,7 +537,7 @@ def test_startable_work_still_runs_beside_parked_missions(tmp_path: Path, monkey
             )],
         )
 
-    monkeypatch.setattr("argus_skill.planner.Planner.plan_next", plan_next)
+    monkeypatch.setattr("argus.planner.Planner.plan_next", plan_next)
     supervisor._enter_pause_backoff()
     supervisor._enter_pause_backoff()
     original = supervisor.memory.backlog.active()
@@ -511,14 +581,14 @@ def test_unchanged_live_job_skips_planner_across_restart(
                 TaskSpec(
                     title="Observe live data build",
                     objective=(
-                        "Run python -m argus_skill.tools.subagent status "
+                        "Run python -m argus.tools.subagent status "
                         "--task-id data-build. If it remains live, stop."
                     ),
                 )
             ],
         )
 
-    monkeypatch.setattr("argus_skill.planner.Planner.plan_next", _plan_next)
+    monkeypatch.setattr("argus.planner.Planner.plan_next", _plan_next)
     first = _supervisor(project, life)
 
     # The first turn is where the Planner proposed the status probe that got
@@ -588,7 +658,7 @@ def test_repersisted_operator_event_wait_keeps_idle_turn_throttle(
             waiting_contract=_contract(),
         )
 
-    monkeypatch.setattr("argus_skill.planner.Planner.plan_next", _plan_next)
+    monkeypatch.setattr("argus.planner.Planner.plan_next", _plan_next)
     supervisor = _supervisor(project, life)
 
     assert supervisor._plan_next_work() == PLAN_AWAITING
@@ -655,11 +725,11 @@ def test_operator_wait_regrant_cadence_is_decoupled_from_idle_backoff_cap(
             ),
         )
 
-    monkeypatch.setattr("argus_skill.planner.Planner.plan_next", _plan_next)
+    monkeypatch.setattr("argus.planner.Planner.plan_next", _plan_next)
     # The regrant check reads the module-level name in _planning_context (a
     # from-import), so the consuming module is what must be patched.
     monkeypatch.setattr(
-        "argus_skill.life.supervisor._planning_context."
+        "argus.life.supervisor._planning_context."
         "OPERATOR_WAIT_TURN_REGRANT_SECONDS",
         4 * IDLE_BACKOFF_CAP_SECONDS,
     )
@@ -715,7 +785,7 @@ def test_non_operator_event_wait_never_regrants_on_turn_age(
             ),
         )
 
-    monkeypatch.setattr("argus_skill.planner.Planner.plan_next", _plan_next)
+    monkeypatch.setattr("argus.planner.Planner.plan_next", _plan_next)
     supervisor = _supervisor(project, life)
 
     assert supervisor._plan_next_work() == PLAN_AWAITING
@@ -947,3 +1017,36 @@ def test_wake_normalization_does_not_relax_watched_path_confinement(
         for event in events
     )
     assert list((tmp_path / "life").glob("planner-waiting-contract-*.json")) == []
+
+
+def test_team_wait_id_is_a_host_observed_event_source(tmp_path: Path) -> None:
+    """A persisted Planner wait on `team:<id>` becomes an event wait that wakes
+    when the team's projected state changes, not a bounded poll."""
+    project = tmp_path / "project"
+    project.mkdir()
+    supervisor = _supervisor(project, tmp_path / "life")
+    team_id = "research-idea-pipeline-v8-g1"
+    root = project / ".argus" / "teams" / team_id
+    task_board.form(root, [{"task_id": f"{team_id}-route-01", "title": "r", "objective": "o", "acceptance_check": "c"}])
+    task_board._mutate(root, f"{team_id}-route-01", state="running", owner="w1", claim_ts=1.0, heartbeat_ts=2.0)
+    pool.update(root, width=1, state="running")
+    registry.write_marker(project, team_id=team_id, team_root=root, cwd=project, now=1.0, owner="runtime")
+
+    contract = WaitingContract(
+        blocker_fingerprint=team_id,
+        recheck_condition="the route workers finish",
+        recheck_token=team_id,
+        wait_mode="event",
+        wake_on=("subagent_state",),
+        wait_id=f"team:{team_id}",
+    )
+    state = supervisor._persist_planner_waiting_contract(contract)
+    assert state is not None
+    assert state["wait_mode"] == "event"
+    assert state["wake_on"] == ["subagent_state"]
+    assert state["observed_revision"]
+    rows = supervisor._external_work_state_rows(project)
+    assert rows == [{"work_id": f"team:{team_id}", "run_id": "", "state": "running_healthy"}]
+
+    task_board._mutate(root, f"{team_id}-route-01", state="done")
+    assert supervisor._external_work_state_rows(project)[0]["state"] == "terminal"

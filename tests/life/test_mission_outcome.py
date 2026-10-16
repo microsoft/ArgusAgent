@@ -9,16 +9,17 @@ from typing import Any
 
 import pytest
 
-from argus_skill.apps._runtime import _ExecuteState, _SkillLoopRunner
-from argus_skill.core.models import LoopOutcome, ReviewDecision, RoundRecord
-from argus_skill.life.memory import BacklogItem, LifeMemory
-from argus_skill.life.mission_outcome import (
+from argus.apps._runtime import _SkillLoopRunner
+from argus.apps._runtime_helpers import _ExecuteState
+from argus.core.models import LoopOutcome, ReviewDecision, RoundRecord
+from argus.life.memory import BacklogItem, LifeMemory
+from argus.life.mission_outcome import (
     mission_outcome_class,
     mission_outcome_dimensions,
     outcome_dimension_summary,
     review_keeps_mission_resumable,
 )
-from argus_skill.life.supervisor import LifeBudget, LifeSupervisor, LifeSupervisorConfig
+from argus.life.supervisor import LifeBudget, LifeSupervisor, LifeSupervisorConfig
 
 
 class _Sink:
@@ -336,7 +337,7 @@ def test_normal_completion_events_include_outcome_class(
 
 
 def test_first_independent_success_promotes_learned_vertical(tmp_path) -> None:
-    from argus_skill.verticals._data_domain import (
+    from argus.verticals._data_domain import (
         load_data_domain,
         write_data_domain,
     )
@@ -388,7 +389,7 @@ def test_promotion_write_failure_does_not_undo_successful_mission(
     tmp_path,
     monkeypatch,
 ) -> None:
-    from argus_skill.verticals._data_domain import (
+    from argus.verticals._data_domain import (
         load_data_domain,
         write_data_domain,
     )
@@ -424,7 +425,7 @@ def test_promotion_write_failure_does_not_undo_successful_mission(
         raise OSError("disk full")
 
     monkeypatch.setattr(
-        "argus_skill.verticals._data_domain.promote_data_domain",
+        "argus.verticals._data_domain.promote_data_domain",
         fail_promotion,
     )
 
@@ -584,7 +585,7 @@ def test_research_result_survives_runtime_and_mission_event(tmp_path) -> None:
 
 
 def test_long_engineer_handoff_survives_compact_mission_summary(tmp_path) -> None:
-    from argus_skill.core.mission_view import load_mission_view, update_mission_view_event
+    from argus.core.mission_view import load_mission_view, update_mission_view_event
 
     body = "# Complete report\n\n" + "\n\n".join(
         f"Section {index}: verified result with supporting detail."
@@ -657,14 +658,20 @@ def test_completion_does_not_invent_engineer_output_from_review_or_runtime_text(
     assert _completed_event(sink)["final_output"] == ""
 
 
-def test_daemon_shutdown_is_persisted_as_recoverable_pause(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("stop_kind", "recoverable"),
+    [("daemon_shutdown", True), (None, False)],
+)
+def test_daemon_shutdown_is_persisted_as_recoverable_pause(
+    tmp_path, stop_kind, recoverable,
+) -> None:
     supervisor, sink = _make_supervisor(
         tmp_path,
         _Outcome(
             success=False,
             status="paused_daemon_shutdown",
-            stop_kind="daemon_shutdown",
-            recoverable=True,
+            stop_kind=stop_kind,
+            recoverable=recoverable,
             stop_reason="daemon shutdown requested",
         ),
     )
@@ -677,6 +684,7 @@ def test_daemon_shutdown_is_persisted_as_recoverable_pause(tmp_path) -> None:
     assert result is not None and result["status"] == "paused_daemon_shutdown"
     stored = next(row for row in supervisor.memory.backlog.all() if row.id == item.id)
     assert stored.status == "paused_daemon_shutdown"
+    assert any(row.id == item.id for row in supervisor.memory.backlog.active())
     completed = _completed_event(sink)
     assert completed["success"] is False
     assert completed["stop_kind"] == "daemon_shutdown"
@@ -720,12 +728,44 @@ def test_external_work_wait_releases_and_auto_resumes_the_mission(tmp_path) -> N
     stored = next(row for row in supervisor.memory.backlog.all() if row.id == item.id)
     assert stored.status == "paused_external_work"
     assert stored.outcome["external_wait"]["work_id"] == "job-1"
-    assert _completed_event(sink)["external_wait"]["work_id"] == "job-1"
+    waiting_event = _completed_event(sink)
+    assert waiting_event["external_wait"]["work_id"] == "job-1"
+    assert waiting_event["title"] == "benchmark"
+
+    from argus.core.transcript import read_turns
+
+    # The lifecycle releases a slot, but the conversation must not declare the
+    # still-running work failed or complete. Redelivery remains idempotent.
+    supervisor._publish_mission_completion_message(waiting_event)
+    supervisor._publish_mission_completion_message(waiting_event)
+    messages = [
+        row for row in read_turns(supervisor.memory.root)
+        if str(row.get("message_id") or "").startswith("mission-wait-")
+    ]
+    assert len(messages) == 1
+    message = messages[0]
+    assert message["mission_result"] is False
+    assert "success" not in message
+    assert "benchmark" in message["text"]
+    assert "automatically" in message["text"]
+    assert "Could not complete" not in message["text"]
+    live_message = next(
+        row for line in (supervisor.memory.root / "events.jsonl").read_text().splitlines()
+        if (row := json.loads(line)).get("message_id") == message["message_id"]
+    )
+    assert live_message["status"] == "paused_external_work"
+    assert live_message["user_action_required"] is False
+    assert live_message["external_wait"]["work_id"] == "job-1"
+    assert supervisor._resume_automatic_pauses() == []
+    assert next(row for row in supervisor.memory.backlog.all() if row.id == item.id).status == (
+        "paused_external_work"
+    )
 
     status_path.write_text(json.dumps({
         "version": 1,
         "work_id": "job-1",
-        "state": "completed",
+        "state": "terminal",
+        "outcome": "done",
         "heartbeat_at": time.time(),
         "stale_after_seconds": 300,
         "poll_after_seconds": 30,
@@ -1067,8 +1107,8 @@ def test_resumable_mission_is_not_quarantined_from_replanning() -> None:
     mission's own settlement event quarantined its task signature out of the
     next planning cycle — the mechanism that left the queue empty.
     """
-    from argus_skill.life.memory import JournalEntry
-    from argus_skill.life.supervisor import _is_recent_no_progress_failure
+    from argus.life.memory import JournalEntry
+    from argus.life.supervisor._helpers import _is_recent_no_progress_failure
 
     def _entry(extra: dict[str, Any]) -> JournalEntry:
         return JournalEntry.new(

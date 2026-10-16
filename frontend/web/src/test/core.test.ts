@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import fs from 'node:fs';
@@ -38,7 +39,6 @@ import {
 } from '../components/ResearchCanvas';
 import { emptyMissionView } from '../../../core/src/missionView';
 import { MarkdownContent } from '../components/MarkdownContent';
-import { BootSplash, WEB_SPLASH_DURATION_MS } from '../components/BootSplash';
 import { PendingReplyDialog } from '../components/PendingReplyDialog';
 import { Sidebar } from '../components/Sidebar';
 import { BackendHandshake } from '../components/BackendHandshake';
@@ -48,9 +48,15 @@ import { HtmlPreview } from '../components/HtmlPreview';
 import { formatStructuredData, parseDelimited } from '../components/DataPreview';
 import { Button } from '../components/primitives';
 import { ArgusMark, Wordmark } from '../components/Wordmark';
-import { ConnectionProblemBanner, pairingTokenFromInput } from '../components/ConnectionProblemBanner';
+import { ConnectionProblemBanner, pairingTokenFromInput, temporaryPairingLinkFromInput } from '../components/ConnectionProblemBanner';
 import { LocalArgusUnavailableError, PairingRequiredError } from '../api';
 import { isMarkdownArtifact } from '../lib/artifactPresentation';
+
+let queryClient: QueryClient;
+beforeEach(() => {
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+});
+afterEach(() => queryClient.clear());
 
 const typedUsageEvent: UsageRecordedEvent = {
   type: 'usage.recorded',
@@ -80,7 +86,7 @@ describe('shared frontend core', () => {
 
     expect(html).toContain('role="alert"');
     expect(html).toContain('not paired with Argus');
-    expect(html).toContain('reopen the workbench from Argus Desktop');
+    expect(html).toContain('valid pairing link for this Argus site');
     expect(html).toContain('Pair again');
   });
 
@@ -91,6 +97,10 @@ describe('shared frontend core', () => {
     expect(pairingTokenFromInput('http://127.0.0.1:8765/?token=fresh-link-token')).toBe('fresh-link-token');
     expect(pairingTokenFromInput('http://127.0.0.1:8765/')).toBe('');
     expect(pairingTokenFromInput('not a token')).toBe('');
+    const code = 'a'.repeat(32);
+    expect(temporaryPairingLinkFromInput(`http://127.0.0.1:8765/pair/${code}`)).toBe(`http://127.0.0.1:8765/pair/${code}`);
+    expect(temporaryPairingLinkFromInput(`https://other.example/pair/${code}`)).toBe('');
+    expect(temporaryPairingLinkFromInput('http://127.0.0.1:8765/')).toBe('');
 
     vi.unstubAllGlobals();
   });
@@ -152,7 +162,6 @@ describe('shared frontend core', () => {
     expect(css).not.toContain('--spectral-');
     expect(css).not.toContain('#89dceb');
     expect(css).not.toContain('#cba6f7');
-    expect(css).toContain('.workspace-tab-indicator');
     expect(css).toContain('.role-log-group[data-open=\"true\"]');
   });
 
@@ -212,10 +221,11 @@ describe('shared frontend core', () => {
     ])).toEqual(first);
   });
 
-  it('closes orphaned provider requests at mission completion', () => {
+  it('closes a task’s orphaned provider request at its own completion', () => {
     const orphaned = {
       type: 'provider.request.started',
       call_id: 'orphaned-manager-call',
+      item_id: 'mission-1',
       run_label: 'manager-classify-grounded',
     };
     expect(activeProviderRequest([
@@ -264,7 +274,7 @@ describe('shared frontend core', () => {
     expect(html).toContain('Decision required');
     expect(html).toContain('Which dataset should the process use?');
     expect(html).toContain('Choose dataset');
-    expect(html).toContain('The Manager applies your choice');
+    expect(html).toContain('Your answer applies to this task.');
   });
 
   it('renders Settings and icon-only theme controls in the sidebar footer', () => {
@@ -281,13 +291,13 @@ describe('shared frontend core', () => {
       onToggleCollapse: () => undefined,
       onCycleTheme: () => undefined,
     };
-    const light = renderToStaticMarkup(createElement(Sidebar, { ...props, themeMode: 'light' }));
-    const dark = renderToStaticMarkup(createElement(Sidebar, { ...props, themeMode: 'dark' }));
+    const light = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(Sidebar, { ...props, themeMode: 'light' })));
+    const dark = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(Sidebar, { ...props, themeMode: 'dark' })));
     expect(light).toContain('Settings');
     expect(light).toContain('data-icon="gear"');
-    expect(light).toContain('data-icon="sun"');
+    expect(light).toContain('lucide-sun');
     expect(light).toContain('switch to dark');
-    expect(dark).toContain('data-icon="moon"');
+    expect(dark).toContain('lucide-moon');
     expect(dark).toContain('switch to light');
     expect(`${light}${dark}`).not.toContain('system');
     expect(`${light}${dark}`).not.toContain('desktop');
@@ -448,19 +458,21 @@ describe('shared frontend core', () => {
       success: true,
     })).toMatchObject({
       outcomeClass: 'completed',
-      label: 'Task completed',
+      kind: 'mission_completed',
+      label: 'The task was completed.',
       tone: 'ok',
       missionStatus: 'complete',
+      technical: '',
     });
 
     const cases = [
       [
         { outcome_class: 'completed', status: 'supervisor_error', success: false },
-        { outcomeClass: 'completed', label: 'Task completed', tone: 'ok', missionStatus: 'complete' },
+        { outcomeClass: 'completed', kind: 'mission_completed', label: 'The task was completed.', tone: 'ok', missionStatus: 'complete' },
       ],
       [
         { status: 'done', success: true, final_submission_certified: true },
-        { outcomeClass: 'completed', label: 'Submission certified', tone: 'ok', missionStatus: 'complete' },
+        { outcomeClass: 'completed', kind: 'mission_certified', label: 'The final submission was checked and approved.', tone: 'ok', missionStatus: 'complete' },
       ],
       [
         {
@@ -468,31 +480,37 @@ describe('shared frontend core', () => {
           success: true,
           outcome: { final_submission_certified: true },
         },
-        { outcomeClass: 'completed', label: 'Task completed', tone: 'ok', missionStatus: 'complete' },
+        { outcomeClass: 'completed', kind: 'mission_completed', label: 'The task was completed.', tone: 'ok', missionStatus: 'complete' },
       ],
       [
         { status: 'research_incomplete', success: false },
-        { outcomeClass: 'incomplete', label: 'Mission incomplete', tone: 'warn', missionStatus: 'incomplete' },
+        { outcomeClass: 'incomplete', kind: 'mission_incomplete', label: 'The task stopped with work still remaining.', tone: 'warn', missionStatus: 'incomplete' },
       ],
       [
         { status: 'no_progress', success: false },
-        { outcomeClass: 'stalled', label: 'Mission stalled', tone: 'warn', missionStatus: 'stalled' },
+        { outcomeClass: 'stalled', kind: 'mission_stalled', label: 'The task stopped because recent rounds made no useful progress.', tone: 'warn', missionStatus: 'stalled' },
       ],
       [
         { status: 'blocked', success: false },
-        { outcomeClass: 'blocked', label: 'Mission blocked', tone: 'err', missionStatus: 'blocked' },
+        { outcomeClass: 'blocked', kind: 'mission_blocked', label: 'The task cannot continue until something outside it is resolved.', tone: 'err', missionStatus: 'blocked' },
       ],
       [
         { status: 'supervisor_error', success: false },
-        { outcomeClass: 'failed', label: 'Mission failed', tone: 'err', missionStatus: 'failed' },
+        { outcomeClass: 'failed', kind: 'mission_failed', label: 'The task could not be completed.', tone: 'err', missionStatus: 'failed' },
       ],
       [
+        // An unrecognised status is kept as a technical fact, never written into the sentence.
         { status: 'legacy_weird_status', success: false },
-        { outcomeClass: 'ended', label: 'Mission ended · legacy_weird_status', tone: 'info', missionStatus: 'ended' },
+        { outcomeClass: 'ended', kind: 'mission_ended', label: 'The task ended without a recorded outcome.', tone: 'info', missionStatus: 'ended', technical: 'legacy_weird_status' },
+      ],
+      [
+        // A paused task says why it paused and that it can resume; the raw status stays technical.
+        { status: 'paused_daemon_shutdown', success: false, stop_kind: 'backend_unavailable', resumable: true },
+        { outcomeClass: 'ended', kind: 'mission_paused', label: 'The task was paused before it finished because Argus was stopped; its progress is saved and it can be resumed.', tone: 'info', missionStatus: 'ended', technical: 'paused_daemon_shutdown' },
       ],
       [
         { success: false },
-        { outcomeClass: 'ended', label: 'Mission ended', tone: 'info', missionStatus: 'ended' },
+        { outcomeClass: 'ended', kind: 'mission_ended', label: 'The task ended without a recorded outcome.', tone: 'info', missionStatus: 'ended', technical: '' },
       ],
     ] as const;
 
@@ -534,10 +552,6 @@ describe('shared frontend core', () => {
     expect(formatBytes(12 * 1024 * 1024)).toBe('12 MB');
   });
 
-  it('keeps the opening animation lightweight and bounded', () => {
-    expect(WEB_SPLASH_DURATION_MS).toBeLessThanOrEqual(1000);
-  });
-
   it('reserves stable shell, scrollbar, and font geometry', () => {
     const css = fs.readFileSync(path.resolve('src/index.css'), 'utf8');
     const html = fs.readFileSync(path.resolve('index.html'), 'utf8');
@@ -547,18 +561,6 @@ describe('shared frontend core', () => {
     expect(html.match(/rel="preload"/g)).toHaveLength(2);
     expect(canvas).not.toContain('key={showLiveProgress');
     expect(canvas).not.toContain('gsap.fromTo');
-  });
-
-  it('uses one large animated mark for the boot splash', () => {
-    const html = renderToStaticMarkup(
-      createElement(BootSplash, { onDone: () => undefined }),
-    );
-    expect(html).toContain('data-logo="rounded-mark"');
-    expect(html.match(/data-logo=/g)).toHaveLength(1);
-    expect(html).toContain('argus-mark-eye');
-    expect(html).toContain('width:168px');
-    expect(html).not.toContain('<pre');
-    expect(html).not.toContain('ARGUS-SKILL');
   });
 
   it('favicon uses monochrome Rounded 02 geometry', () => {
@@ -583,8 +585,8 @@ describe('shared frontend core', () => {
     expect(css).toContain('--brand-eye: 255 255 255');
     expect(css).toContain('--brand-pupil: 32 35 38');
     expect(css).toContain('--brand-highlight: 255 255 255');
-    expect(html).toContain('href="/favicon-dark.svg" media="(prefers-color-scheme: dark)"');
-    expect(html).toContain('href="/apple-touch-icon-dark.png" media="(prefers-color-scheme: dark)"');
+    expect(html).toContain('href="./favicon-dark.svg" media="(prefers-color-scheme: dark)"');
+    expect(html).toContain('href="./apple-touch-icon-dark.png" media="(prefers-color-scheme: dark)"');
     expect(manifest).toContain('/icon-dark-192.png');
     expect(manifest).toContain('/icon-dark-512.png');
     expect(manifest).toContain('/icon-maskable-dark-512.png');
@@ -822,6 +824,17 @@ describe('shared frontend core', () => {
     );
     expect(error.message).toBe('GET /api/projects/s/artifacts → 401: invalid Web token');
     expect(error.status).toBe(401);
+  });
+
+  it.each([
+    { detail: { code: 'reader_source_unavailable', message: 'The selected source is missing.' } },
+    { code: 'reader_source_unavailable', detail: { code: 'ignored_nested_code', message: 'The selected source is missing.' } },
+  ])('preserves structured FastAPI source rejection codes and messages (%j)', async body => {
+    const error = await responseError({ ok: false, status: 422, text: async () => JSON.stringify(body) },
+      'POST', '/api/map-question-source/project/s');
+    expect(error).toMatchObject({ status: 422, code: 'reader_source_unavailable', detail: 'The selected source is missing.' });
+    expect(error.message).toContain('The selected source is missing.');
+    expect(error.message).not.toContain('[object Object]');
   });
 
   it('shares feed filters and backlog lifecycle semantics with Ink', () => {

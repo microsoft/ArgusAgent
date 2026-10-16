@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react';
+import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import { useI18n } from '../i18n';
 
 /** A steady status dot. Motion is reserved for real loading operations. */
 export function StatusDot({ ok, pulse = false, title }: { ok: boolean; pulse?: boolean; title?: string }) {
@@ -39,13 +40,10 @@ export function Button({
   disabled,
   title,
   className = '',
-}: {
+  ...buttonProps
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
   children: ReactNode;
-  onClick?: () => void;
   variant?: 'ghost' | 'primary' | 'danger';
-  disabled?: boolean;
-  title?: string;
-  className?: string;
 }) {
   const styles: Record<string, string> = {
     ghost: 'brand-button-ghost',
@@ -54,6 +52,7 @@ export function Button({
   };
   return (
     <button
+      {...buttonProps}
       type="button"
       title={title}
       disabled={disabled}
@@ -83,4 +82,27 @@ export function Spinner() {
 
 export function EmptyHint({ children }: { children: ReactNode }) {
   return <div className="px-3 py-6 text-center text-xs text-ink-faint">{children}</div>;
+}
+
+/**
+ * Raw text (a log tail, a JSON dump, command output) folded away behind one
+ * line, so the page shows the sentence that matters and the block waits for
+ * whoever wants it. Native `<details>` keeps it keyboard-reachable for free.
+ */
+export function RawDisclosure({
+  label,
+  children,
+  className = '',
+}: {
+  label?: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  const { t } = useI18n();
+  return (
+    <details className={`raw-disclosure mt-1 text-xs text-ink-faint ${className}`}>
+      <summary className="cursor-pointer select-none hover:text-ink">{label ?? t('common.showRaw')}</summary>
+      {children}
+    </details>
+  );
 }

@@ -1,5 +1,42 @@
-import type { Dataset } from "./model";
+import type { Dataset, MapEvent, MapTask } from "./model";
 import type { SubmapStep } from "./submap";
+import { humanizeHarnessNote, readableRecord } from "./submap";
+
+/** Why a task waits on the reader: its open question, or the reason its last
+ * attempt failed, said the way the cards say it. A record that is only a
+ * technical receipt becomes the colleague's sentence for it; a record that
+ * says nothing is reported as exactly that. */
+export function attentionReason(task: MapTask, events: MapEvent[], zh: boolean): string {
+  if (task.pending_question) return task.pending_question;
+  const failure = events.filter((event) => event.item_id === task.id &&
+    (event.status === "failed" || event.success === false || event.type.endsWith(".failed")))
+    .sort((a, b) => b.ts - a.ts)[0];
+  const raw = failure?.reason || failure?.text || "";
+  const note = humanizeHarnessNote(raw, zh);
+  const cut = note.receipt ? raw.lastIndexOf(note.receipt) : -1;
+  const prose = readableRecord(cut >= 0 ? raw.slice(0, cut) : raw);
+  return note.summary || prose ||
+    (zh ? "这项任务没有完成，记录里没有写明原因。" : "This task did not finish, and the record does not say why.");
+}
+
+/** Background explanation of recorded work, never an additional research result. */
+export interface ReaderBrief {
+  why: string;
+  concept: { name: string; explanation: string; example: string; connection: string } | null;
+  scope: string;
+  next: string;
+}
+
+/** A sequence of background explanations, separate from the run's evidence. */
+export interface ReaderLearningPath {
+  question: string;
+  steps: Array<{
+    title: string;
+    explanation: string;
+    example: string;
+    check: { question: string; answer: string };
+  }>;
+}
 
 export interface CardCopy {
   copy_revision?: number;
@@ -8,6 +45,23 @@ export interface CardCopy {
   title: string;
   summary: string;
   detail: string;
+  /** Optional for existing cached cards created before presentation schema 10. */
+  reader_brief?: ReaderBrief;
+  learning_path?: ReaderLearningPath | null;
+  foundation_ref?: { id: string; path: string; question: string; version: number };
+  /** A teaching-text check is separate from the research task's review. */
+  teaching_review?: {
+    status?: 'accepted' | 'corrected' | 'unavailable';
+    kind: 'model_teaching_review';
+    reason?: string;
+    reviewed_at?: number | null;
+    review_version: number;
+    reading_review?: {
+      status: 'accepted' | 'corrected' | 'unavailable';
+      kind: 'model_readability_review';
+      reason?: string;
+    };
+  };
   generated_at: number;
   task_revision?: string;
   task_content_revision?: string;
@@ -20,7 +74,6 @@ export interface MapRelation {
   source: string;
   target: string;
   label: string;
-  evidence: string;
   kind: "semantic";
 }
 export interface MapCopy {
@@ -31,6 +84,7 @@ export interface MapCopy {
   relations: MapRelation[];
   available?: boolean;
   retry_after?: number;
+  generation_error?: { code: string; message: string } | null;
 }
 
 export function mergeMapCopy(previous: MapCopy | undefined, result: MapCopy, requestedRevision?: string): MapCopy {
@@ -39,6 +93,7 @@ export function mergeMapCopy(previous: MapCopy | undefined, result: MapCopy, req
   for (const [key, card] of Object.entries(result.cards)) {
     if (settingsChanged && cards[key]?.model_revision === previous.model_revision) continue;
     const old = cards[key];
+    if (old?.version && (card.version ?? 0) < old.version) continue;
     if (!old || (card.copy_revision ?? 0) > (old.copy_revision ?? 0) ||
       ((card.copy_revision ?? 0) === (old.copy_revision ?? 0) &&
         (card.generated_at > old.generated_at ||
@@ -49,6 +104,8 @@ export function mergeMapCopy(previous: MapCopy | undefined, result: MapCopy, req
     ...previous,
     ...result,
     cards,
+    ...((previous?.version != null || result.version != null)
+      ? { version: Math.max(previous?.version ?? 0, result.version ?? 0) } : {}),
     cache_revision: Math.max(result.cache_revision ?? 0, previous?.cache_revision ?? 0),
     relations: (settingsChanged || older) && previous ? previous.relations : result.relations,
     available: result.available ?? true,
@@ -56,10 +113,17 @@ export function mergeMapCopy(previous: MapCopy | undefined, result: MapCopy, req
   };
 }
 
-export function needsCardCopy(card: CardRequest, data: Dataset, copy?: MapCopy): boolean {
+export function needsCardCopy(
+  card: CardRequest,
+  data: Dataset,
+  copy?: MapCopy,
+  eventIndex?: Map<string, MapEvent>,
+): boolean {
   const saved = copy?.cards[card.key];
   const task = data.tasks.find((t) => t.id === card.task_id);
   if (!saved || !task) return true;
+  if ((saved.version ?? 0) < (copy?.version ?? 0)) return true;
+  if (copy?.model_revision && saved.model_revision !== copy.model_revision) return true;
   const dynamic = [task.id, task.id + ":active", task.id + ":outcome"].includes(card.key);
   if (dynamic || !saved.task_content_revision || !task.content_revision) {
     if (task.revision && saved.task_revision !== task.revision) return true;
@@ -70,7 +134,7 @@ export function needsCardCopy(card: CardRequest, data: Dataset, copy?: MapCopy):
   // current progress is being viewed. Do not rewrite it with a poorer subset.
   return card.event_ids.some((id) => {
     const index = ids.indexOf(id);
-    const event = data.events.find((e) => e.id === id);
+    const event = eventIndex ? eventIndex.get(id) : data.events.find((e) => e.id === id);
     return index < 0 || (saved.event_revisions && event?.revision &&
       saved.event_revisions[index] !== event.revision);
   }) || (!dynamic && JSON.stringify(card.event_ids) !== JSON.stringify(ids));
@@ -91,6 +155,8 @@ export interface CardReference {
   event_ids: string[];
   team_id?: string;
   team_task_id?: string;
+  /** Locale at quote time; the server renders its expansion to match. */
+  lang?: string;
 }
 export const referenceText = (ref: CardReference) =>
   `[[Argus引用 ${JSON.stringify(ref)}]]\n`;
@@ -111,6 +177,7 @@ export function splitDraft(value: string) {
           (ref.step_id === undefined || typeof ref.step_id === "string") &&
           (ref.team_id === undefined || typeof ref.team_id === "string") &&
           (ref.team_task_id === undefined || typeof ref.team_task_id === "string") &&
+          (ref.lang === undefined || typeof ref.lang === "string") &&
           Array.isArray(ref.event_ids) &&
           ref.event_ids.every((id: unknown) => typeof id === "string")
         ) {
@@ -125,6 +192,44 @@ export function splitDraft(value: string) {
   });
   return { refs, text: lines.join("\n").replace(/^\n+/, "") };
 }
+/** Ids of the latest main/review outcomes of a task, optionally as of a moment. */
+function outcomeIds(data: Dataset, id: string, through = Infinity): string[] {
+  const start = Math.max(
+    -Infinity,
+    ...data.events
+      .filter(
+        (e) =>
+          e.item_id === id &&
+          e.type === "life.mission.started" &&
+          e.ts <= through,
+      )
+      .map((e) => e.ts),
+  );
+  return data.events
+    .filter(
+      (e) =>
+        e.item_id === id &&
+        e.ts >= start &&
+        e.ts <= through &&
+        ["round.main.completed", "round.review.completed"].includes(e.type),
+    )
+    .slice(-2)
+    .map((e) => e.id);
+}
+/** One request per step of a task's sub-map, in reading order. */
+export function stepRequests(data: Dataset, task: MapTask, steps: SubmapStep[]): CardRequest[] {
+  return steps.map((s) => ({
+    key: s.id,
+    task_id: task.id,
+    kind: s.kind,
+    event_ids: [
+      ...new Set([
+        ...(s.kind === "result" ? outcomeIds(data, task.id, s.ts) : []),
+        ...s.eventIds,
+      ]),
+    ].slice(-16),
+  }));
+}
 export function requestsFor(
   data: Dataset,
   steps: SubmapStep[],
@@ -134,36 +239,13 @@ export function requestsFor(
   const sorted = focusedTask
     ? [focusedTask, ...data.tasks.filter((t) => t.id !== focused)]
     : data.tasks;
-  const outcomes = (id: string, through = Infinity) => {
-    const start = Math.max(
-      -Infinity,
-      ...data.events
-        .filter(
-          (e) =>
-            e.item_id === id &&
-            e.type === "life.mission.started" &&
-            e.ts <= through,
-        )
-        .map((e) => e.ts),
-    );
-    return data.events
-      .filter(
-        (e) =>
-          e.item_id === id &&
-          e.ts >= start &&
-          e.ts <= through &&
-          ["round.main.completed", "round.review.completed"].includes(e.type),
-      )
-      .slice(-2)
-      .map((e) => e.id);
-  };
   const roots = sorted.map((t) => ({
     key: t.id,
     task_id: t.id,
     kind: "task",
     event_ids: [
       ...new Set([
-        ...outcomes(t.id),
+        ...outcomeIds(data, t.id),
         ...data.events
           .filter((e) => e.item_id === t.id)
           .slice(-2)
@@ -171,18 +253,6 @@ export function requestsFor(
       ]),
     ],
   }));
-  const children = focusedTask
-    ? steps.map((s) => ({
-        key: s.id,
-        task_id: focusedTask.id,
-        kind: s.kind,
-        event_ids: [
-          ...new Set([
-            ...(s.kind === "result" ? outcomes(focusedTask.id, s.ts) : []),
-            ...s.eventIds,
-          ]),
-        ].slice(-16),
-      }))
-    : [];
+  const children = focusedTask ? stepRequests(data, focusedTask, steps) : [];
   return [...roots.slice(0, 1), ...children, ...roots.slice(1)];
 }

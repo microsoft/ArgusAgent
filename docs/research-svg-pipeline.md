@@ -1,10 +1,7 @@
-# Research SVG pipeline figures
+# Legacy SVG export utility
 
-Research Paper now uses **Research SVG Pipeline** for method and architecture
-diagrams. The current Engineer model reads the manuscript and executed method
-code, designs a compact horizontal SVG with staggered modules and Times New
-Roman, then renders a vector PDF for the paper. This uses the existing Engineer
-session, without a separate model call or image-generation credentials.
+The supported figure entry is Figure Studio: default Method D, fallback Method B.
+This page documents only the exporter used by existing examples.
 
 Invocation is on demand: normally design a given figure once when Paper needs
 it, then reuse its SVG/PDF across rounds. Neither stage entry nor ordinary
@@ -35,17 +32,17 @@ also includes [method prose](examples/retrieval-demo/method.md), its
 `python docs/examples/retrieval-demo/method.py`. This is a small illustrative
 method, not an evaluated research result.
 
-## Use in a research project
+## Legacy export compatibility
 
-The Paper playbook, visualization router and Engineer prompt point to
-`engineer/research-svg-pipeline.md`. It is packaged with the Research vertical.
-The existing integrated Review checks the drawing against the code and paper
-and judges its rendered layout. There is no extra stage or review record.
+Research figure workflows now use default Method D and Method B fallback via
+`engineer/paper-framework-figure-studio.md`. The standalone SVG workflow and
+its Engineer skill have been removed. The low-level exporter below remains
+for reproducing existing sources and examples; it is not a workflow entry.
 
 For a manual run, select the actual manuscript sections and method code:
 
 ```bash
-python -m argus_skill.verticals.research.pipeline_figure brief \
+python -m argus.verticals.research.pipeline_figure brief \
   --project-root . --paper paper/main.tex --paper paper/sections/method.tex \
   --code src/model.py --code src/train.py
 ```
@@ -57,12 +54,12 @@ sections and relevant code dependencies explicitly. The model then writes
 `paper/figures/src/method_pipeline.svg`; `brief` itself does not generate a figure.
 
 ```bash
-python -m argus_skill.verticals.research.pipeline_figure render \
+python -m argus.verticals.research.pipeline_figure render \
   --input paper/figures/src/method_pipeline.svg \
   --output paper/figures/method_pipeline.svg --pdf --png --width 624
 ```
 
-The tool requires Playwright/Chromium (`pip install 'argus-skill[visual-web]'`,
+The tool requires Playwright/Chromium (`pip install 'argus[visual-web]'`,
 then `python -m playwright install chromium`) and an installed copy of Times
 New Roman. It checks the actual font used for every label, including fallback
 glyphs, and reports a missing font instead of silently using a substitute.
@@ -83,7 +80,7 @@ Use the PDF with `\includegraphics[width=\linewidth]` and compile the paper.
 ## Reproduce the Argus framework example
 
 ```bash
-python -m argus_skill.verticals.research.pipeline_figure render \
+python -m argus.verticals.research.pipeline_figure render \
   --input docs/examples/argus-framework/architecture.source.svg \
   --output docs/examples/argus-framework/architecture.svg --pdf --png --width 624
 ```

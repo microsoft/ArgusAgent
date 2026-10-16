@@ -1,8 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ProjectRow } from '../api';
+import type { ProjectRow, SkillLibraryItem, WikiLibraryItem } from '../api';
+import { SkillLibraryEntry } from './SkillLibrary';
+import { WikiEntry } from './WikiEntry';
+import { PluginLauncher } from './PluginLauncher';
+import { VerticalStoreEntry } from './VerticalStore';
+import { WorkspaceSidePanel } from './WorkspaceShell';
+import { AppearanceControls } from './AppearanceControls';
 import { Wordmark } from './Wordmark';
 import { StatusDot } from './primitives';
-import { ago, uptime } from '../lib/format';
+import { formatRelativeTime, uptime } from '../lib/format';
+import { workStatusLabel, type WorkStatus } from '../lib/workStatus';
 import { filterProjects, hasHumanProjectLabel } from '../../../core/src/projects';
 import type { ThemeMode } from './TopBar';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
@@ -13,10 +20,8 @@ import {
   faEllipsis,
   faFolder,
   faGear,
-  faLanguage,
-  faMoon,
+  faMicrochip,
   faPlay,
-  faSun,
 } from '@fortawesome/free-solid-svg-icons';
 import { useI18n } from '../i18n';
 
@@ -45,6 +50,7 @@ export function recommendedSidebarScope(
 export function Sidebar({
   projects,
   activeId,
+  activeWork,
   localCwd,
   onSelect,
   onPrefetch,
@@ -52,6 +58,9 @@ export function Sidebar({
   onResume,
   resumingId,
   onOpenPanel,
+  onOpenSkills,
+  onOpenWiki,
+  onOpenVerticals,
   onNew,
   loading,
   creating = false,
@@ -65,6 +74,7 @@ export function Sidebar({
 }: {
   projects: ProjectRow[];
   activeId: string | null;
+  activeWork?: { sessionId: string; status: WorkStatus; connected: boolean };
   localCwd: string;
   onSelect: (id: string) => void;
   onPrefetch?: (id: string) => void;
@@ -72,6 +82,9 @@ export function Sidebar({
   onResume?: (id: string) => void;
   resumingId?: string | null;
   onOpenPanel: (p: 'doctor' | 'config' | 'identity') => void;
+  onOpenSkills?: (item?: SkillLibraryItem) => void;
+  onOpenWiki?: (page?: WikiLibraryItem) => void;
+  onOpenVerticals?: () => void;
   onNew: () => void;
   loading: boolean;
   creating?: boolean;
@@ -83,7 +96,7 @@ export function Sidebar({
   themeMode: ThemeMode;
   onCycleTheme: () => void;
 }) {
-  const { locale, setLocale, t } = useI18n();
+  const { t, locale } = useI18n();
   const [scope, setScope] = useState<Scope>('local');
   const initialScopeResolved = useRef(false);
   const [query, setQuery] = useState('');
@@ -115,18 +128,10 @@ export function Sidebar({
     });
     return [...groups.entries()];
   }, [normalizedLocalCwd, scope, visible]);
-  const themeIcon = themeMode === 'light' ? faSun : faMoon;
-  const nextTheme = themeMode === 'light' ? 'dark' : 'light';
   const groupIsCollapsed = (path: string) => collapsedGroups.has(path) && !query.trim();
 
   return (
-    <aside
-      data-state={slim ? 'collapsed' : 'expanded'}
-      data-resizable-panel="left"
-      className={`glass-panel glass-panel--side fixed inset-y-0 left-0 z-50 flex h-full shrink-0 flex-col border-r transition-[width,transform,visibility] duration-panel ease-panel lg:visible lg:static lg:z-auto lg:translate-x-0 ${
-        slim ? 'w-14' : 'w-64 lg:w-[var(--sidebar-width)]'
-      } ${mobileOpen ? 'visible translate-x-0' : 'invisible -translate-x-full'}`}
-    >
+    <WorkspaceSidePanel mobileOpen={mobileOpen} collapsed={collapsed}>
       <div className={`chrome-seam-surface flex h-12 shrink-0 items-center border-b border-line/50 ${slim ? 'justify-center' : 'justify-between px-4'}`}>
         {slim ? (
           <Wordmark size={22} compact />
@@ -147,40 +152,48 @@ export function Sidebar({
         </div>
       ) : null}
 
+      {slim ? <PluginLauncher compact /> : null}
+      {slim && onOpenVerticals ? <VerticalStoreEntry compact onOpen={onOpenVerticals} /> : null}
+      {slim && onOpenSkills ? <SkillLibraryEntry sid={activeId} onOpen={onOpenSkills} compact /> : null}
+      {slim && onOpenWiki ? <WikiEntry sid={activeId} onOpen={onOpenWiki} compact /> : null}
       {!slim ? (
         <>
-          <div className="flex h-12 shrink-0 items-center gap-1 border-b border-line/50 px-3">
-            {(['local', 'all'] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setScope(value)}
-                className={`h-8 rounded-md px-3 text-xs font-medium capitalize transition-colors ${
-                  scope === value ? 'bg-bg text-ink' : 'text-ink-faint hover:text-ink-dim'
-                }`}
-              >
-                {t(`common.${value}`)}
-                <span className="ml-1.5 font-mono text-ink-faint">
-                  {value === 'local' ? localProjects.length : projects.length}
-                </span>
-              </button>
-            ))}
+          <nav aria-label={locale === 'zh-CN' ? '工具与知识' : 'Tools and knowledge'} data-sidebar-resources
+            className="shrink-0 overflow-y-auto overscroll-contain border-b border-line/50 px-2 py-2 scroll-thin [&>section]:mx-2 [&>section]:border-0 [&>section]:py-0 [&>section>div>button:first-child]:px-3"
+            style={{ maxHeight: 'min(40dvh, 360px)' }}>
+            <PluginLauncher />
+            {onOpenSkills && <SkillLibraryEntry sid={activeId} onOpen={onOpenSkills} />}
+            {onOpenWiki && <WikiEntry sid={activeId} onOpen={onOpenWiki} />}
+            <details className="sidebar-tools mx-2 mt-1">
+              <summary className="cursor-pointer px-2 py-2 text-xs text-ink-dim">{locale === 'zh-CN' ? '更多工具与资源' : 'More tools and resources'}</summary>
+              {onOpenVerticals ? <VerticalStoreEntry onOpen={onOpenVerticals} /> : null}
+              {import.meta.env.VITE_ARGUS_HOSTED_TRIAL === '1' ? (
+                <a href="/invite/compute" className="mx-3 mb-2 flex items-center gap-2 rounded-md border border-line/50 px-3 py-2 text-xs text-blue hover:bg-bg">
+                  <FontAwesomeIcon icon={faMicrochip} className="h-3.5 w-3.5" />{t('sidebar.compute')}
+                </a>
+              ) : null}
+            </details>
+          </nav>
+          <div className="flex shrink-0 items-center gap-2 px-4 pb-1 pt-3">
+            <span className="text-xs font-medium text-ink-faint">{locale === 'zh-CN' ? '项目' : 'Projects'}</span>
+            {localProjects.length > 0 && localProjects.length < projects.length ? <select aria-label={locale === 'zh-CN' ? '项目范围' : 'Project scope'} value={scope} onChange={event => setScope(event.target.value as Scope)} className="min-w-0 bg-transparent text-xs text-ink-faint">
+              <option value="local">{t('common.local')}</option><option value="all">{t('common.all')}</option>
+            </select> : null}
             <button
               type="button"
               onClick={onNew}
               disabled={creating}
               aria-label={t('sidebar.create')}
               title={t('sidebar.create')}
-              className="ml-auto flex h-8 w-8 items-center justify-center rounded-md text-lg text-blue hover:bg-bg disabled:opacity-40"
+              className="ml-auto flex h-8 items-center justify-center rounded-md px-2 text-xs text-ink-dim hover:bg-bg disabled:opacity-40"
             >
-              {creating ? '…' : '+'}
+              {creating ? '…' : locale === 'zh-CN' ? '+ 新建' : '+ New'}
             </button>
           </div>
 
           <div className="px-3 py-2">
             <label className="sr-only" htmlFor="daemon-search">{t('sidebar.find')}</label>
             <div className="flex items-center rounded-md border border-line/60 bg-bg/60 px-2 focus-within:border-blue/60">
-              <span aria-hidden="true" className="mr-1.5 text-xs text-ink-faint">/</span>
               <input
                 id="daemon-search"
                 value={query}
@@ -216,8 +229,8 @@ export function Sidebar({
               </div>
             ) : null}
             {grouped.map(([path, rows]) => (
-              <section key={path} className="mb-4 last:mb-0">
-                <button
+              <section key={path} className="mb-1 last:mb-0">
+                {rows.length > 1 && grouped.length > 1 ? <button
                   type="button"
                   aria-expanded={!groupIsCollapsed(path)}
                   title={path}
@@ -232,10 +245,11 @@ export function Sidebar({
                   <FontAwesomeIcon icon={faChevronDown} className={`h-2.5 w-2.5 transition-transform ${groupIsCollapsed(path) ? '-rotate-90' : ''}`} />
                   <FontAwesomeIcon icon={faFolder} className="h-3 w-3" />
                   <span className="min-w-0 flex-1 truncate">{projectGroupLabel(path)}</span>
-                  <span className="font-mono text-[10px]">{rows.length}</span>
-                </button>
-                {!groupIsCollapsed(path) ? rows.map((project) => {
+                </button> : null}
+                {rows.length === 1 || grouped.length === 1 || !groupIsCollapsed(path) ? rows.map((project) => {
                   const active = project.id === activeId;
+                  const work = active && activeWork?.sessionId === project.id ? activeWork : undefined;
+                  const workLabel = work ? workStatusLabel(work.status, locale, work.connected) : undefined;
                   const hasHumanLabel = hasHumanProjectLabel(project);
                   const name = hasHumanLabel
                     ? (project.label || project.display_name || '').trim()
@@ -277,12 +291,15 @@ export function Sidebar({
                           <span className="min-w-0 flex-1 truncate text-sm font-medium">{name}</span>
                         </div>
                         <div className="mt-1 flex min-w-0 items-center gap-1.5 pl-3.5 text-[11px] text-ink-faint">
-                          <span className={`min-w-0 truncate ${updateRequired ? 'text-warn' : ''}`}>
+                          <span className={`min-w-0 truncate ${updateRequired ? 'text-warn' : ''}`} title={workLabel}
+                            data-session-work-state={work?.status.state}>
                             {updateRequired
                               ? t('sidebar.updateRequired')
-                              : project.daemon_alive
+                              : workLabel ?? (project.daemon_alive
                                 ? t('sidebar.runningFor', { uptime: uptime(project.uptime_seconds) })
-                                : ago(project.last_active)}
+                                : project.last_active > 0
+                                  ? t('sidebar.lastActive', { time: formatRelativeTime(project.last_active, locale) })
+                                  : t('sidebar.stopped'))}
                           </span>
                           {updateAvailable && (
                             <span
@@ -332,21 +349,10 @@ export function Sidebar({
             <button type="button" onClick={() => onOpenPanel('config')} className="icon-control flex h-8 w-8 items-center justify-center" aria-label={t('sidebar.openSettings')} title={t('common.settings')}>
               <FontAwesomeIcon icon={faGear} className="h-3.5 w-3.5" />
             </button>
-            <button
-              type="button"
-              onClick={() => setLocale(locale === 'zh-CN' ? 'en' : 'zh-CN')}
-              title={t('language.switchTo', { language: locale === 'zh-CN' ? t('language.english') : t('language.chinese') })}
-              aria-label={t('language.switchTo', { language: locale === 'zh-CN' ? t('language.english') : t('language.chinese') })}
-              className="icon-control flex h-8 w-8 items-center justify-center"
-            >
-              <FontAwesomeIcon icon={faLanguage} className="h-3.5 w-3.5" />
-            </button>
-            <button type="button" onClick={onCycleTheme} title={t('sidebar.theme', { current: themeMode, next: nextTheme })} aria-label={t('sidebar.theme', { current: themeMode, next: nextTheme })} className="icon-control flex h-8 w-8 items-center justify-center">
-              <FontAwesomeIcon icon={themeIcon} className="h-3.5 w-3.5" />
-            </button>
+            <AppearanceControls themeMode={themeMode} onCycleTheme={onCycleTheme} />
           </div>
         </>
       ) : null}
-    </aside>
+    </WorkspaceSidePanel>
   );
 }

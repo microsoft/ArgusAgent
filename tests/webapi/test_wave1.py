@@ -15,14 +15,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from argus_skill.core.session import SessionMeta, read_session_meta, write_session_meta
-from argus_skill.life.memory import LifeMemory
-from argus_skill.manager import config_intent, front_door
-from argus_skill.webapi import (
+from argus.core.session import SessionMeta, read_session_meta, write_session_meta
+from argus.daemon import life_worker as daemon_worker
+from argus.life.memory import LifeMemory
+from argus.manager import config_intent, front_door
+from argus.webapi import (
     artifacts,
+    daemon_lifecycle,
     manager_bridge,
     manager_pending_question,
     manager_state,
+    project_crud,
     server,
 )
 
@@ -88,7 +91,7 @@ def test_create_daemon_separates_launch_cwd_from_execution_workdir(
 ) -> None:
     launch = tmp_path / "workspace"
     launch.mkdir()
-    created = server.create_daemon("", launch_cwd=str(launch), global_root=tmp_path)
+    created = daemon_lifecycle.create_daemon("", launch_cwd=str(launch), global_root=tmp_path)
     meta = read_session_meta(tmp_path, created["sid"])
     assert meta is not None
     assert meta.launch_cwd == str(launch.resolve())
@@ -102,7 +105,7 @@ def test_create_daemon_honours_explicit_execution_workdir(tmp_path: Path) -> Non
     launch.mkdir()
     workdir.mkdir()
 
-    created = server.create_daemon(
+    created = daemon_lifecycle.create_daemon(
         "",
         launch_cwd=str(launch),
         workdir=str(workdir),
@@ -131,13 +134,13 @@ def test_create_daemon_rejects_an_unavailable_workdir_before_command_submission(
 
 
 def test_launch_cwd_update_preserves_existing_session_name(tmp_path: Path) -> None:
-    created = server.create_daemon(name="Existing name", global_root=tmp_path)
+    created = daemon_lifecycle.create_daemon(name="Existing name", global_root=tmp_path)
     original = read_session_meta(tmp_path, created["sid"])
     assert original is not None
     launch = tmp_path / "new-workspace"
     launch.mkdir()
 
-    assert server.set_project_launch_cwd(
+    assert daemon_lifecycle.set_project_launch_cwd(
         created["sid"],
         str(launch),
         global_root=tmp_path,
@@ -151,11 +154,11 @@ def test_launch_cwd_update_preserves_existing_session_name(tmp_path: Path) -> No
 
 
 def test_workdir_update_preserves_state_root_and_session_name(tmp_path: Path) -> None:
-    created = server.create_daemon(name="Existing name", global_root=tmp_path)
+    created = daemon_lifecycle.create_daemon(name="Existing name", global_root=tmp_path)
     workspace = tmp_path / "new-workspace"
     workspace.mkdir()
 
-    result = server.set_project_workdir(
+    result = daemon_lifecycle.set_project_workdir(
         created["sid"],
         str(workspace),
         global_root=tmp_path,
@@ -177,7 +180,7 @@ def test_set_project_workdir_uses_pipeline_then_session_lock_order(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    created = server.create_daemon(global_root=tmp_path)
+    created = daemon_lifecycle.create_daemon(global_root=tmp_path)
     workspace = tmp_path / "ordered-workspace"
     workspace.mkdir()
     order: list[str] = []
@@ -193,15 +196,15 @@ def test_set_project_workdir_uses_pipeline_then_session_lock_order(
         yield
 
     monkeypatch.setattr(
-        "argus_skill.manager._session_ops.manager_pipeline_lock",
+        "argus.manager._session_ops.manager_pipeline_lock",
         pipeline_lock,
     )
     monkeypatch.setattr(
-        "argus_skill.manager._session_ops.manager_session_lock",
+        "argus.manager._session_ops.manager_session_lock",
         session_lock,
     )
 
-    result = server.set_project_workdir(
+    result = daemon_lifecycle.set_project_workdir(
         created["sid"],
         str(workspace),
         global_root=tmp_path,
@@ -237,7 +240,7 @@ def test_set_project_workdir_claims_legacy_session(tmp_path: Path) -> None:
     life = _make_project(tmp_path, sid="s-legacy1")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    result = server.set_project_workdir(
+    result = daemon_lifecycle.set_project_workdir(
         "s-legacy1",
         str(workspace),
         global_root=tmp_path,
@@ -253,16 +256,16 @@ def test_set_project_workdir_rejects_live_daemon_change(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    created = server.create_daemon(global_root=tmp_path)
+    created = daemon_lifecycle.create_daemon(global_root=tmp_path)
     workspace = tmp_path / "new-workspace"
     workspace.mkdir()
     monkeypatch.setattr(
-        server,
-        "read_daemon_status",
+        daemon_worker,
+        'read_daemon_status',
         lambda _path: SimpleNamespace(alive=True, pid=123),
     )
 
-    result = server.set_project_workdir(
+    result = daemon_lifecycle.set_project_workdir(
         created["sid"],
         str(workspace),
         global_root=tmp_path,
@@ -280,18 +283,18 @@ def test_set_project_workdir_allows_live_idempotent_rebind(
 ) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    created = server.create_daemon(
+    created = daemon_lifecycle.create_daemon(
         launch_cwd=str(workspace),
         workdir=str(workspace),
         global_root=tmp_path,
     )
     monkeypatch.setattr(
-        server,
-        "read_daemon_status",
+        daemon_worker,
+        'read_daemon_status',
         lambda _path: SimpleNamespace(alive=True, pid=123),
     )
 
-    result = server.set_project_workdir(
+    result = daemon_lifecycle.set_project_workdir(
         created["sid"],
         str(workspace),
         global_root=tmp_path,
@@ -310,10 +313,10 @@ def test_set_project_workdir_rejects_workspace_owned_by_other_daemon(
 ) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    created = server.create_daemon(global_root=tmp_path)
+    created = daemon_lifecycle.create_daemon(global_root=tmp_path)
     monkeypatch.setattr(
-        server,
-        "_active_workspace_owner",
+        daemon_lifecycle,
+        '_active_workspace_owner',
         lambda *_args, **_kwargs: {
             "sid": "s-other",
             "pid": 456,
@@ -321,7 +324,7 @@ def test_set_project_workdir_rejects_workspace_owned_by_other_daemon(
         },
     )
 
-    result = server.set_project_workdir(
+    result = daemon_lifecycle.set_project_workdir(
         created["sid"],
         str(workspace),
         global_root=tmp_path,
@@ -442,7 +445,7 @@ def test_project_picker_uses_campaign_objective_before_greeting(
     monkeypatch.setattr(front_door, "_ensure_manager_runner", ensure)
     monkeypatch.setattr(config_intent, "_ensure_manager_runner", ensure)
     assert (
-        server.set_continuous(
+        project_crud.set_continuous(
             sid,
             enabled=True,
             objective="Write the CO2 paper",
@@ -999,7 +1002,18 @@ def test_html_and_svg_artifacts_are_never_served_as_executable_content(ctx) -> N
     assert html.status_code == 200
     assert html.headers["content-type"].startswith("text/plain")
     assert html.headers["x-content-type-options"] == "nosniff"
-    assert svg.status_code == 404
+    assert svg.status_code == 200
+    assert svg.headers["content-type"].startswith("text/plain")
+    assert svg.headers["x-content-type-options"] == "nosniff"
+    assert svg.text == (workspace / "figure.svg").read_text(encoding="utf-8")
+    download = client.get(
+        f"/api/projects/{sid}/artifact/raw",
+        params={"path": "figure.svg", "download": True},
+    )
+    assert download.status_code == 200
+    assert download.headers["content-type"] == "application/octet-stream"
+    assert download.headers["content-disposition"].startswith("attachment;")
+    assert download.content == svg.content
 
 
 def test_artifact_metadata_supports_rich_browser_formats(tmp_path: Path) -> None:
@@ -1013,6 +1027,7 @@ def test_artifact_metadata_supports_rich_browser_formats(tmp_path: Path) -> None
         "clip.mp4": "video",
         "image.png": "image",
         "paper.pdf": "pdf",
+        "memo.docx": "binary",
     }
     for name, kind in expected.items():
         (tmp_path / name).write_bytes(b"x")
@@ -1115,8 +1130,8 @@ def test_wave1_reads_404_on_unknown_project(ctx) -> None:
 
 def _persist_lifecycle_done(life_dir: Path) -> None:
     """Write a lifecycle.json with state=done so tests can verify resume."""
-    from argus_skill.life.project_lifecycle import ProjectState, ProjectStatus
-    from argus_skill.life.project_lifecycle_io import write_persisted
+    from argus.life.project_lifecycle import ProjectState, ProjectStatus
+    from argus.life.project_lifecycle_io import write_persisted
 
     status = ProjectStatus(
         project_id=life_dir.name,
@@ -1128,8 +1143,8 @@ def _persist_lifecycle_done(life_dir: Path) -> None:
 
 def _persist_lifecycle_state(life_dir: Path, state_str: str) -> None:
     """Write a lifecycle.json with an arbitrary state."""
-    from argus_skill.life.project_lifecycle import ProjectState, ProjectStatus
-    from argus_skill.life.project_lifecycle_io import write_persisted
+    from argus.life.project_lifecycle import ProjectState, ProjectStatus
+    from argus.life.project_lifecycle_io import write_persisted
 
     status = ProjectStatus(
         project_id=life_dir.name,
@@ -1141,7 +1156,7 @@ def _persist_lifecycle_state(life_dir: Path, state_str: str) -> None:
 
 def _make_mem_with_launch_cwd(tmp_path: Path, sid: str = "s-lifecycle-test"):
     """Create a MemoryBundle with an explicit shared execution workdir."""
-    from argus_skill.life.memory import MemoryBundle
+    from argus.life.memory import MemoryBundle
 
     launch_dir = tmp_path / "workspace"
     launch_dir.mkdir(parents=True, exist_ok=True)
@@ -1179,8 +1194,8 @@ class TestManagerMessageLifecycleErrors:
         state: str,
         monkeypatch,
     ) -> None:
-        from argus_skill.manager import config_intent as ci
-        from argus_skill.manager import front_door as fd
+        from argus.manager import config_intent as ci
+        from argus.manager import front_door as fd
 
         sid = f"s-mgr-err-{state}"
         life_dir = tmp_path / "projects" / sid
@@ -1218,8 +1233,8 @@ class TestManagerMessageLifecycleErrors:
     """resume_done_lifecycle_for_team_dispatch resumes a done project on TEAM."""
 
     def test_done_project_resumes_to_active_state(self, tmp_path: Path) -> None:
-        from argus_skill.life.project_lifecycle_io import load_persisted
-        from argus_skill.manager.dispatch import (
+        from argus.life.project_lifecycle_io import load_persisted
+        from argus.manager.dispatch import (
             resume_done_lifecycle_for_team_dispatch,
         )
 
@@ -1235,8 +1250,8 @@ class TestManagerMessageLifecycleErrors:
 
     def test_done_project_resume_uses_persisted_workdir(self, tmp_path: Path) -> None:
         """Resume infers observable status from the shared execution workdir."""
-        from argus_skill.life.project_lifecycle_io import load_persisted
-        from argus_skill.manager.dispatch import (
+        from argus.life.project_lifecycle_io import load_persisted
+        from argus.manager.dispatch import (
             resume_done_lifecycle_for_team_dispatch,
         )
 
@@ -1255,7 +1270,7 @@ class TestManagerMessageLifecycleErrors:
 
     @pytest.mark.parametrize("state", ["quarantined", "archived"])
     def test_quarantined_and_archived_raise(self, tmp_path: Path, state: str) -> None:
-        from argus_skill.manager.dispatch import (
+        from argus.manager.dispatch import (
             resume_done_lifecycle_for_team_dispatch,
         )
 
@@ -1266,7 +1281,7 @@ class TestManagerMessageLifecycleErrors:
             resume_done_lifecycle_for_team_dispatch(mem)
 
         # State must remain unchanged
-        from argus_skill.life.project_lifecycle_io import load_persisted
+        from argus.life.project_lifecycle_io import load_persisted
 
         persisted = load_persisted(mem.project_root)
         assert persisted["state"] == state
@@ -1274,8 +1289,8 @@ class TestManagerMessageLifecycleErrors:
     @pytest.mark.parametrize("state", ["incubating", "running", "writing"])
     def test_active_states_are_noop(self, tmp_path: Path, state: str) -> None:
         """Already-active projects return False and stay unchanged."""
-        from argus_skill.life.project_lifecycle_io import load_persisted
-        from argus_skill.manager.dispatch import (
+        from argus.life.project_lifecycle_io import load_persisted
+        from argus.manager.dispatch import (
             resume_done_lifecycle_for_team_dispatch,
         )
 
@@ -1294,7 +1309,7 @@ class TestManagerMessageLifecycleErrors:
         This test validates the contract: only TEAM dispatch calls the
         resume helper, so a done project stays done for chat/SELF turns.
         """
-        from argus_skill.life.project_lifecycle_io import load_persisted
+        from argus.life.project_lifecycle_io import load_persisted
 
         mem, _ = _make_mem_with_launch_cwd(tmp_path)
         _persist_lifecycle_done(mem.project_root)
@@ -1305,7 +1320,7 @@ class TestManagerMessageLifecycleErrors:
 
     def test_no_lifecycle_file_returns_false(self, tmp_path: Path) -> None:
         """Fresh project with no lifecycle.json should be a no-op."""
-        from argus_skill.manager.dispatch import (
+        from argus.manager.dispatch import (
             resume_done_lifecycle_for_team_dispatch,
         )
 
@@ -1320,12 +1335,12 @@ class TestManagerMessageLifecycleErrors:
 # ── Dispatch acknowledgement persistence ────────────────────────────────────
 
 _DISPATCH_ACK_CASES = [
-    ({"rc": 0, "pid": 42}, "executor started"),
-    (None, "executor already running"),
-    ({"admission_required": True}, "waiting for an executor slot"),
+    ({"rc": 0, "pid": 42}, "Queued; waiting for the executor"),
+    (None, "Queued; waiting for the executor"),
+    ({"admission_required": True}, "Waiting for a free executor slot"),
     (
         {"rc": 2, "error": "auth failed"},
-        "The background worker could not start. Check its startup details and try again.",
+        "The task is saved, but the background worker could not start. See startup details.",
     ),
 ]
 
@@ -1337,8 +1352,8 @@ def test_dispatch_ack_stream_persists_truthful_text(
     expected_substr,
 ) -> None:
     """Streaming endpoint: returned reply, transcript turn, and SSE delta agree."""
-    from argus_skill.core.transcript import read_turns
-    from argus_skill.webapi.manager_pending_question import record_task_dispatch_ack
+    from argus.core.transcript import read_turns
+    from argus.webapi.manager_pending_question import record_task_dispatch_ack
 
     life_dir = tmp_path / "projects" / "s-ack"
     life_dir.mkdir(parents=True)
@@ -1384,8 +1399,8 @@ def test_dispatch_ack_blocking_persists_truthful_text(
     expected_substr,
 ) -> None:
     """Blocking endpoint: returned reply and transcript turn agree (no SSE)."""
-    from argus_skill.core.transcript import read_turns
-    from argus_skill.webapi.manager_pending_question import record_task_dispatch_ack
+    from argus.core.transcript import read_turns
+    from argus.webapi.manager_pending_question import record_task_dispatch_ack
 
     life_dir = tmp_path / "projects" / "s-ack"
     life_dir.mkdir(parents=True)
@@ -1416,7 +1431,7 @@ def test_dispatch_ack_blocking_persists_truthful_text(
 
 
 def test_dispatch_ack_distinguishes_durable_campaign_update(tmp_path: Path) -> None:
-    from argus_skill.webapi.manager_pending_question import record_task_dispatch_ack
+    from argus.webapi.manager_pending_question import record_task_dispatch_ack
 
     life_dir = tmp_path / "projects" / "s-ack"
     life_dir.mkdir(parents=True)
@@ -1434,17 +1449,17 @@ def test_dispatch_ack_distinguishes_durable_campaign_update(tmp_path: Path) -> N
         global_root=tmp_path,
     )
 
-    assert "campaign updated" in text
-    assert "after current work" in text
-    assert "executor already running" not in text
+    assert "Objective updated" in text
+    assert "waiting for the Planner" in text
+    assert "already running" not in text
 
 
 @pytest.mark.parametrize(
     ("dispatch_state", "expected"),
     [
-        ("queued_after_current", "queued after current work"),
-        ("queued", "active executor will pick up"),
-        ("running", "task is running on the active executor"),
+        ("queued_after_current", "Queued after the current work"),
+        ("queued", "waiting for the executor"),
+        ("running", "executor has claimed"),
         ("already_queued", "no duplicate task was created"),
     ],
 )
@@ -1453,7 +1468,7 @@ def test_dispatch_ack_describes_queue_state(
     dispatch_state: str,
     expected: str,
 ) -> None:
-    from argus_skill.webapi.manager_pending_question import record_task_dispatch_ack
+    from argus.webapi.manager_pending_question import record_task_dispatch_ack
 
     life_dir = tmp_path / "projects" / "s-queue-ack"
     life_dir.mkdir(parents=True)
@@ -1533,3 +1548,37 @@ def test_dispatch_ack_surfaces_transcript_write_failure(
     assert len(queued) == 1
     assert queued[0].id == result["item"]["id"]
     assert queued[0].status == "pending"
+
+
+def test_dispatch_ack_names_the_task_in_the_operator_language(tmp_path: Path) -> None:
+    from argus.webapi.manager_pending_question import record_task_dispatch_ack
+
+    (tmp_path / "projects" / "s-ack").mkdir(parents=True)
+    result: dict = {
+        "kind": "task",
+        "daemon_alive": True,
+        "daemon": {"rc": 0, "pid": 7},
+        "item": {"id": "t1", "title": "请做一个 8 页的 PPT，介绍 Argus。", "status": "pending"},
+    }
+    text = record_task_dispatch_ack("s-ack", result, global_root=tmp_path)
+    assert text == "已加入队列，等待执行者接手：请做一个 8 页的 PPT，介绍 Argus。"
+
+    result = {"kind": "task", "daemon_alive": True, "daemon": None,
+              "item": {"id": "t2", "title": "Write the release notes", "status": "pending"}}
+    text = record_task_dispatch_ack("s-ack", result, global_root=tmp_path)
+    assert text == "Queued; waiting for the executor to pick it up: Write the release notes"
+
+
+@pytest.mark.parametrize("planner_pending", [False, True])
+def test_dispatch_ack_uses_operator_language_when_manager_rewrites_the_title(tmp_path, planner_pending):
+    from argus.webapi.manager_pending_question import record_task_dispatch_ack
+
+    result = {
+        "kind": "task", "daemon_alive": True,
+        "item": None if planner_pending else {"title": "Compare the latency groups", "status": "pending"},
+        "dispatch_state": "planner_pending" if planner_pending else "queued",
+    }
+    reply = record_task_dispatch_ack(
+        "s-operator-language", result, global_root=tmp_path, operator_text="继续比较两组延迟",
+    )
+    assert ("目标已更新" if planner_pending else "已加入队列") in reply

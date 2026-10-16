@@ -1,14 +1,30 @@
 /* The island and editor share one surface. Only its bounds move; text and the
    Argus mark keep their proportions throughout the expansion. */
 .map-composer-dock.map-island-dock {
-  --composer-width: min(660px, calc(100% - 48px));
-  --island-ease: cubic-bezier(.2, .86, .22, 1.04);
-  left: 50%;
+  /* Corridor between the legend (bottom-left, ~300px wide at left: 76px) and
+     the minimap (bottom-right, ~160x110 including margins). The expanded
+     panel prefers dead center, slides right just enough to clear the legend,
+     and is capped so it clears the minimap while the corridor still fits. */
+  --island-clear-left: 392px;
+  --island-clear-right: 176px;
+  --composer-width: clamp(320px, calc(100% - var(--island-clear-left) - var(--island-clear-right)), 560px);
+  /* iOS-island feel: fast start, long soft landing. */
+  --island-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  left: min(
+    max(50%, calc(var(--island-clear-left) + var(--composer-width) / 2)),
+    calc(100% - var(--composer-width) / 2 - 13px)
+  );
   width: var(--composer-width);
   max-width: calc(100% - 26px);
-  transition: width 520ms var(--island-ease);
+  /* Only width animates; `left` snaps (the corridor shift is 0 on wide
+   * canvases, and animating it doubled the per-frame layout work). The dock
+   * subtree is layout-contained so the expansion never reflows the canvas. */
+  transition: width 280ms var(--island-ease);
+  contain: layout;
+  will-change: width;
 }
 .map-composer-dock.map-island-dock[data-compact="true"] {
+  left: 50%;
   width: 278px;
 }
 .map-composer-dock.map-island-dock[data-compact="true"][data-pending="true"] {
@@ -18,6 +34,7 @@
   position: relative;
   display: block;
   height: calc(var(--map-editor-height) + 80px);
+  max-height: 40vh;
   padding: 0;
   overflow: hidden;
   isolation: isolate;
@@ -25,8 +42,10 @@
   border-radius: 25px;
   background: var(--map-paper);
   box-shadow: 0 9px 28px #233b5510, 0 2px 5px #233b5509;
-  transition: height 460ms var(--island-ease), border-radius 460ms var(--island-ease),
+  transition: height 280ms var(--island-ease), border-radius 280ms var(--island-ease),
     background-color 220ms ease, border-color 220ms ease, box-shadow 260ms ease;
+  transform: translateZ(0);
+  will-change: height;
 }
 .map-island-dock .map-island-surface:focus-within {
   border-color: #a0b8cb;
@@ -63,15 +82,15 @@
   text-align: left;
   color: rgb(var(--ink));
   opacity: 0;
-  transform: translateY(-5px);
+  transform: translateY(-7px) scale(0.985);
   pointer-events: none;
-  transition: opacity 100ms ease, transform 240ms ease;
+  transition: opacity 90ms ease, transform 280ms var(--island-ease);
 }
 .map-island-dock[data-compact="true"] .map-island-launch {
   opacity: 1;
-  transform: translateY(0);
+  transform: translateY(0) scale(1);
   pointer-events: auto;
-  transition: opacity 190ms ease 130ms, transform 360ms var(--island-ease) 80ms;
+  transition: opacity 160ms ease 70ms, transform 280ms var(--island-ease);
 }
 .map-island-launch:focus-visible {
   outline: 2px solid #a3bccf;
@@ -97,7 +116,7 @@
 }
 .map-island-copy small {
   color: rgb(var(--ink-faint));
-  font-size: 10px;
+  font-size: 11px;
   line-height: 16px;
 }
 .map-island-indicator {
@@ -155,24 +174,29 @@
   padding: 16px 15px 13px;
   opacity: 1;
   transform: translateY(0);
-  transition: opacity 180ms ease 100ms, transform 380ms var(--island-ease) 60ms;
+  transition: opacity 180ms ease 90ms, transform 280ms var(--island-ease) 40ms;
 }
 .map-island-dock[data-compact="true"] .map-composer-editor {
   opacity: 0;
-  transform: translateY(7px);
+  transform: translateY(9px);
   pointer-events: none;
-  transition: opacity 85ms ease, transform 240ms ease;
+  transition: opacity 80ms ease, transform 280ms var(--island-ease);
 }
 .map-island-dock .map-composer textarea {
   display: block;
   flex: none;
   width: 100%;
   min-height: 44px;
-  max-height: 156px;
+  /* Keep the whole surface within ~40vh on short viewports. */
+  max-height: min(156px, calc(40vh - 104px));
   padding: 0 3px;
   font-size: 15px;
   line-height: 26px;
   overscroll-behavior: contain;
+}
+.map-island-dock .map-reference-chips {
+  max-height: 96px;
+  overflow-y: auto;
 }
 .map-island-toolbar {
   display: flex;
@@ -191,19 +215,6 @@
 }
 .map-island-collapse:hover { background: rgb(var(--line) / .6); }
 .map-island-collapse:focus-visible { outline: 2px solid #a3bccf; }
-.map-island-key-hint {
-  flex: 1;
-  color: rgb(var(--ink-faint));
-  font-size: 10px;
-  white-space: nowrap;
-}
-.map-island-dock .map-route-select {
-  margin-left: auto;
-  border-color: transparent;
-  padding: 6px;
-  max-width: 98px;
-}
-.map-island-dock .map-route-select:hover { background: rgb(var(--line) / .35); }
 .map-island-dock .map-send {
   width: 36px;
   height: 36px;
@@ -229,25 +240,27 @@
   0%, 100% { transform: scaleY(.38); opacity: .65; }
   50% { transform: scaleY(1); opacity: 1; }
 }
+/* Hovering the island expands it (handled in MapComposer with a leave grace
+ * period); the border glow below only bridges the first hover frames. */
 @media (hover: hover) and (pointer: fine) {
-  .map-composer-dock.map-island-dock[data-compact="true"]:hover { width: 278px; }
-  .map-composer-dock.map-island-dock[data-compact="true"][data-pending="true"]:hover { width: 340px; }
   .map-island-dock[data-compact="true"] .map-island-surface:hover {
     border-color: #a0b8cb;
     box-shadow: 0 10px 32px #233b5516;
   }
 }
 @media (max-width: 640px) {
+  /* Mobile keeps the historical behavior: centered, near-full-width, and no
+     corridor or 40vh caps (the legend and minimap move out of the way). */
   .map-composer-dock.map-island-dock {
     --composer-width: calc(100% - 26px);
+    left: 50%;
     bottom: max(8px, env(safe-area-inset-bottom, 0px));
   }
-  .map-island-dock .map-composer textarea { font-size: 16px; }
-  .map-island-dock .map-island-surface { border-radius: 23px; }
-  .map-island-key-hint { visibility: hidden; width: 0; }
-  .map-island-toolbar { gap: 6px; }
-  .map-island-dock .map-route-select { max-width: 105px; }
-}
+  .map-island-dock .map-composer textarea { font-size: 16px; max-height: 156px; }
+  .map-island-dock .map-island-surface { border-radius: 23px; max-height: none; }
+  .map-island-dock .map-reference-chips { max-height: 65px; }
+    .map-island-toolbar { gap: 6px; }
+  }
 @media (prefers-reduced-motion: reduce) {
   .map-composer-dock.map-island-dock,
   .map-island-dock *,

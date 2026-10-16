@@ -8,12 +8,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from argus_skill.core.session import SessionMeta, write_session_meta
-from argus_skill.life.memory import BacklogItem, LifeMemory
-from argus_skill.webapi import map_history, map_narrative
-from argus_skill.webapi.map_feed import MapFeed
-from argus_skill.webapi.map_view import read_map
-from argus_skill.webapi.server import create_app
+from argus.core.session import SessionMeta, write_session_meta
+from argus.life.memory import BacklogItem, LifeMemory
+from argus.webapi import map_history, map_narrative
+from argus.webapi.map_feed import MapFeed
+from argus.webapi.map_view import read_map
+from argus.webapi.server import create_app
 
 
 def setup_session(root, sid="s-progress"):
@@ -35,7 +35,7 @@ def test_feed_reuses_unchanged_projection_and_returns_only_new_records(tmp_path,
     feed = MapFeed()
     first = feed.read(sid, tmp_path, life)
     with monkeypatch.context() as patch:
-        patch.setattr("argus_skill.webapi.map_feed.read_map", lambda *a, **k: (_ for _ in ()).throw(AssertionError("reread")))
+        patch.setattr("argus.webapi.map_feed.read_map", lambda *a, **k: (_ for _ in ()).throw(AssertionError("reread")))
         unchanged = feed.read(sid, tmp_path, life, first["cursor"])
     assert unchanged["tasks"] == unchanged["events"] == []
     append(life, {"type": "round.review.completed", "ts": 3, "summary": "Check coverage"})
@@ -46,6 +46,45 @@ def test_feed_reuses_unchanged_projection_and_returns_only_new_records(tmp_path,
     assert second["events"][0]["item_id"] == "a"
     assert second["events"][0]["association"] == "single_active_window"
     assert second["tasks"][0]["deps"] == ["a"]
+
+
+@pytest.mark.parametrize("include_events", [True, False])
+def test_cached_feed_recovers_completion_committed_before_backlog_files_change(
+    tmp_path, monkeypatch, include_events,
+):
+    sid, life, memory = setup_session(tmp_path)
+    feed = MapFeed()
+    first = feed.read(sid, tmp_path, life, include_events=include_events)
+    assert first["tasks"][0]["status"] == "running"
+    before = memory.backlog.path.read_bytes()
+
+    def interrupt_before_archive(self, record):
+        raise OSError("committed but not applied")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(type(memory.backlog), "_apply_commit", interrupt_before_archive)
+        with pytest.raises(OSError, match="committed but not applied"):
+            memory.backlog.mark_done("a")
+    assert memory.backlog.path.read_bytes() == before
+    assert not memory.backlog.archive_path.exists()
+
+    # Use the existing cached feed: a new reader alone would hide stale-cache bugs.
+    recovered = feed.read(
+        sid, tmp_path, life, first["cursor"], include_events=include_events,
+    )
+    if include_events:
+        assert recovered["incremental"]
+    assert [(task["id"], task["status"]) for task in recovered["tasks"]] == [("a", "done")]
+    assert recovered["cursor"] != first["cursor"]
+    assert memory.backlog.claim_next() is None
+    unchanged = feed.read(
+        sid, tmp_path, life, recovered["cursor"], include_events=include_events,
+    )
+    if unchanged["incremental"]:
+        assert unchanged["tasks"] == []
+    else:
+        assert [(task["id"], task["status"]) for task in unchanged["tasks"]] == [("a", "done")]
+    assert unchanged["cursor"] == recovered["cursor"]
 
 
 def test_append_keeps_active_window_and_waits_for_complete_json_line(tmp_path):
@@ -61,6 +100,93 @@ def test_append_keeps_active_window_and_waits_for_complete_json_line(tmp_path):
     complete = feed.read(sid, tmp_path, life, first["cursor"])
     assert len(complete["events"]) == 1 and complete["events"][0]["item_id"] == "a"
     assert feed.read(sid, tmp_path, life, complete["cursor"])["events"] == []
+
+
+def test_completion_scope_survives_incremental_feed_and_old_history_cache(tmp_path, monkeypatch):
+    sid, life, _ = setup_session(tmp_path)
+    feed = MapFeed()
+    first = feed.read(sid, tmp_path, life)
+    event = {"event_id": "ended", "type": "life.mission.completed", "item_id": "a",
+             "ts": 3, "success": True, "overall_complete": False, "campaign_continues": True}
+    append(life, event)
+    delta = feed.read(sid, tmp_path, life, first["cursor"])
+    assert not delta["tasks"]
+    assert delta["events"][0]["overall_complete"] is False
+    assert delta["events"][0]["campaign_continues"] is True
+    snapshot = read_map(sid, tmp_path, life, include_events=False)
+    with monkeypatch.context() as old:
+        old.setattr(map_history, "HISTORY_VERSION", map_history.HISTORY_VERSION - 1)
+        page = map_history.history_page(tmp_path, life, snapshot, None)
+    monkeypatch.setattr(map_history, "PAGE_EVENTS", 1)
+    rebuilt = map_history.history_page(tmp_path, life, snapshot, page["history_cursor"])
+    assert rebuilt["reset_history"]
+    completed = map_history.history_page(tmp_path, life, snapshot, rebuilt["history_cursor"])
+    assert completed["events"][0]["id"] == "ended"
+    assert completed["events"][0]["overall_complete"] is False
+    assert completed["events"][0]["campaign_continues"] is True
+    assert not completed["history_loading"]
+
+
+def test_history_upgrade_restores_structured_reviewer_errors_without_changing_the_log(tmp_path, monkeypatch):
+    sid, life, _ = setup_session(tmp_path)
+    append(life, {"event_id": "review-error", "type": "round.review.completed", "item_id": "a",
+                  "ts": 3, "status": "blocked", "review_skipped": True, "backend_unavailable": True})
+    before = (life / "events.jsonl").read_bytes()
+    snapshot = read_map(sid, tmp_path, life, include_events=False)
+    normalize = map_history.normalize_events
+
+    def old_projection(*args):
+        return [{key: value for key, value in event.items() if key != "backend_unavailable"}
+                for event in normalize(*args)]
+
+    with monkeypatch.context() as old:
+        old.setattr(map_history, "HISTORY_VERSION", map_history.HISTORY_VERSION - 1)
+        old.setattr(map_history, "normalize_events", old_projection)
+        page = map_history.history_page(tmp_path, life, snapshot, None)
+    assert "backend_unavailable" not in page["events"][-1]
+    rebuilt = map_history.history_page(tmp_path, life, snapshot, page["history_cursor"])
+    assert rebuilt["reset_history"]
+    review = next(event for event in rebuilt["events"] if event["id"] == "review-error")
+    assert review["backend_unavailable"] is True
+    assert (life / "events.jsonl").read_bytes() == before
+
+
+def test_legacy_solo_receipts_survive_history_pages_and_rebuild_old_cache(tmp_path, monkeypatch):
+    sid, life, _ = setup_session(tmp_path)
+    rows = [
+        {"type": "ui.operator", "message_id": "web-old-operator", "ts": 3, "text": "Read the file"},
+        {"type": "agent.io.start", "call_id": "solo", "run_label": "self-micro", "ts": 4},
+        {"type": "agent.io.complete", "call_id": "solo", "run_label": "self-micro", "ts": 5,
+         "exit_code": 0, "turn_failed": True, "fatal_error": "Hard idle timeout",
+         "tool_activity_observed": True},
+        {"type": "ui.argus", "message_id": "web-old-argus", "ts": 6, "text": "Reading the file."},
+    ]
+    for row in rows:
+        append(life, row)
+    original = (life / "events.jsonl").read_bytes()
+    value = read_map(sid, tmp_path, life, include_events=False)
+    with monkeypatch.context() as old:
+        old.setattr(map_history, "HISTORY_VERSION", map_history.HISTORY_VERSION - 1)
+        old.setattr(map_history, "turn_records", lambda *_args: {})
+        previous = map_history.history_page(tmp_path, life, value, None)
+
+    monkeypatch.setattr(map_history, "PAGE_BYTES", 1)
+    page = map_history.history_page(tmp_path, life, value, previous["history_cursor"])
+    assert page["reset_history"]
+    events = list(page["events"])
+    for _ in range(len(rows) + 1):
+        if not page["history_loading"]:
+            break
+        page = map_history.history_page(tmp_path, life, value, page["history_cursor"])
+        events.extend(page["events"])
+    assert not page["history_loading"]
+    recovered = [event for event in events if event["item_id"] == "turn:web-old"]
+    assert [event["type"] for event in recovered] == ["work.segment", "turn.replied"]
+    assert recovered[0]["tool_details_recorded"] is False
+    assert recovered[1]["status"] == "failed"
+    cards = MapFeed().read(sid, tmp_path, life)["tasks"]
+    assert next(card for card in cards if card["id"] == "turn:web-old")["status"] == "failed"
+    assert (life / "events.jsonl").read_bytes() == original
 
 
 def test_unknown_cursor_and_replaced_log_return_a_full_projection(tmp_path):
@@ -262,7 +388,7 @@ def test_feed_preserves_loaded_evidence_when_the_live_log_rolls_over(tmp_path):
     assert [event["id"] for event in continued["events"]] == ["after-roll"]
 
 
-def test_completed_child_copy_is_stable_across_later_progress_and_model_changes(tmp_path, monkeypatch):
+def test_completed_child_copy_ignores_later_progress_but_rechecks_requested_model_changes(tmp_path, monkeypatch):
     sid, life, memory = setup_session(tmp_path)
     append(life, {"event_id": "review", "type": "round.review.completed", "ts": 3, "text": "First review"})
     calls = []
@@ -276,15 +402,22 @@ def test_completed_child_copy_is_stable_across_later_progress_and_model_changes(
     request = [{"key": "review", "task_id": "a", "kind": "review", "event_ids": ["review"]}]
     first = map_narrative.enrich(tmp_path, read_map(sid, tmp_path, life), request, "en-US", project_root=life)
     memory.backlog.update("a", status="done", notes="Later successful result", finished_ts=99)
-    monkeypatch.setenv("ARGUS_SKILL_MAP_MODEL", "different-model")
     second = map_narrative.enrich(tmp_path, read_map(sid, tmp_path, life), request, "en-US", project_root=life)
     assert second["cached"] and len(calls) == 1
     assert second["cards"]["review"] == first["cards"]["review"]
     assert "status" not in calls[0][0]["task"]
+    monkeypatch.setenv("ARGUS_SKILL_MAP_MODEL", "different-model")
+    third = map_narrative.enrich(tmp_path, read_map(sid, tmp_path, life), request, "en-US", project_root=life)
+    assert not third["cached"] and len(calls) == 2
+    assert third["cards"]["review"]["model_revision"] != first["cards"]["review"]["model_revision"]
+    # Re-checking historical copy must still use that step's original evidence.
+    assert calls[1][0]["task"] == calls[0][0]["task"]
+    assert calls[1][0]["events"] == calls[0][0]["events"]
 
 
 @pytest.mark.parametrize("version", [None, 5, 6])
-def test_legacy_copy_migrates_without_model_requests(tmp_path, monkeypatch, version):
+def test_legacy_copy_remains_readable_when_generation_is_unavailable(tmp_path, monkeypatch, version):
+    phases = []
     sid, life, _ = setup_session(tmp_path)
     value = read_map(sid, tmp_path, life)
     saved = {"version": version, "model_revision": "earlier-model",
@@ -293,10 +426,14 @@ def test_legacy_copy_migrates_without_model_requests(tmp_path, monkeypatch, vers
     path = map_narrative.cache_path(tmp_path, value["id"] + ":en-US")
     path.parent.mkdir()
     path.write_text(json.dumps({"cards": {"a": saved}, "relations": []}))
+    monkeypatch.setattr(map_narrative, "configured", lambda: False)
     monkeypatch.setattr(map_narrative, "generate", lambda *a, **k: (_ for _ in ()).throw(AssertionError("regenerated")))
-    result = map_narrative.enrich(tmp_path, value, [{"key": "a", "task_id": "a", "kind": "task", "event_ids": []}], "en-US", project_root=life)
-    assert result["cached"] and result["cards"]["a"]["generated_at"] == 1
-    assert result["cards"]["a"]["input_revision"]
+    result = map_narrative.enrich(tmp_path, value, [{"key": "a", "task_id": "a", "kind": "task", "event_ids": []}], "en-US",
+                                 project_root=life, on_progress=phases.append)
+    assert result["available"] is False and result["cards"]["a"]["generated_at"] == 1
+    assert "reader_brief" not in result["cards"]["a"]
+    assert "input_revision" not in result["cards"]["a"]
+    assert phases == ["waiting_for_source"]
 
 
 def test_different_sessions_can_prepare_copy_concurrently(tmp_path, monkeypatch):
@@ -343,7 +480,7 @@ def test_separate_api_processes_reuse_the_same_cached_generation(tmp_path):
     script = """
 import json, sys, time
 from pathlib import Path
-from argus_skill.webapi import map_narrative as copy
+from argus.webapi import map_narrative as copy
 root = Path(sys.argv[1])
 def generate(documents, *args, **kwargs):
     with (root / 'calls.txt').open('a') as f: f.write('call\\n')
@@ -364,3 +501,23 @@ print(json.dumps({'cached': result['cached']}))
         receipts.append(json.loads(stdout))
     assert (tmp_path / "calls.txt").read_text().splitlines() == ["call"]
     assert sum(r["cached"] for r in receipts) == 1
+
+
+def test_updated_event_behind_the_cursor_is_redelivered(tmp_path):
+    sid, life, memory = setup_session(tmp_path)
+    append(life, {"type": "round.review.completed", "event_id": "ev-x", "item_id": "a",
+                  "ts": 3, "summary": "Round one passed", "status": "done"})
+    value = read_map(sid, tmp_path, life, include_events=False)
+    first = map_history.history_page(tmp_path, life, value, None)
+    assert any(e["id"] == "ev-x" for e in first["events"])
+    drained = map_history.history_page(tmp_path, life, value, first["history_cursor"])
+    assert drained["events"] == []
+    # The journal later rewrites the same event id — a step retired as
+    # superseded. A reader already paged past its seq must still get the
+    # update; an in-place upsert would hide it behind the cursor forever.
+    append(life, {"type": "round.review.completed", "event_id": "ev-x", "item_id": "a",
+                  "ts": 3, "summary": "Superseded by the revised plan", "status": "superseded"})
+    update = map_history.history_page(tmp_path, life, value, drained["history_cursor"])
+    bodies = {e["id"]: e for e in update["events"]}
+    assert "ev-x" in bodies
+    assert bodies["ev-x"]["status"] == "superseded"

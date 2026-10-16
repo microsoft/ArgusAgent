@@ -53,10 +53,19 @@ impl RunnerKind {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AppearanceTheme {
-    #[default]
     System,
+    #[default]
     Light,
     Dark,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnAccountSettings {
+    pub runner_kind: RunnerKind,
+    pub runner_bins: BTreeMap<String, String>,
+    pub runner_configured: bool,
+    pub setup_complete: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -77,6 +86,10 @@ pub struct DesktopSettings {
     #[serde(default)]
     pub setup_complete: bool,
     #[serde(default)]
+    pub trial_mode: bool,
+    #[serde(default)]
+    pub own_account: Option<OwnAccountSettings>,
+    #[serde(default)]
     pub appearance_theme: AppearanceTheme,
 }
 
@@ -85,7 +98,7 @@ fn default_host() -> String {
 }
 
 const fn default_port() -> u16 {
-    8799
+    if crate::release::preview_mode() { 18799 } else { 8799 }
 }
 
 impl Default for DesktopSettings {
@@ -98,6 +111,8 @@ impl Default for DesktopSettings {
             runner_bins: BTreeMap::new(),
             runner_configured: false,
             setup_complete: false,
+            trial_mode: false,
+            own_account: None,
             appearance_theme: AppearanceTheme::default(),
         }
     }
@@ -118,6 +133,8 @@ pub enum BackendState {
 #[serde(rename_all = "camelCase")]
 pub struct BackendStatus {
     pub state: BackendState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
@@ -132,6 +149,7 @@ impl Default for BackendStatus {
         Self {
             state: BackendState::Idle,
             message: "尚未启动".to_owned(),
+            warning: None,
             detail: None,
             pid: None,
             url: None,
@@ -174,6 +192,8 @@ pub struct DesktopRuntimeIdentity {
 #[serde(rename_all = "camelCase")]
 pub struct DesktopSetup {
     pub complete: bool,
+    pub trial_mode: bool,
+    pub can_restore_own_account: bool,
     pub host: String,
     pub port: u16,
     pub runner_kind: RunnerKind,
@@ -233,10 +253,23 @@ pub struct DeliveryNotificationInput {
     pub summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 impl DeliveryNotificationInput {
     pub fn bounded(self) -> Option<Self> {
+        if let Some(session_id) = &self.session_id {
+            // Never shorten/trim an identity into a different valid session.
+            if session_id.is_empty()
+                || session_id.chars().count() > 128
+                || !session_id.chars().enumerate().all(|(index, ch)| {
+                    ch.is_alphanumeric() || ch == '_' || ch == '-' || (index > 0 && ch == '.')
+                })
+            {
+                return None;
+            }
+        }
         let delivery_id = self
             .delivery_id
             .trim()
@@ -261,6 +294,7 @@ impl DeliveryNotificationInput {
             },
             summary,
             path,
+            session_id: self.session_id,
         })
     }
 }
@@ -348,7 +382,45 @@ pub enum ProbeFailureKind {
 
 #[cfg(test)]
 mod tests {
-    use super::DesktopSettings;
+    use super::{DeliveryNotificationInput, DesktopSettings};
+
+    #[test]
+    fn legacy_notification_json_omits_absent_session_identity() {
+        let json = r#"{"deliveryId":"fixture","title":"Synthetic","summary":"Fixture only","path":"results/report.md"}"#;
+        let input: DeliveryNotificationInput = serde_json::from_str(json).unwrap();
+        assert!(input.session_id.is_none());
+        let bounded = input.bounded().unwrap();
+        let roundtrip = serde_json::to_value(bounded).unwrap();
+        assert!(roundtrip.get("sessionId").is_none());
+        assert_eq!(roundtrip, serde_json::from_str::<serde_json::Value>(json).unwrap());
+    }
+
+    #[test]
+    fn notification_session_identity_survives_bounding_clone_and_json_roundtrip() {
+        for sid in ["s-A", "s-研究_1", "legacy.project-1"] {
+            let json = serde_json::json!({
+                "deliveryId": "fixture", "title": "Synthetic", "summary": "Fixture only",
+                "path": "results/report.md", "sessionId": sid
+            });
+            let input: DeliveryNotificationInput = serde_json::from_value(json.clone()).unwrap();
+            let bounded = input.bounded().unwrap();
+            assert_eq!(bounded.session_id.as_deref(), Some(sid));
+            let encoded = serde_json::to_value(bounded.clone()).unwrap();
+            assert_eq!(encoded, json);
+            let restored: DeliveryNotificationInput = serde_json::from_value(encoded).unwrap();
+            assert_eq!(restored.session_id, bounded.session_id);
+        }
+    }
+
+    #[test]
+    fn notification_rejects_bad_identity_instead_of_using_a_shortened_one() {
+        for sid in ["", " s-A", "s-A ", "../s-A", "s-A/s-B", "s-A\\s-B", "s-A\0", "s-A\n", "s-A%2fs-B", &"x".repeat(129)] {
+            let input: DeliveryNotificationInput = serde_json::from_value(serde_json::json!({
+                "deliveryId": "fixture", "title": "Synthetic", "summary": "Fixture only", "sessionId": sid
+            })).unwrap();
+            assert!(input.bounded().is_none(), "malformed notification identity accepted");
+        }
+    }
 
     #[test]
     fn fresh_desktop_settings_do_not_claim_a_configured_runner() {

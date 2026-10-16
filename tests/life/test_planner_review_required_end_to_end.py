@@ -15,15 +15,15 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from argus_skill.adapters.memory_backend import CannedResponse, MemoryBackend
-from argus_skill.core.models import RunnerResult
-from argus_skill.life.event_log import JsonlEventSink
-from argus_skill.life.memory import LifeMemory
-from argus_skill.life.supervisor import LifeBudget, LifeSupervisor, LifeSupervisorConfig
-from argus_skill.life.supervisor._planning_context import PlanningContextMixin
-from argus_skill.loop import SkillLoop, SkillLoopConfig
-from argus_skill.planner import PlannerConfig
-from argus_skill.skills.vertical_select import persist_vertical
+from argus.adapters.memory_backend import CannedResponse, MemoryBackend
+from argus.core.models import RunnerResult
+from argus.life.event_log import JsonlEventSink
+from argus.life.memory import LifeMemory
+from argus.life.supervisor import LifeBudget, LifeSupervisor, LifeSupervisorConfig
+from argus.life.supervisor._planning_context import PlanningContextMixin
+from argus.loop import SkillLoop, SkillLoopConfig
+from argus.planner import PlannerConfig
+from argus.skills.vertical_select import persist_vertical
 
 
 class _PlannerBackend:
@@ -76,13 +76,7 @@ class _RealLoopRunner:
         self.reviewer_backend.queue(
             "reviewer",
             CannedResponse(
-                message=json.dumps({
-                    "status": "done",
-                    "reason": "The submitted artifact satisfies its checklist.",
-                    "next_action": "",
-                    "round_summary_markdown": "# done\n",
-                    "completion_summary_markdown": "Done.",
-                }),
+                review_action=('approve_review', {'review': 'The submitted artifact satisfies its checklist.'}),
                 thread_id="v1",
             ),
         )

@@ -7,22 +7,22 @@ from types import SimpleNamespace
 
 import pytest
 
-from argus_skill.core.models import ReviewDecision
-from argus_skill.core.pipeline_state import pipeline_state_path, read_pipeline_state
-from argus_skill.manager import Manager
-from argus_skill.manager.control_state import CampaignControlStore
-from argus_skill.skills.stage_machine import (
+from argus.core.models import ReviewDecision
+from argus.core.pipeline_state import pipeline_state_path, read_pipeline_state
+from argus.manager import Manager
+from argus.manager.control_state import CampaignControlStore
+from argus.skills.stage_machine import (
     advance_stage,
     reset_stage_for_replacement_intent,
 )
-from argus_skill.skills.vertical_select import persist_vertical
+from argus.skills.vertical_select import persist_vertical
 
 
 def _manager(tmp_path: Path, *, workflow_mode: str = "staged"):
     state = tmp_path / "state"
     work = tmp_path / "work"
     work.mkdir()
-    persist_vertical(state, "speedrun", workflow_mode=workflow_mode)
+    persist_vertical(state, "math_synth", workflow_mode=workflow_mode)
     return Manager(project_root=state, execution_workdir=work, runner=object()), state, work
 
 
@@ -108,7 +108,7 @@ def test_idempotent_vertical_refresh_does_not_invalidate_stage_decision(tmp_path
 
     def model(_prompt):
         with manager.pipeline_lock():
-            persist_vertical(state, "speedrun", workflow_mode="direct")
+            persist_vertical(state, "math_synth", workflow_mode="direct")
         return SimpleNamespace(last_agent_message="ACTION=complete\nTARGET_STAGE=setup\nREASON=objective done")
 
     decision = manager.decide_stage_transition(
@@ -120,7 +120,7 @@ def test_idempotent_vertical_refresh_does_not_invalidate_stage_decision(tmp_path
 
 
 def test_deterministic_preflight_cannot_commit_over_replacement(tmp_path, monkeypatch) -> None:
-    from argus_skill.skills import stage_machine
+    from argus.skills import stage_machine
 
     manager, state, work = _manager(tmp_path)
     original = stage_machine._ensure_stage_completion

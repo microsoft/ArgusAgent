@@ -2,20 +2,22 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from argus_skill.apps.cli import _core as cli_core
-from argus_skill.apps.cli import main as cli_main
-from argus_skill.core.backend_readiness import (
+from argus.apps.cli import _core as cli_core
+from argus.apps.cli import main as cli_main
+from argus.core.backend_readiness import (
+    SETUP_EXIT_NOT_READY,
     SETUP_EXIT_USAGE,
     BackendProfile,
     BackendReadiness,
     ReadinessProblem,
 )
-from argus_skill.tools import setup
+from argus.tools import setup
 
 
 def test_setup_banner_highlights_agent_assisted_installation(capsys) -> None:
@@ -58,7 +60,7 @@ def test_interactive_setup_requires_choice_when_multiple_backends_exist(
     monkeypatch.delenv("ARGUS_SKILL_RUNNER_BACKEND", raising=False)
     monkeypatch.delenv("ARGUS_SKILL_LIFE_BACKEND", raising=False)
     monkeypatch.setattr(
-        "argus_skill.core.knob_store.read_persisted_knobs",
+        "argus.core.knob_store.read_persisted_knobs",
         lambda: {},
     )
     monkeypatch.setattr("builtins.input", lambda _prompt="": "")
@@ -103,7 +105,7 @@ def test_noninteractive_setup_validates_then_persists_without_global_mutation(
         lambda _report, **_kwargs: calls.append("persist") or True,
     )
     monkeypatch.setattr(
-        "argus_skill.agent_cli.runner_backend.resolve_runner_bin",
+        "argus.agent_cli.runner_backend.resolve_runner_bin",
         lambda name, _configured=None: "/usr/bin/copilot" if name == "copilot" else None,
     )
 
@@ -130,7 +132,7 @@ def test_missing_pi_is_installed_automatically(monkeypatch) -> None:
         return True
 
     monkeypatch.setattr(
-        "argus_skill.agent_cli.runner_backend.resolve_runner_bin",
+        "argus.agent_cli.runner_backend.resolve_runner_bin",
         resolve,
     )
     monkeypatch.setattr(setup, "_install_pi_cli", install)
@@ -142,7 +144,7 @@ def test_setup_uses_explicit_custom_runner_path(monkeypatch) -> None:
     custom = "/opt/agents/claude-custom"
     monkeypatch.setenv("ARGUS_SKILL_RUNNER_BIN", custom)
     monkeypatch.setattr(
-        "argus_skill.core.knob_store.read_persisted_knobs",
+        "argus.core.knob_store.read_persisted_knobs",
         lambda: {
             "ARGUS_SKILL_RUNNER_BACKEND": "codex",
             "ARGUS_SKILL_RUNNER_BIN": "/opt/agents/codex-old",
@@ -155,7 +157,7 @@ def test_setup_uses_explicit_custom_runner_path(monkeypatch) -> None:
         return configured
 
     monkeypatch.setattr(
-        "argus_skill.agent_cli.runner_backend.resolve_runner_bin",
+        "argus.agent_cli.runner_backend.resolve_runner_bin",
         resolve,
     )
 
@@ -232,7 +234,7 @@ def test_noninteractive_api_url_configures_pi_without_backend_flag(
 
 def test_setup_smoke_uses_real_agent_turn(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
-        "argus_skill.agent_cli.runner_backend.resolve_runner_bin",
+        "argus.agent_cli.runner_backend.resolve_runner_bin",
         lambda backend, _configured=None: (
             "/usr/bin/claude" if backend == "claude" else None
         ),
@@ -244,7 +246,7 @@ def test_setup_smoke_uses_real_agent_turn(monkeypatch, capsys) -> None:
         return SimpleNamespace(ok=True, output="ARGUS_SETUP_OK", error="")
 
     monkeypatch.setattr(
-        "argus_skill.core.agent_probe.run_read_only_agent_prompt",
+        "argus.core.agent_probe.run_read_only_agent_prompt",
         probe,
     )
 
@@ -267,13 +269,13 @@ def test_setup_smoke_uses_effective_backend_model(monkeypatch) -> None:
 
 def test_setup_smoke_failure_is_actionable(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
-        "argus_skill.agent_cli.runner_backend.resolve_runner_bin",
+        "argus.agent_cli.runner_backend.resolve_runner_bin",
         lambda backend, _configured=None: (
             "/usr/bin/claude" if backend == "claude" else None
         ),
     )
     monkeypatch.setattr(
-        "argus_skill.core.agent_probe.run_read_only_agent_prompt",
+        "argus.core.agent_probe.run_read_only_agent_prompt",
         lambda **_kwargs: SimpleNamespace(
             ok=False,
             output="",
@@ -380,6 +382,145 @@ def test_cli_forwards_noninteractive_setup_contract(monkeypatch) -> None:
     assert captured["api_model"] is None
 
 
+@pytest.mark.parametrize("smoke_ok", [True, False])
+def test_dedicated_account_setup_commits_only_after_success(
+    tmp_path: Path, monkeypatch, smoke_ok: bool,
+) -> None:
+    from argus.agent_cli.copilot_home import apply_copilot_home
+    from argus.core.knob_store import read_persisted_knobs, write_persisted_knobs
+
+    previous = tmp_path / "previous"
+    chosen = tmp_path / "dedicated"
+    assert write_persisted_knobs({
+        "ARGUS_SKILL_COPILOT_HOME": str(previous),
+        "ARGUS_SKILL_RUNNER_BACKEND": "codex",
+    })
+    before = read_persisted_knobs()
+    monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "outer-session"))
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-outer-token")
+    report = BackendReadiness(
+        profile=BackendProfile(
+            backend="copilot", auth_mode="subscription_cli",
+            backend_source="argument", auth_mode_source="argument",
+        ),
+        executable="/usr/bin/copilot", version="1.0.88", auth_checked=True,
+    )
+    observed = []
+
+    def check(*_args, **_kwargs):
+        child = apply_copilot_home(dict(os.environ))
+        assert child["COPILOT_HOME"] == str(chosen)
+        assert child["GH_CONFIG_DIR"] == str(chosen / "gh")
+        assert "GITHUB_TOKEN" not in child
+        assert read_persisted_knobs() == before
+        observed.append("readiness")
+        return report
+
+    def smoke(*_args, **_kwargs):
+        assert apply_copilot_home(dict(os.environ))["COPILOT_HOME"] == str(chosen)
+        observed.append("smoke")
+        return smoke_ok
+
+    monkeypatch.setattr(setup, "_configure_runner_backend", lambda backend: backend)
+    monkeypatch.setattr(setup, "_resolve_setup_runner_bin", lambda *_a, **_k: "/usr/bin/copilot")
+    monkeypatch.setattr(setup, "check_backend_readiness", check)
+    monkeypatch.setattr(setup, "_verify_setup_smoke", smoke)
+    rc = setup.run_setup(
+        backend="copilot", non_interactive=True, copilot_home=str(chosen),
+    )
+
+    assert observed == ["readiness", "smoke"]
+    assert rc == (0 if smoke_ok else SETUP_EXIT_NOT_READY)
+    assert os.environ["GITHUB_TOKEN"] == "fake-outer-token"
+    assert os.environ["COPILOT_HOME"] == str(tmp_path / "outer-session")
+    assert "ARGUS_SKILL_COPILOT_HOME" not in os.environ
+    persisted = read_persisted_knobs()
+    if smoke_ok:
+        assert persisted["ARGUS_SKILL_COPILOT_HOME"] == str(chosen)
+        assert persisted["ARGUS_SKILL_RUNNER_BACKEND"] == "copilot"
+        assert all("TOKEN" not in key for key in persisted)
+    else:
+        assert persisted == before
+
+
+def test_dedicated_login_uses_official_cli_and_does_not_persist_failure(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    from argus.core.knob_store import read_persisted_knobs
+
+    chosen = tmp_path / "dedicated"
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "fake-outer-token")
+    monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "outer-session"))
+    monkeypatch.setattr(setup, "_resolve_setup_runner_bin", lambda *_a, **_k: "copilot")
+    calls = []
+
+    def login(command, **kwargs):
+        calls.append(command)
+        assert kwargs["env"]["COPILOT_HOME"] == str(chosen)
+        assert kwargs["env"]["GH_CONFIG_DIR"] == str(chosen / "gh")
+        assert "COPILOT_GITHUB_TOKEN" not in kwargs["env"]
+        assert read_persisted_knobs() == {}
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(setup.subprocess, "run", login)
+    assert setup.run_setup(
+        backend="copilot", copilot_home=str(chosen), copilot_login=True,
+    ) == SETUP_EXIT_NOT_READY
+    assert calls == [["copilot", "login"]]
+    assert read_persisted_knobs() == {}
+    assert not (chosen / "config.json").exists()
+    assert os.environ["COPILOT_GITHUB_TOKEN"] == "fake-outer-token"
+
+
+def test_clear_account_binding_is_staged_before_persistence(tmp_path: Path, monkeypatch) -> None:
+    from argus.agent_cli.copilot_home import copilot_account_home
+    from argus.core.knob_store import read_persisted_knobs, write_persisted_knob
+
+    assert write_persisted_knob("ARGUS_SKILL_COPILOT_HOME", str(tmp_path / "previous"))
+
+    def run(**kwargs):
+        assert copilot_account_home() is None
+        assert kwargs["copilot_home"] == ""
+        assert read_persisted_knobs()["ARGUS_SKILL_COPILOT_HOME"]
+        return SETUP_EXIT_NOT_READY
+
+    monkeypatch.setattr(setup, "_run_setup", run)
+    assert setup.run_setup(backend="copilot", copilot_home="") == SETUP_EXIT_NOT_READY
+    assert copilot_account_home() == tmp_path / "previous"
+
+
+@pytest.mark.parametrize("options", [
+    {"backend": "codex", "copilot_home": "/dedicated"},
+    {"backend": "copilot", "copilot_home": "/dedicated", "trial_url": "https://trial.example"},
+    {"backend": "copilot", "copilot_home": "/dedicated", "api_url": "https://api.example"},
+    {"backend": "copilot", "copilot_login": True, "non_interactive": True},
+    {"backend": "copilot", "copilot_login": True},
+    {"backend": "copilot", "copilot_home": "/dedicated", "auth_mode": "model_api"},
+])
+def test_invalid_account_setup_does_not_launch_or_persist(monkeypatch, options) -> None:
+    monkeypatch.setattr(
+        setup, "_run_setup",
+        lambda **_kwargs: pytest.fail("invalid account setup reached backend probing"),
+    )
+    assert setup.run_setup(**options) == SETUP_EXIT_USAGE
+
+
+def test_cli_forwards_account_setup_options(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr(setup, "run_setup", lambda **kwargs: captured.update(kwargs) or 0)
+    assert cli_main([
+        "--setup", "--backend", "copilot", "--copilot-home", "/dedicated", "--copilot-login",
+    ]) == 0
+    assert captured["copilot_home"] == "/dedicated"
+    assert captured["copilot_login"] is True
+
+
+@pytest.mark.parametrize("option", ["--copilot-home=", "--copilot-login"])
+def test_account_options_require_setup(option, capsys) -> None:
+    assert cli_main([option]) == SETUP_EXIT_USAGE
+    assert "require --setup" in capsys.readouterr().err
+
+
 def test_daemon_readiness_failure_prevents_spawn(monkeypatch, capsys) -> None:
     report = BackendReadiness(
         profile=BackendProfile(
@@ -397,11 +538,11 @@ def test_daemon_readiness_failure_prevents_spawn(monkeypatch, capsys) -> None:
         ],
     )
     monkeypatch.setattr(
-        "argus_skill.core.backend_readiness.check_backend_readiness",
+        "argus.core.backend_readiness.check_backend_readiness",
         lambda *_args, **_kwargs: report,
     )
     monkeypatch.setattr(
-        "argus_skill.daemon.life_worker.run_foreground",
+        "argus.daemon.life_worker.run_foreground",
         lambda _cfg: (_ for _ in ()).throw(
             AssertionError("worker must not spawn before readiness")
         ),
@@ -441,3 +582,59 @@ def test_setup_cannot_mutate_global_git_or_backend_auth() -> None:
         assert f"_apply_{capability}_identity" not in source
     assert "_seed_codex_config" not in source
     assert "user.email" not in source
+
+
+def test_setup_failure_report_follows_the_stdout_narrative(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Under a pipe, stdout is block-buffered and stderr is not.
+
+    The readiness failure and its advice are written to stderr; without a flush
+    they surfaced before the "Step 1" header and the account preamble, so a
+    logged setup read as if the failure had happened first.
+    """
+    from argus.core.backend_readiness import ReadinessProblem
+
+    transcript: list[str] = []
+
+    class _PipedStdout(io.StringIO):
+        def flush(self) -> None:
+            transcript.append(self.getvalue())
+            self.seek(0)
+            self.truncate(0)
+
+    class _Stderr:
+        def write(self, text: str) -> int:
+            transcript.append(text)
+            return len(text)
+
+        def flush(self) -> None:
+            return None
+
+    monkeypatch.setattr(setup.sys, "stdout", _PipedStdout())
+    monkeypatch.setattr(setup.sys, "stderr", _Stderr())
+    report = BackendReadiness(
+        profile=BackendProfile(
+            backend="copilot", auth_mode="subscription_cli",
+            backend_source="argument", auth_mode_source="argument",
+        ),
+        executable="/usr/bin/copilot", version="1.0.89", auth_checked=False,
+        problems=[ReadinessProblem(
+            capability="authentication",
+            detail="copilot authentication is not usable",
+            remediation="run `argus --setup --backend copilot --copilot-login --copilot-home PATH`",
+        )],
+    )
+    monkeypatch.setattr(setup, "_resolve_setup_runner_bin", lambda *_a, **_k: "/usr/bin/copilot")
+    monkeypatch.setattr(setup, "check_backend_readiness", lambda *_a, **_k: report)
+
+    rc = setup.run_setup(
+        backend="copilot", non_interactive=True, copilot_home=str(tmp_path / "dedicated"),
+    )
+
+    assert rc == SETUP_EXIT_NOT_READY
+    text = "".join(transcript)
+    assert text.index("Dedicated Copilot account directory") < text.index("ready: no")
+    assert text.index("Step 1: Agent CLI Backend") < text.index("ready: no")
+    assert text.index("Agent backend selected") < text.index("ready: no")
+    assert text.index("ready: no") < text.index("if login is needed")

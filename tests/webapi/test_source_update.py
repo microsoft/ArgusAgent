@@ -4,8 +4,8 @@ import threading
 
 from fastapi.testclient import TestClient
 
-from argus_skill.apps.update import UpdateCheck, UpdateError, UpdateResult
-from argus_skill.webapi import server, source_update
+from argus.apps.update import UpdateCheck, UpdateError, UpdateResult
+from argus.webapi import server, source_update
 
 
 def _status(**overrides):
@@ -37,10 +37,10 @@ def test_source_update_routes_are_authenticated_and_dispatch_jobs(
     tmp_path, monkeypatch,
 ) -> None:
     calls: list[str] = []
-    monkeypatch.setattr(server, "read_source_update_status", lambda _root: _status())
+    monkeypatch.setattr(source_update, 'read_source_update_status', lambda _root: _status())
     monkeypatch.setattr(
-        server,
-        "start_source_update",
+        source_update,
+        'start_source_update',
         lambda _root, *, action: calls.append(action) or _status(
             state="checking" if action == "check" else "updating",
             running=True,

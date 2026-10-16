@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from argus_skill.agent_cli.agent_cli_runner import AgentCliRunner, RunnerOptions
-from argus_skill.core import sandbox
+from argus.agent_cli.agent_cli_runner import AgentCliRunner, RunnerOptions
+from argus.core import sandbox
 
 _ENV = "ARGUS_SKILL_ENGINEER_SANDBOX"
 
@@ -79,8 +79,8 @@ def test_writable_roots_excludes_gate_brain_and_package():
     assert home / ".argus-skill" in forbidden
     assert home / ".codex" in forbidden
     # the package root is forbidden
-    import argus_skill
-    package_root = Path(argus_skill.__file__).resolve().parent.parent
+    import argus
+    package_root = Path(argus.__file__).resolve().parent.parent
     assert package_root in forbidden
 
 
@@ -331,7 +331,7 @@ def test_build_codex_command_never_rootless_sandbox():
 
 
 def test_chokepoint_skips_non_codex_backend(gate_on):
-    from argus_skill.agent_cli.runner_backend import BACKEND_CLAUDE
+    from argus.agent_cli.runner_backend import BACKEND_CLAUDE
     r = AgentCliRunner(agent_bin="claude", backend=BACKEND_CLAUDE)
     o = r._apply_sandbox_policy(RunnerOptions(dangerous_yolo=True, working_dir="/wd"))
     assert o.sandbox_mode is None and o.dangerous_yolo is True
@@ -368,7 +368,7 @@ def test_pip_user_pinned_off_on_the_yolo_inherit_path(gate_off):
     configure_framework_python_env, which the daemon life worker
     (_rf_bootstrap_environment) and the CLI main both run before spawning any
     child shell."""
-    from argus_skill.core.runtime_env import configure_framework_python_env
+    from argus.core.runtime_env import configure_framework_python_env
 
     runner = _codex_runner()
     options = runner._apply_sandbox_policy(
@@ -564,6 +564,45 @@ def test_isolated_workdir_fails_closed_without_bubblewrap(
 
 
 @pytest.mark.skipif(os.name != "posix", reason="requires POSIX worktree isolation")
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX worktree isolation")
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_isolated_workdir_references_only_the_dedicated_account(
+    tmp_path, monkeypatch, platform,
+) -> None:
+    home = tmp_path / "home"
+    account = home / "dedicated"
+    workdir = tmp_path / "worktree"
+    account.mkdir(parents=True)
+    workdir.mkdir()
+    config = account / "config.json"
+    config.write_text('{"authTokens":{"second":"fake-token"}}')
+    monkeypatch.setattr(sandbox.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(sandbox.sys, "platform", platform)
+    monkeypatch.setattr(
+        sandbox.shutil, "which",
+        lambda name: "/usr/bin/" + name if name == (
+            "bwrap" if platform == "linux" else "sandbox-exec"
+        ) else None,
+    )
+    private = sandbox.isolated_copilot_home(workdir)
+    private.mkdir(parents=True)
+    (private / "settings.json").write_text('{"stale":"another-account"}')
+
+    command = sandbox.isolated_workdir_command(
+        ["/usr/bin/true"], working_dir=workdir, account_home=account,
+    )
+
+    assert (private / "config.json").is_symlink()
+    assert (private / "config.json").resolve() == config
+    assert not (private / "settings.json").exists()
+    assert config.read_text() == '{"authTokens":{"second":"fake-token"}}'
+    if platform == "linux":
+        index = command.index(str(config))
+        assert command[index - 1:index + 2] == ["--ro-bind", str(config), str(config)]
+    else:
+        assert not (workdir / ".argus-self-maintenance-runtime/seatbelt-home/.copilot/config.json").exists()
+
+
 def test_isolated_workdir_uses_macos_sandbox_exec_without_bubblewrap(
     tmp_path,
     monkeypatch,
@@ -647,7 +686,7 @@ def test_codex_sandbox_args_sandboxed_when_on(gate_on):
 def test_no_hardcoded_bypass_left_in_subagent_spawns():
     """Every codex spawn must route through the gated policy. The only remaining
     literal bypass is the legacy default-OFF fallback in the runner/policy."""
-    import argus_skill.tools.subagent._core as sub
+    import argus.tools.subagent._core as sub
     src = Path(sub.__file__).read_text(encoding="utf-8")
     assert "--dangerously-bypass-approvals-and-sandbox" not in src
 
@@ -663,8 +702,8 @@ def test_no_raw_codex_spawn_bypasses_gate_anywhere():
     ``_apply_sandbox_policy`` gate that used to live inline in
     ``agent_cli_runner.py``; it is the same single chokepoint, just split into
     its own module, so it is allowed alongside the other two."""
-    import argus_skill
-    pkg_root = Path(argus_skill.__file__).resolve().parent
+    import argus
+    pkg_root = Path(argus.__file__).resolve().parent
     allowed = {
         "agent_cli/agent_cli_runner.py",
         "agent_cli/_sandbox_commands.py",
@@ -684,7 +723,7 @@ def test_no_raw_codex_spawn_bypasses_gate_anywhere():
 
 def test_teammate_has_no_harness_forced_research_spawn():
     """Teammates use the normal reviewed mission path, not a second CLI spawn."""
-    import argus_skill.team.teammate_entry as te
+    import argus.team.teammate_entry as te
 
     src = Path(te.__file__).read_text(encoding="utf-8")
     assert "_forced_web_research" not in src

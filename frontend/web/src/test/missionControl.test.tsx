@@ -1,10 +1,77 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { emptyMissionView, reduceMissionViewEvent } from '../../../core/src/missionView';
+import type { MissionView, Snapshot } from '../../../core/src/types';
 import { compactMissionDag, MissionControl } from '../components/MissionControl';
+import { I18nProvider } from '../i18n';
+import { AGENT_ROLES } from '../lib/agentRoles';
+
+function missionSnapshot(view: MissionView, status: string, alive = true): Snapshot {
+  return {
+    session: { id: 's-research', display_name: 'Research', objective: 'Complete the overall research goal', cwd: '/workspace', last_active: 100 },
+    daemon: { alive, pid: alive ? 1 : null, uptime_seconds: 20, backend: 'pi', global_daily_cap_usd: null },
+    roles: [],
+    backlog: [{ id: view.mission.id, title: view.mission.title, objective: view.mission.objective, status, priority: 1 }],
+    recent_events: [],
+  };
+}
 
 describe('MissionControl', () => {
+  it('leads with the accepted review and keeps the earlier execution note available', () => {
+    const view = emptyMissionView();
+    view.mission.status = 'completed';
+    view.mission.summary = 'Implementation ready; ask the Reviewer to run the checks.';
+    view.outcome = { execution_status: 'completed', review_status: 'done' };
+    view.review = { status: 'done', reason: 'All six independent checks passed.', rejected_attempts: 0 };
+    const html = renderToStaticMarkup(<MissionControl view={view} />);
+    const headline = html.match(/data-testid="mission-result-summary">([\s\S]*?)<\/div>/)?.[1];
+    expect(headline).toContain('All six independent checks passed.');
+    expect(headline).not.toContain('ask the Reviewer');
+    expect(html).toContain('Execution note');
+    expect(html).toContain(view.mission.summary);
+
+    view.mission.status = 'working';
+    const running = renderToStaticMarkup(<MissionControl view={view} />);
+    expect(running.match(/data-testid="mission-result-summary">([\s\S]*?)<\/div>/)?.[1]).toContain('ask the Reviewer');
+  });
+  it('gives an idle project one useful entry while retaining real history and unreadable state', () => {
+    const view = emptyMissionView();
+    const snapshot: Snapshot = {
+      session: { id: 'empty', display_name: 'Project', objective: 'Compare the two measured implementations.', cwd: '/workspace', last_active: 1 },
+      daemon: { alive: false, pid: null, uptime_seconds: null, backend: null, global_daily_cap_usd: null },
+      roles: [], backlog: [], recent_events: [],
+    };
+    const initial = renderToStaticMarkup(<MissionControl view={view} snapshot={snapshot} onAsk={() => {}} />);
+    expect(initial).toContain('data-testid="project-ready"');
+    expect(initial).toContain('Compare the two measured implementations.');
+    expect(initial).not.toContain('Task replay');
+    expect(initial).not.toContain('No capabilities');
+    view.timeline = [{ id: 'checked', ts: 100, type: 'round.review.completed', role: 'reviewer', title: 'Measured comparison', detail: 'Both implementations produced the same output on 20 cases.', tone: 'success' }];
+    const history = renderToStaticMarkup(<MissionControl view={view} snapshot={snapshot} />);
+    expect(history).not.toContain('data-testid="project-ready"');
+    expect(history).toContain('Both implementations produced the same output on 20 cases.');
+    view.timeline = [];
+    snapshot.daemon.read_status = 'error';
+    const unreadable = renderToStaticMarkup(<MissionControl view={view} snapshot={snapshot} />);
+    expect(unreadable).not.toContain('data-testid="project-ready"');
+  });
+  it.each(AGENT_ROLES)('localizes the %s card activity from a Chinese mission view', (name) => {
+    const view = emptyMissionView();
+    view.language = 'zh';
+    const role = view.roles.find((candidate) => candidate.role === name)!;
+    Object.assign(role, { label: 'using a tool', kind: 'live_activity', status: 'active' });
+    vi.stubGlobal('localStorage', { getItem: () => 'zh-CN' });
+    try {
+      const markup = renderToStaticMarkup(<I18nProvider><MissionControl view={view} /></I18nProvider>);
+      const team = markup.match(/<section[^>]*aria-label="团队">([\s\S]*?)<\/section>/)?.[1];
+      expect(team).toContain('正在使用工具');
+      expect(team).not.toContain('using a tool');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('renders real DAG, capability, replay, and git state', () => {
     const view = emptyMissionView();
     view.mission.objective = 'Optimize FlashAttention on B200';
@@ -175,8 +242,68 @@ describe('MissionControl', () => {
 
     const markup = renderToStaticMarkup(<MissionControl view={complete} />);
 
-    expect(markup).toContain('Work completed — finished in 2m.');
+    expect(markup).toContain('This task: Work completed — finished in 2m.');
     expect(markup).toContain('The benchmark route is now stable.');
+  });
+
+  it.each(['en', 'zh-CN'] as const)('keeps a completed task and continuing runtime distinct in %s', (locale) => {
+    const view = emptyMissionView();
+    Object.assign(view.mission, {
+      id: 'evidence-check', title: 'Check this case', objective: 'Verify the recorded special case',
+      status: 'complete', elapsed_seconds: 125,
+    });
+    view.routing.continuous = true;
+    view.outcome.execution_status = 'completed';
+    const snapshot = missionSnapshot(view, 'done');
+    vi.stubGlobal('localStorage', { getItem: () => locale });
+    try {
+      const markup = renderToStaticMarkup(<I18nProvider><MissionControl view={view} snapshot={snapshot} /></I18nProvider>);
+      expect(markup).toContain(locale === 'zh-CN'
+        ? '本次任务：工作已完成 — 用时 2m。 等待下一步工作'
+        : 'This task: Work completed — finished in 2m. Waiting for the next step');
+      expect(markup).toContain('class="mission-status-line" data-tone="waiting"');
+      expect(markup).not.toContain(locale === 'zh-CN' ? '整体目标已完成' : 'Overall goal completed');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each(['en', 'zh-CN'] as const)('asks for the current paused task’s reply without promising automatic continuation in %s', (locale) => {
+    const view = emptyMissionView();
+    Object.assign(view.mission, {
+      id: 'submission-facts', title: 'Confirm submission facts', objective: 'Collect real author information',
+      status: 'ended',
+    });
+    view.outcome = { execution_status: 'ended', review_status: 'not_assessed', stage_certification: 'not_assessed', interruption_kind: 'operator_input_required', resumable: true };
+    const snapshot = missionSnapshot(view, 'paused_external_work');
+    snapshot.backlog[0].pending_question = 'Who are the authors?';
+    vi.stubGlobal('localStorage', { getItem: () => locale });
+    try {
+      const markup = renderToStaticMarkup(<I18nProvider><MissionControl view={view} snapshot={snapshot} /></I18nProvider>);
+      expect(markup).toContain(locale === 'zh-CN' ? '当前任务等待你的回复' : 'This task is waiting for your reply');
+      expect(markup).toContain(locale === 'zh-CN'
+        ? '请先回复这项任务的问题，再决定它的下一步。'
+        : 'Reply to this task’s question first, then decide its next step.');
+      expect(markup).not.toContain(locale === 'zh-CN'
+        ? 'Argus 会从已保存的进度继续。'
+        : 'Argus will continue from the saved progress.');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([true, false])('preserves the existing resume guidance without a current pending question (daemon alive: %s)', (alive) => {
+    const view = emptyMissionView();
+    Object.assign(view.mission, { id: 'current', title: 'Continue checks', status: 'ended' });
+    view.outcome = { execution_status: 'ended', review_status: 'not_assessed', stage_certification: 'not_assessed', interruption_kind: 'operator_pause', resumable: true };
+    const snapshot = missionSnapshot(view, 'paused_operator', alive);
+    snapshot.backlog.push({ id: 'history', title: 'An older question', objective: '', status: 'paused_external_work', pending_question: 'Old question', priority: 1 });
+    const markup = renderToStaticMarkup(<MissionControl view={view} snapshot={snapshot} />);
+    expect(markup).toContain(alive
+      ? 'Argus will continue from the saved progress.'
+      : 'The progress is saved. Run Argus again and it continues from where it stopped.');
+    expect(markup).not.toContain('This task is waiting for your reply');
+    expect(markup).not.toContain('Reply to this task’s question first');
   });
 
   it('renders escaped objective Markdown without exposing transport slashes', () => {
@@ -268,7 +395,7 @@ describe('MissionControl', () => {
     reduceMissionViewEvent(view, { type: 'round.review.completed', ts: 1, status: 'continue', reason: 'Add a control.' });
     reduceMissionViewEvent(view, { type: 'round.review.completed', ts: 2, status: 'continue', reason: 'Turn allowance reached.', next_action: 'Resume from checkpoint.', review_skipped: true });
     expect(view.review).toEqual({ status: 'skipped', reason: 'Turn allowance reached.', rejected_attempts: 1 });
-    expect(view.timeline.at(-1)).toMatchObject({ title: 'Review not performed', tone: 'info' });
+    expect(view.timeline.at(-1)).toMatchObject({ title: 'No review this round', tone: 'info' });
     expect(view.role_work.at(-1)).toMatchObject({ kind: 'review', status: 'skipped', detail: 'Turn allowance reached.\n\nNext action: Resume from checkpoint.' });
     expect(view.roles.find((role) => role.role === 'reviewer')?.status).toBe('waiting');
 

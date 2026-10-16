@@ -1,31 +1,35 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from argus_skill.core.models import RunnerResult
-from argus_skill.reviewer import Reviewer, ReviewerConfig
-from argus_skill.skills.vertical_select import persist_vertical
+from argus.core.models import RunnerResult
+from argus.reviewer import Reviewer, ReviewerConfig
+from argus.skills.vertical_select import persist_vertical
 
 
 class _Backend:
-    def __init__(self, status: str) -> None:
+    def __init__(self, status: str, venue_review: dict | None = None) -> None:
         self.status = status
+        self.venue_review = venue_review
         self.prompt = ""
         self.options = None
 
     def run_exec(self, **kwargs) -> RunnerResult:
         self.prompt = kwargs["prompt"]
         self.options = kwargs["options"]
-        return RunnerResult(
-            exit_code=0,
-            agent_messages=[json.dumps({
-                "status": self.status,
-                "reason": "Independent judgment from the inspected evidence.",
-                "next_action": "" if self.status == "done" else "Choose a better direction.",
-                "operator_question": None,
-            })],
+        from argus.core.role_tool_bridge import bridge_request
+
+        payload = {"review": "Independent judgment from the inspected evidence."}
+        if self.venue_review:
+            payload["recommendation"] = self.venue_review["recommendation"]
+        if self.status == "replan_requested":
+            payload["authority_impact"] = "technical"
+        bridge_request(
+            "ARGUS_PLUGIN_REVIEW",
+            "approve_review" if self.status == "done" else "replan_review",
+            payload, env=self.options.extension_env,
         )
+        return RunnerResult(exit_code=0)
 
 
 def test_research_target_is_prompt_context_not_output_schema(tmp_path: Path) -> None:
@@ -63,8 +67,20 @@ def test_research_target_is_prompt_context_not_output_schema(tmp_path: Path) -> 
 def test_reviewer_verdict_is_not_rewritten_from_formal_result_labels(
     tmp_path: Path,
 ) -> None:
-    persist_vertical(tmp_path, "research", research_target_level="doctoral")
-    backend = _Backend("done")
+    persist_vertical(
+        tmp_path, "research", research_target_level="doctoral", target_venue="ICLR",
+    )
+    paper = tmp_path / "paper"
+    paper.mkdir()
+    (paper / "main.tex").write_text("Current manuscript")
+    (paper / "main.pdf").write_bytes(b"Current rendered paper")
+    # The aspirational target must not override an independent acceptance of
+    # the current paper. Final submission still needs an actual venue judgment.
+    backend = _Backend("done", {
+        "venue": "ICLR", "recommendation": "weak_accept",
+        "acceptance_clear": True, "rationale": "The current evidence supports acceptance.",
+        "blocking_issues": [], "revision_required": False,
+    })
     decision = Reviewer(backend).evaluate(
         objective="judge the current result",
         round_index=1,
@@ -76,3 +92,4 @@ def test_reviewer_verdict_is_not_rewritten_from_formal_result_labels(
     )
 
     assert decision.status == "done"
+    assert decision.final_submission_certified

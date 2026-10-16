@@ -8,10 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from argus_skill.apps._runtime_execute import SkillLoopExecuteMixin
-from argus_skill.apps._runtime_helpers import _ExecuteState
-from argus_skill.core.operator_context import OperatorContextStore, append_directive
-from argus_skill.manager.plan_mode import Plan, PlanStep
+from argus.apps._runtime_execute import SkillLoopExecuteMixin
+from argus.apps._runtime_helpers import _ExecuteState
+from argus.core.operator_context import OperatorContextStore, append_directive
+from argus.manager.plan_mode import Plan, PlanStep
 
 
 class _Harness(SkillLoopExecuteMixin):
@@ -38,7 +38,7 @@ def _capture_plan(monkeypatch) -> list[str]:
         requests.append(objective)
         return Plan(objective, steps=[PlanStep("Continue from verified B")])
 
-    monkeypatch.setattr("argus_skill.manager.plan_mode.draft_plan", draft)
+    monkeypatch.setattr("argus.manager.plan_mode.draft_plan", draft)
     return requests
 
 
@@ -164,9 +164,9 @@ class _RuntimeProbe(_Harness):
 def test_supervisor_to_execute_to_planner_preserves_shared_continuation(
     tmp_path: Path, monkeypatch,
 ) -> None:
-    from argus_skill.life.memory import BacklogItem, LifeMemory
-    from argus_skill.life.supervisor import LifeSupervisor, LifeSupervisorConfig
-    from argus_skill.life.supervisor._mission_execution_helpers import _MissionRunState
+    from argus.life.memory import BacklogItem, LifeMemory
+    from argus.life.supervisor import LifeSupervisor, LifeSupervisorConfig
+    from argus.life.supervisor._mission_execution_helpers import _MissionRunState
 
     memory = LifeMemory.open(tmp_path / "life")
     sink = SimpleNamespace(handle_event=lambda _event: None)
@@ -204,9 +204,15 @@ def test_supervisor_to_execute_to_planner_preserves_shared_continuation(
     assert "A passed the original check." in requests[0]
     assert "B is complete; do not repeat A or B." in requests[0]
     assert "LATEST_OPERATOR_REPLY: continue C only" in requests[0]
+    from argus.core.operator_context import build_operator_context_block
+
+    engineer_context = runner.state.prelude_context_provider() + build_operator_context_block(
+        "engineer", memory.root, mission_id=item.id, consume_once=False,
+    )[0]
     for private in ("ENGINEER_ROLE_ONLY", "ENGINEER_ONLY_RUNTIME", "VERTICAL_ENGINEER_ONLY"):
         assert private not in requests[0]
-        assert private in runner.state.full_task
+        assert private not in runner.state.full_task
+        assert private in engineer_context
     assert runner.state.review_objective == (
         "Complete A then B then C.\n"
         "Acceptance check: C passes the original independent check\n"
@@ -218,3 +224,38 @@ def test_supervisor_to_execute_to_planner_preserves_shared_continuation(
             "engineer", consume_once=False,
         ).directives
     }
+
+
+def test_research_missions_skip_the_advisory_preview(tmp_path: Path, monkeypatch) -> None:
+    """The research Planner cycle owns the plan; the preview only burned tokens."""
+    harness, state = _Harness(tmp_path), _state(tmp_path)
+    requests = _capture_plan(monkeypatch)
+    state.config.active_vertical = "research"
+    events: list[dict] = []
+    harness._run_bounded_planning(
+        state, sink=SimpleNamespace(handle_event=events.append),
+        objective="写个iclr论文", original_objective="写个iclr论文",
+        preplanned=False, mission_id="mission-current",
+    )
+    assert requests == []
+    assert [event["type"] for event in events] == ["life.planner.preview_skipped"]
+    assert "Planner execution plan" not in state.full_task
+
+
+def test_other_verticals_get_an_outline_without_repository_tools(tmp_path: Path, monkeypatch) -> None:
+    harness, state = _Harness(tmp_path), _state(tmp_path)
+    captured: dict = {}
+
+    def draft(_backend, objective, **kwargs):
+        captured.update(kwargs)
+        return Plan(objective, steps=[PlanStep("Outline")])
+
+    monkeypatch.setattr("argus.manager.plan_mode.draft_plan", draft)
+    harness._run_bounded_planning(
+        state, sink=SimpleNamespace(handle_event=lambda _event: None),
+        objective="Fix the flaky test", original_objective="Fix the flaky test",
+        preplanned=False, mission_id="mission-current",
+    )
+    assert captured["allow_repository_inspection"] is False
+    assert captured["max_seconds"] == 180
+    assert "Planner execution plan" in state.full_task

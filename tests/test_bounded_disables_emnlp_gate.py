@@ -4,13 +4,15 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from argus_skill.apps._runtime import (
+import pytest
+
+from argus.apps._runtime_supervisor import (
     _build_supervisor_config as _build_runtime_supervisor_config,
 )
-from argus_skill.daemon.life_worker import (
+from argus.daemon.life_worker import (
     LifeWorkerConfig,
 )
-from argus_skill.daemon.life_worker import (
+from argus.daemon.life_worker import (
     _build_supervisor_config as _build_worker_supervisor_config,
 )
 
@@ -34,12 +36,13 @@ def test_worker_bounded_disables_final_certification_gate(tmp_path: Path):
         stop_event=threading.Event(),
         init_continuous=True,
         init_objective="bounded survey",
-        continuous_provider=lambda: (True, "bounded survey"),
+        continuous_provider=lambda: (True, "bounded survey", False),
         post_mission_hook=lambda: "",
     )
 
     assert cfg.open_ended is False
     assert cfg.final_certification_gate is False
+    assert cfg.budget.follow_operator_config is True
 
 
 def test_worker_unresolved_unbounded_project_does_not_assume_emnlp(tmp_path: Path):
@@ -49,13 +52,49 @@ def test_worker_unresolved_unbounded_project_does_not_assume_emnlp(tmp_path: Pat
         stop_event=threading.Event(),
         init_continuous=True,
         init_objective="open ended paper",
-        continuous_provider=lambda: (True, "open ended paper"),
+        continuous_provider=lambda: (True, "open ended paper", True),
         post_mission_hook=lambda: "",
     )
 
     assert cfg.open_ended is True
     assert cfg.paper_mission is False
     assert cfg.final_certification_gate is False
+
+
+def test_web_default_worker_does_not_require_an_open_campaign_certificate(tmp_path):
+    from types import SimpleNamespace
+
+    from argus.core.session import SessionMeta, write_session_meta
+    from argus.daemon._life_worker_runtime_context import _runner_namespace
+    from argus.life.event_log import JsonlEventSink
+    from argus.life.memory import LifeMemory
+    from argus.life.supervisor import LifeSupervisor
+    from argus.skills.vertical_select import persist_vertical
+    from argus.webapi.daemon_lifecycle import _worker_config_from_env
+
+    home = tmp_path / "home"
+    root = home / "projects" / "s-web-task"
+    root.mkdir(parents=True)
+    work = tmp_path / "work"
+    work.mkdir()
+    write_session_meta(home, SessionMeta(id=root.name, workdir=str(work)))
+    persist_vertical(root, "research")
+    worker = _worker_config_from_env(root, home)
+    assert worker.continuous_open_ended is True
+    assert _runner_namespace(worker).open_ended is False
+
+    config = _build_worker_supervisor_config(
+        worker, runtime_root=root, stop_event=threading.Event(),
+        init_continuous=False, init_objective="",
+        continuous_provider=lambda: (False, "", True), post_mission_hook=None,
+    )
+    assert config.open_ended is True
+    assert config.final_certification_gate is False
+    supervisor = LifeSupervisor(
+        memory=LifeMemory.open(root), runner=SimpleNamespace(),
+        sink=JsonlEventSink(None, life_dir=root), config=config,
+    )
+    assert supervisor._planner_config().open_ended is False
 
 
 def test_bounded_disables_final_certification_gate(tmp_path: Path):
@@ -96,7 +135,7 @@ def test_unresolved_unbounded_project_does_not_assume_emnlp(tmp_path: Path):
 
 
 def _config_for_vertical(tmp_path: Path, vertical: str, *, open_ended: bool = True):
-    from argus_skill.skills.vertical_select import persist_vertical
+    from argus.skills.vertical_select import persist_vertical
 
     root = tmp_path / "life"
     persist_vertical(root, vertical)  # the Manager's decision, persisted
@@ -115,11 +154,11 @@ def _config_for_vertical(tmp_path: Path, vertical: str, *, open_ended: bool = Tr
 
 
 def test_supervisor_paper_mission_off_for_optimize_vertical(tmp_path: Path):
-    # Regression: an optimize vertical (kernelbench) must NOT carry paper_mission
+    # Regression: an optimize vertical (math_synth) must NOT carry paper_mission
     # into the supervisor config, or every bounded backlog item gets the
     # "continue through adjacent paper blockers" guidance (see
     # _render_backlog_item_metadata). The gate follows the resolved vertical.
-    cfg = _config_for_vertical(tmp_path, "kernelbench")
+    cfg = _config_for_vertical(tmp_path, "math_synth")
     assert cfg.paper_mission is False
 
 
@@ -131,9 +170,13 @@ def test_supervisor_paper_mission_on_for_research_vertical(tmp_path: Path):
 
 def test_worker_supervisor_enables_paper_mode_only_after_research_resolution(
     tmp_path: Path,
+    monkeypatch,
 ):
-    from argus_skill.skills.vertical_select import persist_vertical
+    from argus.skills.vertical_select import persist_vertical
 
+    monkeypatch.delenv("ARGUS_SKILL_RESEARCH_PROFILE", raising=False)
+    monkeypatch.delenv("ARGUS_SKILL_RESEARCH_PROFILE_PATH", raising=False)
+    monkeypatch.setenv("ARGUS_SKILL_SPECIAL_PROMPTS_DIR", str(tmp_path / "no-prompts"))
     runtime_root = tmp_path / "life"
     persist_vertical(runtime_root, "research")
     cfg = _build_worker_supervisor_config(
@@ -142,7 +185,7 @@ def test_worker_supervisor_enables_paper_mode_only_after_research_resolution(
         stop_event=threading.Event(),
         init_continuous=True,
         init_objective="paper campaign",
-        continuous_provider=lambda: (True, "paper campaign"),
+        continuous_provider=lambda: (True, "paper campaign", True),
         post_mission_hook=lambda: "",
     )
 
@@ -150,3 +193,45 @@ def test_worker_supervisor_enables_paper_mode_only_after_research_resolution(
     assert cfg.final_certification_gate is True
     assert cfg.artifact_root == runtime_root
     assert cfg.project_worktree == tmp_path
+    assert "## Research team" in cfg.runtime_context
+    assert "verify changed claims" in cfg.runtime_context
+    assert "Do not verify your own output" not in cfg.runtime_context
+    assert "## Python environments" not in cfg.runtime_context
+
+
+@pytest.mark.parametrize(
+    ("stage", "has_paper_guidance"),
+    [("idea", False), ("experiment", False), ("paper", True), ("review", True)],
+)
+def test_direct_research_revision_guidance_preserves_bounded_stage(
+    tmp_path: Path,
+    monkeypatch,
+    stage: str,
+    has_paper_guidance: bool,
+) -> None:
+    from argus.core.pipeline_state import read_pipeline_state
+    from argus.skills.vertical_select import persist_vertical
+
+    monkeypatch.delenv("ARGUS_SKILL_RESEARCH_PROFILE", raising=False)
+    monkeypatch.delenv("ARGUS_SKILL_RESEARCH_PROFILE_PATH", raising=False)
+    monkeypatch.setenv("ARGUS_SKILL_SPECIAL_PROMPTS_DIR", str(tmp_path / "no-prompts"))
+    root = tmp_path / "life"
+    persist_vertical(root, "research", workflow_mode="direct", start_stage=stage)
+    before = read_pipeline_state(root)
+
+    cfg = _build_worker_supervisor_config(
+        _worker_cfg(tmp_path, open_ended=False),
+        runtime_root=root,
+        stop_event=threading.Event(),
+        init_continuous=False,
+        init_objective="work on the selected stage",
+        continuous_provider=None,
+        post_mission_hook=None,
+    )
+
+    assert ("## Research team" in cfg.runtime_context) is has_paper_guidance
+    assert "## Python environments" not in cfg.runtime_context
+    assert cfg.paper_mission is False
+    assert cfg.final_certification_gate is False
+    assert cfg.continuous is False
+    assert read_pipeline_state(root) == before

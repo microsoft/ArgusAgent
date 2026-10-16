@@ -7,13 +7,13 @@ from __future__ import annotations
 
 import pytest
 
-from argus_skill.life.router import (
+from argus.life.router import (
     ConfigIntent,
     build_front_door_prompt,
     classify_front_door,
 )
-from argus_skill.roles.prompts.planner import build_continuous_prompt
-from argus_skill.roles.prompts.voice import RESEARCHER_VOICE, RESEARCHER_VOICE_BRIEF
+from argus.roles.prompts.planner import build_continuous_prompt
+from argus.roles.prompts.voice import RESEARCHER_VOICE, RESEARCHER_VOICE_BRIEF
 
 
 class _FakeResult:
@@ -28,6 +28,30 @@ class _FakeResult:
         self.last_agent_message = msg
         self.role_decisions = list(role_decisions or [])
         self.fatal_error = fatal_error
+
+
+def test_subject_lookup_overrides_speculative_domain_and_fast_reply():
+    domains, modes, replies = [], [], []
+    answer = """ROUTE: SELF
+SELF_MODE: REPLY
+REPLY: This must be a virus.
+DOMAIN_ACTION: OFFER
+SKILL_VERTICAL: medical
+LOOKUP_SUBJECT: Jev
+"""
+    decision = classify_front_door("调研一下 Jev", run_exec=_exec(answer),
+                                   domain_sink=domains.append, self_mode_sink=modes.append, reply_sink=replies.append)
+    assert decision == (None, None, "simple")
+    assert domains == [{"action": "none", "vertical": "", "lookup_subject": "Jev"}]
+    assert modes == ["inspect"] and replies == []
+
+
+def test_subject_lookup_cannot_silently_replace_the_user_spelling():
+    domains = []
+    classify_front_door("调研一下 Jev", run_exec=_exec("ROUTE: SELF\nDOMAIN_ACTION: NONE\nSKILL_VERTICAL: medical\nLOOKUP_SUBJECT: JEPA"),
+                        domain_sink=domains.append)
+    assert not any(row.get("lookup_subject") for row in domains)
+    assert not any(row.get("vertical") for row in domains)
 
 
 def _exec(answer: str, exit_code: int = 0, fatal_error: str | None = None):
@@ -88,12 +112,13 @@ def test_front_door_prompt_has_a_strict_token_efficiency_budget(tmp_path) -> Non
     assert "VERTICAL:" not in prompt
     assert "TARGET:" not in prompt
     assert "explicit continue/resume after a pause is not a control token" in prompt
-    assert "resumed paused tasks with those effects are TEAM" in prompt
+    assert "resumes are TEAM" in prompt
     assert "WORKFLOW:" not in prompt
     assert "FAST_REPLY:" not in prompt
     assert "ACTIVE_MISSION: YES" in prompt
-    assert "Questions, requests for an explanation/status/capability check" in prompt
-    assert "Ambiguity defaults to no control" in prompt
+    assert "Questions, explanations, criticism and suggestions are NONE" in prompt
+    assert "Ambiguity is NONE" in prompt
+    assert all(mode in prompt for mode in ("PROJECTSTATUS", "ARGUSSTATUS", "HOSTSTATUS"))
     assert "FORBID only for an explicit command" in prompt
     assert "ALLOW only when explicitly re-enabled" in prompt
     assert "conversation, status, a quick inspection" in prompt
@@ -162,6 +187,16 @@ def test_front_door_uses_process_decision_without_final_message() -> None:
     assert replies == ["hello"]
 
 
+def test_classifier_without_reply_consumer_requests_only_routing():
+    def run(prompt):
+        assert "REPLY must be NONE" in prompt
+        assert "REPLY: NONE" in prompt
+        assert "REPLY: the full answer" not in prompt
+        return _FakeResult("ROUTE=SELF\nSELF_MODE=REPLY\nREPLY=NONE\nGREETING=NONE")
+
+    assert classify_front_door("Explain how SFT data is constructed.", run_exec=run) == (None, None, "simple")
+
+
 def test_name_axis_reports_concise_title_without_changing_route_contract() -> None:
     names: list[str] = []
     decision = classify_front_door(
@@ -215,6 +250,9 @@ def test_front_door_defaults_self_turn_to_inspection() -> None:
         ("DEBUG", "debug"),
         ("REVIEW", "review"),
         ("SYNTHESIZE", "synthesize"),
+        ("PROJECTSTATUS", "project_status"),
+        ("ARGUSSTATUS", "argus_status"),
+        ("HOSTSTATUS", "host_status"),
     ],
 )
 def test_front_door_selects_local_worker_mode(token: str, mode: str) -> None:

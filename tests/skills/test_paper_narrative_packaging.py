@@ -4,35 +4,37 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-import argus_skill
-from argus_skill.core.manuscript_narrative_runtime import (
+import pytest
+
+import argus
+from argus.core.manuscript_narrative_runtime import (
     isolated_pdf_workspace,
     prepare_narrative_snapshot,
     rendered_pdf_freshness,
     snapshot_after_edit,
 )
-from argus_skill.core.pipeline_state import read_pipeline_state, write_pipeline_state
-from argus_skill.reviewer._core import ReviewerConfig, _parallel_final_review_passes
-from argus_skill.roles.prompts import ChecklistMode, resolve_role_prompt
-from argus_skill.roles.prompts.engineer import NARRATIVE_EDIT, mission_request
-from argus_skill.roles.prompts.reviewer import (
+from argus.core.pipeline_state import read_pipeline_state, write_pipeline_state
+from argus.reviewer._core import ReviewerConfig, _parallel_final_review_passes
+from argus.roles.prompts import ChecklistMode, resolve_role_prompt
+from argus.roles.prompts.engineer import NARRATIVE_EDIT, mission_request
+from argus.roles.prompts.reviewer import (
     COLD_READ,
     SCIENCE_LOSS_CHECK,
     evaluate_request,
 )
-from argus_skill.skills.vertical_select import persist_vertical
-from argus_skill.verticals._base import load_vertical_contract
-from argus_skill.verticals.research.academic_language_review import (
+from argus.skills.vertical_select import persist_vertical
+from argus.verticals._base import load_vertical_contract
+from argus.verticals.research.academic_language_review import (
     _abstract_quality_issue_specs,
     _neutral_language_facts,
     generate_academic_language_review,
 )
-from argus_skill.verticals.research.prompt_policy import render_role_prompt_fragment
-from argus_skill.verticals.research.stages import STAGE_CHECKLISTS
+from argus.verticals.research.prompt_policy import render_role_prompt_fragment
+from argus.verticals.research.stages import STAGE_CHECKLISTS
 
 
 def _research_skill(relative: str) -> str:
-    root = Path(argus_skill.__file__).parent / "verticals" / "research" / "skills"
+    root = Path(argus.__file__).parent / "verticals" / "research" / "skills"
     return " ".join((root / relative).read_text(encoding="utf-8").lower().split())
 
 
@@ -50,12 +52,14 @@ def test_drafting_lets_the_venue_and_claim_decide_the_form() -> None:
         assert "170" not in text
         assert "five-sentence" not in text
     assert "hedge a sentence only when the evidence for that sentence" in drafting
-    assert "terms for internal task limits, declarations of readiness, stage decisions" in drafting
+    assert "internal task routing, review status and process bookkeeping" in drafting
+    assert "preserve established scientific terminology" in drafting
+    assert "do not rename legitimate terms to satisfy a word list" in drafting
     assert "legitimate paper when its evidence is as complete" in drafting
 
 
 def test_drafting_follows_the_craft_reference() -> None:
-    root = Path(argus_skill.__file__).parent / "verticals" / "research" / "skills"
+    root = Path(argus.__file__).parent / "verticals" / "research" / "skills"
     craft = (root / "engineer" / "references" / "paper-writing-craft.md").read_text(
         encoding="utf-8"
     )
@@ -77,7 +81,7 @@ def test_drafting_follows_the_craft_reference() -> None:
 
 
 def test_no_research_prompt_or_skill_carries_a_writing_quota() -> None:
-    root = Path(argus_skill.__file__).parent / "verticals" / "research"
+    root = Path(argus.__file__).parent / "verticals" / "research"
     offenders = []
     for path in list(root.rglob("*.py")) + list(root.rglob("*.md")):
         text = path.read_text(encoding="utf-8").lower()
@@ -128,6 +132,9 @@ def test_paper_engineer_prompt_carries_the_writing_standard() -> None:
     assert "a headline number may recur" in prompt
     assert "method-by-dataset-by-metric" in prompt
     assert "translate any workflow or evidence-bookkeeping language" in prompt
+    assert "preserve established scientific terminology" in prompt
+    assert "`certified bounds`, `communication gates`, `communication rounds`" in prompt
+    assert "never appear in the manuscript" not in prompt
 
 
 def test_integrated_reviewer_judges_as_a_venue_reviewer() -> None:
@@ -144,6 +151,8 @@ def test_integrated_reviewer_judges_as_a_venue_reviewer() -> None:
     assert "170" not in prompt
     assert "headline figure that recurs" in prompt
     assert "do not ask for more hedging than the evidence requires" in prompt
+    assert "judge terms by their scientific meaning, not a banned-word list" in prompt
+    assert "preserve legitimate scientific terminology" in prompt
 
 
 def test_operation_prompts_enforce_narrative_and_cold_read_input_boundaries(
@@ -157,20 +166,24 @@ def test_operation_prompts_enforce_narrative_and_cold_read_input_boundaries(
     paper.mkdir()
     (paper / "REVIEW.md").write_text("SECRET_PRIOR_REVIEW", encoding="utf-8")
 
-    narrative = render_role_prompt_fragment(
-        role="engineer",
-        operation=NARRATIVE_EDIT,
-        stage="review",
-        scope="",
-        project_root=tmp_path,
+    from argus.verticals.research.prompt_policy import (
+        render_role_prompt_context,
     )
-    cold = render_role_prompt_fragment(
-        role="reviewer",
-        operation=COLD_READ,
-        stage="review",
-        scope="",
-        project_root=tmp_path,
-    )
+
+    def rendered(role: str, operation: str) -> str:
+        # The static policy and the live notes reach the role as one prompt;
+        # the notes ride in the per-turn context so the policy stays cacheable.
+        selection = dict(
+            role=role, operation=operation, stage="review", scope="", project_root=tmp_path,
+        )
+        return (
+            render_role_prompt_fragment(**selection)
+            + "\n\n"
+            + render_role_prompt_context(**selection)
+        )
+
+    narrative = rendered("engineer", NARRATIVE_EDIT)
+    cold = rendered("reviewer", COLD_READ)
 
     assert "UNIQUE_EVIDENCE_ROLE_MAP" in narrative
     assert "SECRET_PRIOR_REVIEW" not in narrative
@@ -229,7 +242,7 @@ def test_prompt_catalog_accepts_research_operations(tmp_path: Path) -> None:
     assert "overwrite paper/REVIEW.md" not in cold.role_banner
     assert "overwrite paper/REVIEW.md" not in science.role_banner
     assert contract.banner("reviewer") in integrated.role_banner
-    assert "overwrite paper/REVIEW.md" in integrated.role_banner
+    assert "you own paper/REVIEW.md" in integrated.role_banner
     assert contract.engineer_operation("paper") == "author_draft"
     assert contract.engineer_operation("review") == "narrative_edit"
 
@@ -267,7 +280,16 @@ def test_internal_snapshot_is_immutable_and_cold_workspace_contains_only_pdf(
 
 def test_post_edit_passes_use_snapshot_and_pdf_only_cold_workspace(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from argus.core import manuscript_narrative_runtime
+
+    def render_fixture(paper):
+        (paper / "pages").mkdir()
+        (paper / "pages" / "page-001.png").write_bytes(b"rendered-page")
+        (paper / "main.txt").write_text("PDF-derived text")
+
+    monkeypatch.setattr(manuscript_narrative_runtime, "_prepare_readable_pdf", render_fixture)
     project = tmp_path / "project"
     state = tmp_path / "state"
     paper = project / "paper"
@@ -345,9 +367,48 @@ def test_post_edit_passes_use_snapshot_and_pdf_only_cold_workspace(
     science_prompt = runner.shared.calls["reviewer-scientificloss"]["prompt"]
     cold_call = runner.shared.calls["reviewer-coldread"]
     assert str(snapshot / "before" / "paper") in science_prompt
-    assert cold_call["files"] == ["paper/main.pdf"]
+    assert cold_call["files"] == [
+        "paper/main.pdf", "paper/main.txt", "paper/pages/page-001.png",
+    ]
     assert cold_call["working_dir"] != project
     assert "SECRET_PRIOR_REVIEW" not in cold_call["prompt"]
+
+
+def test_readable_review_workspace_renders_every_page_from_only_the_current_pdf(
+    tmp_path: Path,
+) -> None:
+    fitz = pytest.importorskip("pymupdf")
+    project = tmp_path / "project"
+    paper = project / "paper"
+    paper.mkdir(parents=True)
+    (paper / "main.tex").write_text("PRIVATE_SOURCE_DO_NOT_COPY")
+    (paper / "REVIEW.md").write_text("STALE_PASS_DO_NOT_COPY")
+    (paper / "preview").mkdir()
+    (paper / "preview" / "page-001.png").write_bytes(b"STALE_PREVIEW")
+    with fitz.open() as doc:
+        doc.new_page(width=300, height=400).insert_text((25, 40), "Current rendered finding")
+        doc.new_page(width=400, height=300).insert_text((25, 40), "Second landscape page")
+        doc.save(paper / "main.pdf")
+    original = (paper / "main.pdf").read_bytes()
+
+    with isolated_pdf_workspace(project, readable=True) as isolated:
+        isolated_paper = isolated / "paper"
+        assert (isolated_paper / "main.pdf").read_bytes() == original
+        text = (isolated_paper / "main.txt").read_text()
+        assert "## PDF page 1" in text and "Current rendered finding" in text
+        assert "## PDF page 2" in text and "Second landscape page" in text
+        assert "PRIVATE_SOURCE" not in text and "STALE_PASS" not in text
+        images = sorted((isolated_paper / "pages").glob("*.png"))
+        assert [p.name for p in images] == ["page-001.png", "page-002.png"]
+        assert [(fitz.Pixmap(str(p)).width, fitz.Pixmap(str(p)).height) for p in images] == [
+            (600, 800), (800, 600),
+        ]
+        assert not (isolated_paper / "REVIEW.md").exists()
+        assert not (isolated_paper / "main.tex").exists()
+        assert not (isolated_paper / "preview").exists()
+    assert not isolated.exists()
+    assert not (paper / "pages").exists()
+    assert not (paper / "main.txt").exists()
 
 
 def test_narrative_measurements_are_candidates_not_repetition_penalties() -> None:

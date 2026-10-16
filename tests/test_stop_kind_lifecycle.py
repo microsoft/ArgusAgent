@@ -4,16 +4,17 @@ from pathlib import Path
 
 import pytest
 
-from argus_skill.adapters.agent_cli_backend import _raw_backend_stop_kind
-from argus_skill.core.models import ReviewDecision, RunnerResult
-from argus_skill.core.pipeline_state import read_pipeline_state, write_pipeline_state
-from argus_skill.engineer.runner import (
+from argus.adapters.agent_cli_backend import _raw_backend_stop_kind
+from argus.agent_cli._event_consumers import EventConsumerMixin
+from argus.core.models import ReviewDecision, RunnerResult
+from argus.core.pipeline_state import read_pipeline_state, write_pipeline_state
+from argus.engineer.runner import (
     EngineerConfig,
     SupervisedConfig,
     SupervisedEngineer,
 )
-from argus_skill.reviewer import ReviewerConfig
-from argus_skill.skills.vertical_select import persist_vertical
+from argus.reviewer import ReviewerConfig
+from argus.skills.vertical_select import persist_vertical
 
 
 class _StoppedEngineer:
@@ -66,6 +67,7 @@ def _run_engineer(
     ("stop_kind", "expected_status"),
     [
         ("budget_exhausted", "paused_budget"),
+        ("cost_unreconciled", "paused_cost"),
         ("provider_cooldown", "paused_provider_cooldown"),
         ("provider_fence", "paused_provider_fence"),
         ("daemon_shutdown", "paused_daemon_shutdown"),
@@ -87,6 +89,66 @@ def test_external_stops_do_not_enter_backend_failure_retry(
         for event in events
         if event.get("type") == "round.backend_failure.backoff"
     ]
+
+
+def test_copilot_trial_quota_error_pauses_after_one_attempt(tmp_path: Path) -> None:
+    message = "402 Insufficient trial tokens for this request."
+    state = (None, False, False, None)
+    for event in [
+        {"type": "session.error", "data": {
+            "errorType": "query", "message": message, "statusCode": 402,
+        }},
+        {"type": "result", "sessionId": "trial-session", "exitCode": 1},
+    ]:
+        state = EventConsumerMixin._consume_copilot_event(
+            event=event, thread_id=state[0], agent_messages=[],
+            turn_completed=state[1], turn_failed=state[2], fatal_error=state[3],
+        )
+    assert state == ("trial-session", False, True, f"query: HTTP 402: {message}")
+    stop_kind = _raw_backend_stop_kind(fatal_error=state[3], exit_code=1)
+    assert stop_kind == "provider_fence"
+    status, backend, events = _run_engineer(tmp_path, stop_kind)
+    assert status == "paused_provider_fence"
+    assert backend.calls == 1
+    assert not any(event["type"] == "round.backend_failure.backoff" for event in events)
+
+
+def test_native_delegate_query_error_does_not_fail_parent_turn() -> None:
+    state = EventConsumerMixin._consume_copilot_event(
+        event={"type": "session.error", "agentId": "delegate", "data": {
+            "errorType": "query", "message": "402 Insufficient trial tokens for this request.",
+            "statusCode": 402,
+        }},
+        thread_id="parent", agent_messages=[], turn_completed=False,
+        turn_failed=False, fatal_error=None,
+    )
+    assert state == ("parent", False, False, None)
+
+
+@pytest.mark.parametrize("message", [
+    "402 Insufficient trial tokens for this request.",
+    '402 {"error":{"code":"trial_quota_exceeded","message":"Insufficient trial tokens for this request."}}',
+    "HTTP 402: Payment Required",
+])
+def test_trial_quota_receipts_are_provider_fences(message: str) -> None:
+    assert _raw_backend_stop_kind(fatal_error=message, exit_code=1) == "provider_fence"
+
+
+def test_rejected_trial_request_does_not_retry_as_a_backend_outage(tmp_path: Path) -> None:
+    message = (
+        "HTTP 400: 400 Unsupported trial request; use text/tool "
+        "Chat Completions with model argus-trial."
+    )
+    stop_kind = _raw_backend_stop_kind(fatal_error=message, exit_code=1)
+
+    assert stop_kind == "permanent_error"
+    status, backend, events = _run_engineer(tmp_path, stop_kind)
+    assert status == "error"
+    assert backend.calls == 1
+    assert not any(event["type"] == "round.backend_failure.backoff" for event in events)
+    assert _raw_backend_stop_kind(
+        fatal_error="HTTP 400: context length exceeded", exit_code=1,
+    ) == "backend_unavailable"
 
 
 def test_backend_unavailable_holds_identical_failures_until_the_round_budget(
@@ -113,6 +175,7 @@ def test_provider_max_budget_is_a_fence_not_backend_failure() -> None:
     ("fatal_error", "expected"),
     [
         ("External interrupt: daemon stop requested", "daemon_shutdown"),
+        ("External interrupt: unresolved provider cost: 1 call(s) awaiting usage reconciliation", "cost_unreconciled"),
         ("External interrupt: operator pause requested: hold", "operator_pause"),
         ("External interrupt: operator abort requested: stop", "operator_abort"),
     ],
@@ -211,7 +274,7 @@ def test_post_edit_review_stop_kind_reaches_mission_status(
             raise AssertionError("integrated review must not run")
 
     monkeypatch.setattr(
-        "argus_skill.reviewer._core._parallel_final_review_passes",
+        "argus.reviewer._core._parallel_final_review_passes",
         lambda *_args, **_kwargs: ReviewDecision(
             status="blocked",
             reason="preliminary review stopped",
@@ -263,3 +326,32 @@ def test_post_edit_review_stop_kind_reaches_mission_status(
     assert review_events[0]["input_tokens"] == 6
     assert review_events[0]["output_tokens"] == 3
     assert review_events[0]["premium_requests"] == 1.0
+
+
+def test_stop_kinds_have_reader_facing_clauses_in_both_languages() -> None:
+    from argus.core.stop_kinds import (
+        STOP_KINDS,
+        pause_status_clause,
+        stop_kind_clause,
+    )
+
+    for kind in STOP_KINDS:
+        english = stop_kind_clause(kind)
+        chinese = stop_kind_clause(kind, chinese=True)
+        assert english and chinese
+        for text in (english, chinese):
+            assert "_" not in text
+            for word in ("backend", "daemon", "provider_", "stop_kind"):
+                assert word not in text.lower()
+    assert stop_kind_clause("not-a-kind") == ""
+    assert stop_kind_clause(None) == ""
+    assert stop_kind_clause("daemon_shutdown") == "Argus was stopped"
+    assert stop_kind_clause("daemon_shutdown", chinese=True) == "Argus 被停止"
+
+    assert pause_status_clause("paused_daemon_shutdown") == "Argus was stopped"
+    assert pause_status_clause("paused_budget") == "the project reached its budget limit"
+    assert pause_status_clause("paused_external_work", chinese=True) == (
+        "需要先等 Argus 之外的工作完成"
+    )
+    assert pause_status_clause("paused_something_new") == "the work was paused"
+    assert pause_status_clause("failed") == ""

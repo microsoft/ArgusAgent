@@ -13,7 +13,7 @@ model (``resolve_pricing_model`` + ``AgentCliBackend._configured_pricing_model``
 while a genuinely unknown *pinned* model remains honestly ``unpriced``.
 
 We never spawn a real codex CLI: ``AgentCliRunner.run_exec`` is monkeypatched to
-return a synthetic result, mirroring ``test_unpriced_call_blocks_next_provider_spawn``.
+return a synthetic result, mirroring ``test_unpriced_call_does_not_block_next_provider_spawn``.
 """
 from __future__ import annotations
 
@@ -22,12 +22,12 @@ from typing import Any
 
 import pytest
 
-from argus_skill.adapters.agent_cli_backend import (
+from argus.adapters.agent_cli_backend import (
     AgentCliBackend,
     resolve_codex_execution_model,
     resolve_pricing_model,
 )
-from argus_skill.core.models import RunnerOptions
+from argus.core.models import RunnerOptions
 
 from .test_agent_cli_backend import _make_cli_result
 
@@ -37,47 +37,37 @@ def _isolate_codex_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ARGUS_SKILL_CODEX_CONFIG", raising=False)
 
 
+@pytest.fixture
+def codex_config_dir(tmp_path, monkeypatch):
+    directory = tmp_path / "codex"
+    directory.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(directory))
+    return directory
+
+
 # --- pure helper: model selection + traceable fallback source ---------------
 
-def test_resolve_pricing_model_prefers_response_model() -> None:
-    assert resolve_pricing_model("gpt-5.5", "req", "def") == ("gpt-5.5", "")
-
-
-def test_resolve_pricing_model_falls_back_to_request_when_response_empty() -> None:
-    assert resolve_pricing_model("", "req-model", "def") == ("req-model", "request")
-    # whitespace-only response is treated as empty
-    assert resolve_pricing_model("   ", "req-model", "def") == ("req-model", "request")
-
-
-def test_resolve_pricing_model_falls_back_to_configured_default() -> None:
-    assert resolve_pricing_model("", "", "gpt-5.5") == (
-        "gpt-5.5",
-        "configured_default",
-    )
-    assert resolve_pricing_model(None, None, "gpt-5.5") == (
-        "gpt-5.5",
-        "configured_default",
-    )
-
-
-def test_resolve_pricing_model_empty_when_nothing_usable() -> None:
-    # No reliable fallback -> stay empty so pricing HONESTLY blocks (never fake
-    # a priced model).
-    assert resolve_pricing_model("", "", "") == ("", "none")
-    assert resolve_pricing_model(None, None, None) == ("", "none")
+@pytest.mark.parametrize(("response", "requested", "configured", "expected"), [
+    pytest.param("gpt-5.5", "req", "def", ("gpt-5.5", ""), id="response"),
+    pytest.param("", "req-model", "def", ("req-model", "request"), id="request"),
+    pytest.param("   ", "req-model", "def", ("req-model", "request"), id="blank-response"),
+    pytest.param("", "", "gpt-5.5", ("gpt-5.5", "configured_default"), id="configured"),
+    pytest.param(None, None, "gpt-5.5", ("gpt-5.5", "configured_default"), id="unset-request"),
+    pytest.param("", "", "", ("", "none"), id="empty"),
+    pytest.param(None, None, None, ("", "none"), id="unset"),
+])
+def test_resolve_pricing_model_precedence(response, requested, configured, expected) -> None:
+    assert resolve_pricing_model(response, requested, configured) == expected
 
 
 def test_configured_pricing_model_is_codex_only(
-    tmp_path,
+    codex_config_dir,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    codex_home = tmp_path / "codex"
-    codex_home.mkdir()
-    (codex_home / "config.toml").write_text(
+    (codex_config_dir / "config.toml").write_text(
         'model = "gpt-5.6-sol"\n',
         encoding="utf-8",
     )
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setenv("ARGUS_SKILL_MODEL", "claude-sonnet-5")
     backend = AgentCliBackend(backend="codex")
     assert backend._configured_pricing_model() == "gpt-5.6-sol"
@@ -103,16 +93,12 @@ def test_codex_execution_model_honors_final_cli_override() -> None:
 
 
 def test_codex_model_args_normalize_to_one_direct_flag(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
+    codex_config_dir,
 ) -> None:
-    codex_home = tmp_path / "codex"
-    codex_home.mkdir()
-    (codex_home / "config.toml").write_text(
+    (codex_config_dir / "config.toml").write_text(
         'model = "gpt-5.6-sol"\n',
         encoding="utf-8",
     )
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
     backend = AgentCliBackend(
         backend="codex",
         default_extra_args=["--model", "gpt-5.5"],
@@ -132,20 +118,16 @@ def test_codex_model_args_normalize_to_one_direct_flag(
 
 
 def test_codex_profile_model_is_pinned_without_dropping_profile(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
+    codex_config_dir,
 ) -> None:
-    codex_home = tmp_path / "codex"
-    codex_home.mkdir()
-    (codex_home / "config.toml").write_text(
+    (codex_config_dir / "config.toml").write_text(
         'model = "gpt-5.5"\n',
         encoding="utf-8",
     )
-    (codex_home / "research.config.toml").write_text(
+    (codex_config_dir / "research.config.toml").write_text(
         'model = "gpt-5.6-sol"\n',
         encoding="utf-8",
     )
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
     backend = AgentCliBackend(
         backend="codex",
         default_extra_args=["--profile", "research"],
@@ -162,24 +144,20 @@ def test_codex_profile_model_is_pinned_without_dropping_profile(
 
 
 def test_call_profile_replaces_default_profile_once(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
+    codex_config_dir,
 ) -> None:
-    codex_home = tmp_path / "codex"
-    codex_home.mkdir()
-    (codex_home / "config.toml").write_text(
+    (codex_config_dir / "config.toml").write_text(
         'model = "gpt-5.4"\n',
         encoding="utf-8",
     )
-    (codex_home / "default.config.toml").write_text(
+    (codex_config_dir / "default.config.toml").write_text(
         'model = "gpt-5.5"\n',
         encoding="utf-8",
     )
-    (codex_home / "call.config.toml").write_text(
+    (codex_config_dir / "call.config.toml").write_text(
         'model = "gpt-5.6-sol"\n',
         encoding="utf-8",
     )
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
     backend = AgentCliBackend(
         backend="codex",
         default_extra_args=["--profile", "default", "--strict-config"],
@@ -216,7 +194,6 @@ def _codex_backend(tmp_path, monkeypatch, *, model_env: str = "gpt-5.5"):
     project = root / "projects" / "p1"
     monkeypatch.setenv("ARGUS_SKILL_HOME", str(root))
     monkeypatch.setenv("ARGUS_SKILL_COST_CONTROL", "1")
-    monkeypatch.setenv("ARGUS_SKILL_UNPRICED_COST_POLICY", "block")
     monkeypatch.setenv("ARGUS_SKILL_CODEX_GUARD", "0")
     monkeypatch.setenv("ARGUS_SKILL_MODEL", model_env)
     codex_home = tmp_path / "codex"
@@ -271,9 +248,7 @@ def test_codex_call_without_pinned_model_is_priced_not_blocked(
         run_label="manager-route",
     )
     assert second.pricing_status == "priced"
-    assert "unresolved provider cost blocks new calls" not in str(
-        second.fatal_error or ""
-    )
+    assert not second.fatal_error
 
     state = json.loads((root / "cost-control.json").read_text())
     assert state["unresolved"] == []
@@ -285,12 +260,11 @@ def test_codex_call_without_pinned_model_is_priced_not_blocked(
     assert {row["model"] for row in usage_rows} == {"gpt-5.5"}
 
 
-def test_codex_unknown_pinned_model_remains_unpriced_and_obeys_budget_gate(
+def test_codex_unknown_pinned_model_remains_unpriced_without_blocking(
     tmp_path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # An unknown pinned model must remain unpriced; the configured block
-    # policy prevents further spending until that usage can be reconciled.
-    backend, root, _seen_models = _codex_backend(tmp_path, monkeypatch)
+    monkeypatch.setenv("ARGUS_SKILL_UNPRICED_COST_POLICY", "allow")
+    backend, root, seen_models = _codex_backend(tmp_path, monkeypatch)
 
     first = backend.run_exec(
         prompt="unknown price",
@@ -305,6 +279,9 @@ def test_codex_unknown_pinned_model_remains_unpriced_and_obeys_budget_gate(
 
     assert first.pricing_status == "unpriced"
     assert first.cost_usd is None
-    assert "unresolved provider cost" in second.fatal_error
-    assert second.stop_kind == "budget_exhausted"
-    assert second.pricing_status == "not_billed"
+    assert not second.fatal_error
+    assert second.exit_code == 0
+    assert second.pricing_status == "priced"
+    assert seen_models == ["future-model", "gpt-5.6-sol"]
+    state = json.loads((root / "cost-control.json").read_text())
+    assert [row["call_id"] for row in state["unresolved"]] == [first.call_id]

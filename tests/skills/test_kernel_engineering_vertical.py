@@ -2,21 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from argus_skill.skills.builtins import seed_builtin_skills_for_vertical
-from argus_skill.skills.stage_machine import format_full_pipeline_checklist
-from argus_skill.skills.vertical_select import (
+from argus.skills.builtins import seed_builtin_skills_for_vertical
+from argus.skills.stage_machine import format_full_pipeline_checklist
+from argus.skills.vertical_select import (
     VERTICAL_PURPOSES,
     VERTICALS,
     persist_vertical,
     require_vertical,
 )
-from argus_skill.verticals._base import (
-    load_vertical,
-    load_vertical_contract,
-    vertical_completion_gate,
-    vertical_role_banner,
-    vertical_workflow_mode,
-)
+from argus.verticals._base import _contract, load_vertical, load_vertical_contract
 
 
 def test_kernel_engineering_is_known_direct_vertical(tmp_path: Path) -> None:
@@ -25,18 +19,18 @@ def test_kernel_engineering_is_known_direct_vertical(tmp_path: Path) -> None:
     persist_vertical(tmp_path, "kernel_engineering")
 
     mod = load_vertical("kernel_engineering")
-    assert vertical_completion_gate(mod) == "none"
-    assert vertical_workflow_mode(mod) == "direct"
+    assert _contract(mod).completion_gate == "none"
+    assert _contract(mod).workflow_mode == "direct"
     assert tuple(mod.STAGE_ORDER) == ("optimize",)
     assert mod.STAGE_PRIMARY_DELIVERABLES == {}
     assert "model inference/serving" in VERTICAL_PURPOSES["kernel_engineering"]
 
 
 def test_kernel_engineering_banner_prioritizes_direct_measured_work() -> None:
-    mod = load_vertical("kernel_engineering")
-    engineer = vertical_role_banner(mod, "engineer")
-    planner = vertical_role_banner(mod, "planner")
-    reviewer = vertical_role_banner(mod, "reviewer")
+    contract = load_vertical_contract("kernel_engineering")
+    engineer = contract.banner("engineer")
+    planner = contract.banner("planner")
+    reviewer = contract.banner("reviewer")
 
     assert "maximize the real kernel" in engineer
     assert "one coherent implementation" in engineer
@@ -125,7 +119,7 @@ def test_kernel_engineering_vertical_skills_are_packaged(tmp_path: Path) -> None
 def test_kernel_reference_guidance_does_not_gate_exploration() -> None:
     root = (
         Path(__file__).resolve().parents[2]
-        / "argus_skill"
+        / "argus"
         / "verticals"
         / "kernel_engineering"
     )

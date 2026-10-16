@@ -24,24 +24,26 @@ import time as real_time
 from pathlib import Path
 from types import SimpleNamespace
 
-from argus_skill.core.models import ReviewDecision, RunnerResult
-from argus_skill.engineer import round_execution as round_execution_module
-from argus_skill.engineer.round_stop_signals import (
+import pytest
+
+from argus.core.models import ReviewDecision, RunnerResult
+from argus.engineer import round_execution as round_execution_module
+from argus.engineer.round_stop_signals import (
     BACKEND_FAILURE_BACKOFF_CAP_SECONDS,
     backend_failure_hold_backoff_seconds,
     backend_failure_signature,
 )
-from argus_skill.engineer.runner import (
+from argus.engineer.runner import (
     EngineerConfig,
     SupervisedConfig,
     SupervisedEngineer,
 )
-from argus_skill.life.memory import BacklogItem, LifeMemory
-from argus_skill.life.supervisor._mission_execution_helpers import _MissionRunState
-from argus_skill.life.supervisor._mission_execution_runtime import (
+from argus.life.memory import BacklogItem, LifeMemory
+from argus.life.supervisor._mission_execution_helpers import _MissionRunState
+from argus.life.supervisor._mission_execution_runtime import (
     MissionExecutionRuntimeMixin,
 )
-from argus_skill.reviewer import ReviewerConfig
+from argus.reviewer import ReviewerConfig
 
 # --------------------------------------------------------------------------- #
 # Normalization + backoff units
@@ -127,10 +129,32 @@ class _StoppableEngineer(_ScriptedEngineer):
 
 
 def _rate_limited(seconds: int) -> RunnerResult:
+    """A session the provider ended the same way each time.
+
+    The record is a session death — the CLI exited without naming a cause —
+    which is what the failure streak and its hold are for. A record that
+    names an unreachable service (see ``_unreachable``) never reaches the
+    streak: it pauses for a provider cooldown instead.
+    """
+    return RunnerResult(
+        exit_code=2,
+        agent_messages=[],
+        fatal_error=(
+            "Process exited with code 2 before turn completion.\n"
+            f"turn ended after {seconds}s without a result"
+        ),
+    )
+
+
+def _unreachable(port: int) -> RunnerResult:
     return RunnerResult(
         exit_code=1,
         agent_messages=[],
-        fatal_error=f"Too Many Requests 429 (retry after {seconds}s)",
+        fatal_error=(
+            "Copilot CLI exited with code 1.\n"
+            f"Error: connect ECONNREFUSED 127.0.0.1:{port}\n"
+            "    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1555:16)"
+        ),
     )
 
 
@@ -204,7 +228,8 @@ def test_third_identical_failure_opens_the_circuit_with_an_hour_scale_hold(
     assert backoffs[0]["seconds"] == 60.0
     assert "times in a row" in backoffs[0]["text"]
     # The hold sleeps in short slices so a stop or abort signal can wake it.
-    assert sleeps == [10.0] * 6
+    assert sum(sleeps) == pytest.approx(60.0)
+    assert all(0 < seconds <= 0.2 for seconds in sleeps)
 
 
 def test_two_identical_failures_do_not_open_the_circuit_and_recovery_resets(
@@ -239,9 +264,16 @@ def test_mixed_failure_signatures_keep_the_ordinary_fail_fast(
     tmp_path: Path, monkeypatch,
 ) -> None:
     engineer = _ScriptedEngineer([
-        RunnerResult(exit_code=1, agent_messages=[], fatal_error="gateway timeout"),
         RunnerResult(
-            exit_code=1, agent_messages=[], fatal_error="connection reset by peer"
+            exit_code=2, agent_messages=[],
+            fatal_error="Process exited with code 2 before turn completion.",
+        ),
+        RunnerResult(
+            exit_code=1, agent_messages=[],
+            fatal_error=(
+                "Copilot CLI exited with code 1. It printed nothing on stderr; "
+                "its own log is under /srv/argus/copilot-home/logs."
+            ),
         ),
     ])
     status, _events, _sleeps, engineer = _run(
@@ -296,7 +328,8 @@ def test_a_successful_round_restarts_the_same_cause_count(
     assert reviewer.calls == 2
     assert [e["same_cause_streak"] for e in _backoff_events(events)] == [1, 2, 1, 2]
     assert all(not e.get("operator_alert") for e in _backoff_events(events))
-    assert sleeps == [0.5] * 4
+    assert sum(sleeps) == pytest.approx(2.0)
+    assert all(0 < seconds <= 0.2 for seconds in sleeps)
 
 
 def test_a_wait_round_restarts_the_same_cause_count(
@@ -305,7 +338,7 @@ def test_a_wait_round_restarts_the_same_cause_count(
     import json
     import time as _time
 
-    from argus_skill.engineer import runner as runner_module
+    from argus.engineer import runner as runner_module
 
     registry = tmp_path / ".argus_external_work"
     registry.mkdir()
@@ -359,7 +392,8 @@ def test_a_wait_round_restarts_the_same_cause_count(
     assert reviewer.calls == 1
     assert [e["same_cause_streak"] for e in _backoff_events(events)] == [1, 2, 1, 2]
     assert all(not e.get("operator_alert") for e in _backoff_events(events))
-    assert sleeps == [0.5] * 4
+    assert sum(sleeps) == pytest.approx(2.0)
+    assert all(0 < seconds <= 0.2 for seconds in sleeps)
 
 
 _TURN_CAP_RECEIPT = (
@@ -411,7 +445,69 @@ def test_a_turn_cap_restart_restarts_the_same_cause_count(
     assert [e["streak"] for e in restarts] == [1]
     assert [e["same_cause_streak"] for e in _backoff_events(events)] == [1, 2, 1, 2]
     assert all(not e.get("operator_alert") for e in _backoff_events(events))
-    assert sleeps == [0.5] * 4
+    assert sum(sleeps) == pytest.approx(2.0)
+    assert all(0 < seconds <= 0.2 for seconds in sleeps)
+
+
+# --------------------------------------------------------------------------- #
+# Round loop: an unreachable service pauses for a cooldown, not the streak
+# --------------------------------------------------------------------------- #
+
+
+def test_an_unreachable_model_service_pauses_instead_of_burning_the_streak(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    engineer = _ScriptedEngineer([_unreachable(18765), _unreachable(18765)])
+    status, events, sleeps, engineer = _run(
+        tmp_path,
+        monkeypatch,
+        engineer=engineer,
+        reviewer=_DoneReviewer(),
+        max_rounds=4,
+        backoff_seconds=0.5,
+    )
+
+    # One call, then a provider-cooldown pause: no fresh-session retry, no
+    # backoff, no streak. A relay that had died inside a container once cost
+    # hours of retries this way with the operator seeing only "exit code 1".
+    assert status == "paused_provider_cooldown"
+    assert engineer.calls == 1
+    assert sleeps == []
+    assert _backoff_events(events) == []
+    review = next(e for e in events if e.get("type") == "round.review.completed")
+    assert review["review_skipped"] is True
+    assert review["stop_kind"] == "provider_cooldown"
+    assert review["failure_kind"] == "service_unreachable"
+    assert review["failure_cause"] == "connect ECONNREFUSED 127.0.0.1:18765"
+    assert review["reason"].startswith(
+        "The model service could not be reached: connect ECONNREFUSED 127.0.0.1:18765. "
+    )
+
+
+def test_a_session_death_keeps_the_streak_and_names_the_cause_on_the_backoff(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    engineer = _ScriptedEngineer([
+        _rate_limited(7),
+        RunnerResult(exit_code=0, agent_messages=["ran the benchmark"]),
+    ])
+    status, events, _sleeps, engineer = _run(
+        tmp_path,
+        monkeypatch,
+        engineer=engineer,
+        reviewer=_DoneReviewer(),
+        max_rounds=4,
+        backoff_seconds=0.5,
+    )
+
+    assert status == "done"
+    assert engineer.calls == 2
+    backoffs = _backoff_events(events)
+    assert len(backoffs) == 1
+    assert backoffs[0]["failure_cause"] == (
+        "Process exited with code 2 before turn completion."
+    )
+    assert "Process exited with code 2 before turn completion." in backoffs[0]["text"]
 
 
 # --------------------------------------------------------------------------- #
@@ -473,12 +569,12 @@ def test_operator_abort_wakes_the_hold_mid_sleep(
         max_rounds=8,
     )
 
-    # The abort arrives two slices into a 60-second hold: the hold wakes at
-    # the next check instead of sleeping the remaining 40 seconds, and the
-    # mission ends as aborted with the operator's reason.
+    # The abort arrives two slices into a 60-second hold. It must be observed
+    # within a fraction of a second, without waiting out the remaining hold.
     assert engineer.calls == 3
     assert status == "aborted"
-    assert sleeps == [10.0, 10.0]
+    assert len(sleeps) == 2 and sum(sleeps) <= 0.4
+    assert all(0 < seconds <= 0.2 for seconds in sleeps)
     interrupted = _hold_interrupt_events(events)
     assert len(interrupted) == 1
     assert interrupted[0]["stop_kind"] == "operator_abort"

@@ -3,19 +3,19 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import argus_skill
-from argus_skill.core.vertical_contract import VerticalLibraryContext
-from argus_skill.verticals.research.library_preparation import (
+import argus
+from argus.core.vertical_contract import VerticalLibraryContext
+from argus.verticals.research.library_preparation import (
     STAGE_PLAYBOOK_PATHS,
     prepare_skill_libraries,
 )
-from argus_skill.verticals.research.prompt_policy import render_role_prompt_fragment
-from argus_skill.verticals.research.stages import STAGE_CHECKLISTS
+from argus.verticals.research.prompt_policy import render_role_prompt_fragment
+from argus.verticals.research.stages import STAGE_CHECKLISTS
 
 
 def _skill(name: str) -> str:
     path = (
-        Path(argus_skill.__file__).parent
+        Path(argus.__file__).parent
         / "verticals"
         / "research"
         / "skills"
@@ -27,7 +27,7 @@ def _skill(name: str) -> str:
 
 def _playbook(stage: str) -> str:
     path = (
-        Path(argus_skill.__file__).parent
+        Path(argus.__file__).parent
         / "verticals"
         / "research"
         / "skills"
@@ -54,18 +54,28 @@ def test_experiment_requires_fidelity_positive_control_and_real_baselines() -> N
     assert "real evaluator" in experiment
 
 
+def test_custom_benchmarks_are_checked_before_model_scoring() -> None:
+    experiment = _playbook("experiment")
+
+    assert "before scoring any model" in experiment
+    assert "constant-answer baseline" in experiment
+    assert "intended targets are separable on its items" in experiment
+    assert "no api calls or only a small amount within the existing authorized budget" in experiment
+    assert "existing project-specific restrictions" in experiment
+
+
 def test_idea_is_source_only_and_never_reselects_after_implementation_failure() -> None:
     idea = _stage("idea")
     playbook = _playbook("idea")
 
     assert "candidate execution is forbidden" in idea
     assert "do not execute candidate code" in playbook
-    assert "one selector after all 24 tasks finish" in playbook
+    assert "one selector after all route and review tasks finish" in playbook
     assert "do not reopen the portfolio" in playbook
     assert "operator-locked paper direction" in playbook
     assert "without creating a portfolio" in playbook
     assert "exploratory target" in playbook
-    assert "do not manufacture twelve routes" in playbook
+    assert "manufacture a route portfolio" in playbook
     assert "direct idea-only request" in playbook
     assert "do not continue into experiment" in playbook
 
@@ -124,8 +134,9 @@ def test_review_combines_parallel_scientific_visual_and_language_passes() -> Non
     assert "strict page-by-page visual quality" in playbook
     assert "academic language" in playbook
     assert "do not create separate scientific" in playbook
-    assert "crawl old reports or history" in prompt
-    assert "never reopen selection or move backward" in prompt
+    assert "read the latest paper/review.md to close resolved concerns" in prompt
+    assert "crawl other old reports or history" in prompt
+    assert "reopen selection, or move backward" in prompt
 
 
 def test_review_loads_its_single_stage_playbook(tmp_path: Path) -> None:
@@ -174,7 +185,7 @@ def test_each_stage_requires_exactly_one_shared_playbook(tmp_path: Path) -> None
 
 def test_every_role_is_directed_to_the_same_stage_playbook() -> None:
     skills_root = (
-        Path(argus_skill.__file__).parent
+        Path(argus.__file__).parent
         / "verticals"
         / "research"
         / "skills"
@@ -195,7 +206,7 @@ def test_every_role_is_directed_to_the_same_stage_playbook() -> None:
 
 
 def test_playbooks_progressively_disclose_existing_specialist_skills() -> None:
-    package_root = Path(argus_skill.__file__).parent
+    package_root = Path(argus.__file__).parent
     research_skills = package_root / "verticals" / "research" / "skills"
     builtin_skills = package_root / "builtin_skills"
 
@@ -217,7 +228,7 @@ def test_playbooks_progressively_disclose_existing_specialist_skills() -> None:
 
 def test_research_skills_do_not_reintroduce_parallel_workflow_artifacts() -> None:
     skills_root = (
-        Path(argus_skill.__file__).parent
+        Path(argus.__file__).parent
         / "verticals"
         / "research"
         / "skills"
