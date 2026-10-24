@@ -34,7 +34,7 @@ dependencies = [
   "portalocker>=3",
   "psutil>=5.9",
   "jsonschema>=4",
-  "pypdf>=5,<7",
+  "pypdf>=6.21.2,<7",
   "fastapi>=0.110",
   "python-multipart>=0.0.9",
   "uvicorn[standard]>=0.29",
@@ -71,7 +71,7 @@ visual-web = [
 # Layout-aware PDF inspection.
 paper = [
   "pymupdf>=1.26,<2",
-  "pypdf>=5,<7",
+  "pypdf>=6.21.2,<7",
 ]
 # Optional Ed25519 provenance signing.
 signing = [
