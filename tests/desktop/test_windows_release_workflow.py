@@ -51,7 +51,7 @@ def test_windows_dispatch_selects_one_explicit_msvc_runner():
 def test_windows_toolchain_pins_leave_other_platform_inputs_unchanged():
     assert _action("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020")["with"]["node-version"] == "${{ runner.os == 'Windows' && '24.19.0' || '22.12.0' }}"
     assert _action("actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065")["with"]["python-version"] == "${{ runner.os == 'Windows' && '3.11.9' || '3.12' }}"
-    assert _action("dtolnay/rust-toolchain@stable")["with"]["toolchain"] == "${{ runner.os == 'Windows' && '1.98.0-x86_64-pc-windows-msvc' || 'stable' }}"
+    assert _action("dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca")["with"]["toolchain"] == "${{ runner.os == 'Windows' && '1.98.0-x86_64-pc-windows-msvc' || 'stable' }}"
     uv = _action("astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86")
     assert uv["if"] == "runner.os == 'Windows'"
     assert uv["with"]["version"] == "0.12.16"
