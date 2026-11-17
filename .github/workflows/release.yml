@@ -128,7 +128,7 @@ jobs:
             pyproject.toml
             uv.lock
             desktop-tauri/scripts/windows-build-requirements.txt
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: ${{ runner.os == 'Windows' && '1.98.0-x86_64-pc-windows-msvc' || 'stable' }}
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
@@ -140,7 +140,7 @@ jobs:
       # the single longest step on every platform (10 min on the Intel Mac
       # runner). Keep the compiled dependencies between runs. Only main saves,
       # so tag builds restore main's cache instead of leaving one-off copies.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: desktop-tauri/src-tauri
           shared-key: desktop-${{ matrix.platform }}
@@ -233,7 +233,7 @@ jobs:
         with:
           name: python-dist
           path: dist
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
         with:
           skip-existing: true
 
